@@ -48,6 +48,15 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
         status_filter = self.request.query_params.get("status")
         if status_filter:
             qs = qs.filter(status=status_filter)
+        date_from = self.request.query_params.get("date_from")
+        date_to = self.request.query_params.get("date_to")
+        forwarder = self.request.query_params.get("forwarder")
+        if date_from:
+            qs = qs.filter(invoice_date__gte=date_from)
+        if date_to:
+            qs = qs.filter(invoice_date__lte=date_to)
+        if forwarder:
+            qs = qs.filter(forwarder_name__icontains=forwarder)
         return qs  # type: ignore[no-any-return]
 
     def list(self, request: Request, *args: Any, **kwargs: Any) -> Response:

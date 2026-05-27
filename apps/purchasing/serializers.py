@@ -115,6 +115,8 @@ class PurchaseOrderListSerializer(serializers.ModelSerializer):
 
     warehouse_name = serializers.CharField(source="warehouse.name", read_only=True)
     company_name = serializers.CharField(source="company.name", read_only=True)
+    cost_ratio_cogs = serializers.SerializerMethodField()
+    shipping_per_qty = serializers.SerializerMethodField()
 
     class Meta:
         model = PurchaseOrder
@@ -125,13 +127,31 @@ class PurchaseOrderListSerializer(serializers.ModelSerializer):
             "warehouse_name",
             "company_name",
             "supplier_name",
+            "invoice_number",
+            "invoice_date",
+            "delivery_date",
+            "forecast_delivery_date",
+            "forwarder_name",
+            "exchange_rate",
+            "cbm",
+            "shipping_fee",
+            "procure_amount",
+            "total_item_amount",
+            "commission_fee",
             "total_ordered_qty",
             "total_amount",
+            "cost_ratio_cogs",
+            "shipping_per_qty",
             "cdate",
-            "forecast_delivery_date",
             "udate",
         ]
         read_only_fields = ["id", "cdate", "udate"]
+
+    def get_cost_ratio_cogs(self, obj: PurchaseOrder) -> float:
+        return float(obj.cost_ratio_cogs())
+
+    def get_shipping_per_qty(self, obj: PurchaseOrder) -> int:
+        return obj.get_shipping_per_qty()
 
 
 class PurchaseOrderCreateSerializer(serializers.ModelSerializer):

@@ -3,6 +3,7 @@ from decimal import Decimal
 from unittest.mock import patch
 from uuid import uuid4
 
+from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 from rest_framework import status
@@ -1824,3 +1825,101 @@ class ForecastFieldsTest(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn("forecast_delivery_date", response.data["results"][0])
+
+
+class POListSerializerExpansionTest(TestCase):
+    """Tests for expanded PurchaseOrderListSerializer fields and filters"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+
+        user = User.objects.create_user(username="staff", password="password", is_staff=True)
+        self.client.force_authenticate(user=user)
+
+    def test_list_includes_cost_ratio_cogs(self):
+        """GET /purchase-order/ should include cost_ratio_cogs in results"""
+        PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            procure_amount=1000,
+            shipping_fee=500,
+            total_item_amount=10000,
+        )
+
+        response = self.client.get("/purchase-order/", format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("cost_ratio_cogs", response.data["results"][0])
+
+    def test_list_includes_shipping_per_qty(self):
+        """GET /purchase-order/ should include shipping_per_qty in results"""
+        PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            shipping_fee=1000,
+            total_ordered_qty=100,
+        )
+
+        response = self.client.get("/purchase-order/", format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("shipping_per_qty", response.data["results"][0])
+
+    def test_list_includes_forwarder_name(self):
+        """GET /purchase-order/ should include forwarder_name in results"""
+        PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            forwarder_name="Test Forwarder",
+        )
+
+        response = self.client.get("/purchase-order/", format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("forwarder_name", response.data["results"][0])
+
+    def test_list_filter_by_date_from(self):
+        """Filter by date_from should return only POs with invoice_date >= date_from"""
+        po1 = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            invoice_date=date(2026, 5, 1),
+        )
+        po2 = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            invoice_date=date(2026, 5, 15),
+        )
+
+        response = self.client.get(
+            "/purchase-order/", {"date_from": "2026-05-10"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        result_ids = [item["id"] for item in response.data["results"]]
+        self.assertNotIn(str(po1.id), result_ids)
+        self.assertIn(str(po2.id), result_ids)
+
+    def test_list_filter_by_forwarder(self):
+        """Filter by forwarder should return only POs with matching forwarder_name"""
+        po1 = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            forwarder_name="Forwarder A",
+        )
+        po2 = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            forwarder_name="Forwarder B",
+        )
+
+        response = self.client.get(
+            "/purchase-order/", {"forwarder": "Forwarder A"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        result_ids = [item["id"] for item in response.data["results"]]
+        self.assertIn(str(po1.id), result_ids)
+        self.assertNotIn(str(po2.id), result_ids)
