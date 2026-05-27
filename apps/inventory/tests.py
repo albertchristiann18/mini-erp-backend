@@ -1,10 +1,16 @@
 # apps/inventory/tests/test_api.py
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.test import TestCase
+from django.urls import reverse
 from django.utils import timezone
+from rest_framework import status
+from rest_framework.permissions import IsAuthenticated as IsAuthenticatedPermission
 from rest_framework.test import APIClient, APITestCase
+
+_real_auth_has_permission = IsAuthenticatedPermission.has_permission
 
 from apps.inventory.factories import (
     CategoryFactory,
@@ -12,6 +18,7 @@ from apps.inventory.factories import (
     ProductFactory,
     ProductVariantFactory,
     ProductVariantWarehouseFactory,
+    StockMovementFactory,
 )
 from apps.inventory.models import (
     Product,
@@ -19,6 +26,7 @@ from apps.inventory.models import (
     ProductVariant,
     ProductVariantMarketplace,
     ProductVariantWarehouse,
+    StockMovement,
 )
 from apps.inventory.services.inventory_service import InventoryService
 from apps.purchasing.factories import PurchaseOrderFactory
@@ -1202,9 +1210,7 @@ class AvgSalesViewTest(APITestCase):
 
     def test_valid_request_no_sales(self):
         variant = ProductVariantFactory(company=self.company)
-        response = self.client.get(
-            f"/avg-sales/?days=30&variant_ids={variant.id}"
-        )
+        response = self.client.get(f"/avg-sales/?days=30&variant_ids={variant.id}")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["results"][0]["avg_sales_per_day"], 0.0)
         self.assertEqual(response.data["results"][0]["total_qty_sold"], 0)
@@ -1225,9 +1231,7 @@ class AvgSalesViewTest(APITestCase):
             product_variant=variant,
             quantity=30,
         )
-        response = self.client.get(
-            f"/avg-sales/?days=30&variant_ids={variant.id}"
-        )
+        response = self.client.get(f"/avg-sales/?days=30&variant_ids={variant.id}")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["results"][0]["avg_sales_per_day"], 1.0)
         self.assertEqual(response.data["results"][0]["total_qty_sold"], 30)
@@ -1248,9 +1252,7 @@ class AvgSalesViewTest(APITestCase):
             product_variant=variant,
             quantity=30,
         )
-        response = self.client.get(
-            f"/avg-sales/?days=30&variant_ids={variant.id}"
-        )
+        response = self.client.get(f"/avg-sales/?days=30&variant_ids={variant.id}")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["results"][0]["avg_sales_per_day"], 0.0)
 
@@ -1270,9 +1272,7 @@ class AvgSalesViewTest(APITestCase):
             product_variant=variant,
             quantity=7,
         )
-        response = self.client.get(
-            f"/avg-sales/?days=7&variant_ids={variant.id}"
-        )
+        response = self.client.get(f"/avg-sales/?days=7&variant_ids={variant.id}")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["results"][0]["avg_sales_per_day"], 1.0)
 
@@ -1373,3 +1373,141 @@ class EdgeCaseInventoryTests(TestCase):
                 data=data,
             )
         self.assertIn("already sold", str(ctx.exception))
+
+
+class StockMovementAPITest(APITestCase):
+    def setUp(self):
+        from core.models import UserProfile
+
+        self.user = User.objects.create_user(
+            username="stockuser", password="password", is_staff=True
+        )
+        self.client.force_authenticate(user=self.user)
+        self.company = CompanyFactory()
+        UserProfile.objects.create(user=self.user, company=self.company)
+        self.warehouse_a = WarehouseFactory(company=self.company)
+        self.warehouse_b = WarehouseFactory(company=self.company)
+        self.variant = ProductVariantFactory(company=self.company)
+
+    def test_list_stock_movements(self):
+        StockMovementFactory.create_batch(
+            3,
+            company=self.company,
+            product_variant=self.variant,
+            warehouse=self.warehouse_a,
+        )
+        response = self.client.get("/stock-movements/")
+        self.assertEqual(response.status_code, 200)
+        self.assertGreaterEqual(len(response.data["results"]), 3)
+
+    def test_movement_type_returned_as_full_name(self):
+        StockMovementFactory(
+            company=self.company,
+            product_variant=self.variant,
+            warehouse=self.warehouse_a,
+            movement_type=StockMovement.MovementType.INBOUND,
+        )
+        response = self.client.get("/stock-movements/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["results"][0]["movement_type"], "INBOUND")
+
+    def test_filter_by_warehouse(self):
+        StockMovementFactory(
+            company=self.company,
+            product_variant=self.variant,
+            warehouse=self.warehouse_a,
+        )
+        StockMovementFactory(
+            company=self.company,
+            product_variant=self.variant,
+            warehouse=self.warehouse_b,
+        )
+        response = self.client.get(f"/stock-movements/?warehouse={self.warehouse_a.id}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data["results"]), 1)
+
+    def test_filter_by_cdate_after(self):
+        StockMovementFactory(
+            company=self.company,
+            product_variant=self.variant,
+            warehouse=self.warehouse_a,
+        )
+        from datetime import timedelta
+
+        tomorrow = (timezone.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        response = self.client.get(f"/stock-movements/?cdate_after={tomorrow}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data["results"]), 0)
+
+    def test_unauthenticated_denied(self):
+        with patch.object(IsAuthenticatedPermission, "has_permission", _real_auth_has_permission):
+            client = APIClient()
+            response = client.get(reverse("stock-movement-list"))
+            self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_filter_by_product_variant(self):
+        other_variant = ProductVariantFactory(company=self.company)
+        StockMovementFactory(
+            company=self.company,
+            product_variant=self.variant,
+            warehouse=self.warehouse_a,
+        )
+        StockMovementFactory(
+            company=self.company,
+            product_variant=other_variant,
+            warehouse=self.warehouse_a,
+        )
+        response = self.client.get(
+            reverse("stock-movement-list"),
+            {"product_variant": self.variant.id},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        results = response.data["results"]
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["product_variant"], str(self.variant.id))
+
+    def test_filter_by_movement_type(self):
+        StockMovementFactory(
+            company=self.company,
+            product_variant=self.variant,
+            warehouse=self.warehouse_a,
+            movement_type=StockMovement.MovementType.PURCHASE,
+        )
+        StockMovementFactory(
+            company=self.company,
+            product_variant=self.variant,
+            warehouse=self.warehouse_a,
+            movement_type=StockMovement.MovementType.INBOUND,
+        )
+
+        # Filter by full name lookup
+        response = self.client.get(
+            reverse("stock-movement-list"),
+            {"movement_type": "PURCHASE"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["results"]), 1)
+
+        # Filter by short code directly
+        response = self.client.get(
+            reverse("stock-movement-list"),
+            {"movement_type": "PUR"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["results"]), 1)
+
+    def test_filter_by_cdate_before(self):
+        StockMovementFactory(
+            company=self.company,
+            product_variant=self.variant,
+            warehouse=self.warehouse_a,
+        )
+        from datetime import timedelta
+
+        tomorrow = (timezone.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        response = self.client.get(
+            reverse("stock-movement-list"),
+            {"cdate_before": tomorrow},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertGreaterEqual(len(response.data["results"]), 1)

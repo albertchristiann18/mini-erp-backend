@@ -1923,3 +1923,76 @@ class POListSerializerExpansionTest(TestCase):
         result_ids = [item["id"] for item in response.data["results"]]
         self.assertIn(str(po1.id), result_ids)
         self.assertNotIn(str(po2.id), result_ids)
+
+
+class ReplenishmentViewTest(TestCase):
+    """Tests for the replenishment planning endpoint."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username="replenishment_staff",
+            password="testpass",
+            is_staff=True,
+        )
+        self.client.force_authenticate(user=self.user)
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(category=self.category, company=self.company)
+
+    def test_empty_response_no_variants(self):
+        """GET /replenishment/ with no active variants -> 200, results is a list."""
+        response = self.client.get("/replenishment/", format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, {"results": []})
+
+    def test_variant_soh_included(self):
+        """Verify stock_on_hand reflects ProductVariantWarehouse.physical_qty."""
+        variant = ProductVariantFactory(product=self.product, is_active=True)
+        ProductVariantWarehouseFactory(
+            product_variant=variant, warehouse=self.warehouse, physical_qty=50
+        )
+        response = self.client.get("/replenishment/", format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        result = next(r for r in response.data["results"] if r["variant_id"] == str(variant.id))
+        self.assertEqual(result["stock_on_hand"], 50)
+
+    def test_incoming_qty_from_ordered_po(self):
+        """incoming_qty = ordered_qty - received_qty for ORDERED POs."""
+        variant = ProductVariantFactory(product=self.product, is_active=True)
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse, company=self.company, status=PurchaseOrder.POStatus.ORDERED
+        )
+        PurchaseOrderDetailFactory(
+            purchase_order=po, product_variant=variant, ordered_qty=20, received_qty=5
+        )
+        response = self.client.get("/replenishment/", format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        result = next(r for r in response.data["results"] if r["variant_id"] == str(variant.id))
+        self.assertEqual(result["incoming_qty"], 15)
+
+    def test_cancelled_po_excluded(self):
+        """CANCELLED PO should not contribute to incoming_qty."""
+        variant = ProductVariantFactory(product=self.product, is_active=True)
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse, company=self.company, status=PurchaseOrder.POStatus.CANCELLED
+        )
+        PurchaseOrderDetailFactory(
+            purchase_order=po, product_variant=variant, ordered_qty=100, received_qty=0
+        )
+        response = self.client.get("/replenishment/", format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        result = next(r for r in response.data["results"] if r["variant_id"] == str(variant.id))
+        self.assertEqual(result["incoming_qty"], 0)
+
+    def test_avg_sales_keys_present(self):
+        """Verify avg_sales_7d and avg_sales_30d keys exist and are numeric."""
+        variant = ProductVariantFactory(product=self.product, is_active=True)
+        response = self.client.get("/replenishment/", format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        result = next(r for r in response.data["results"] if r["variant_id"] == str(variant.id))
+        self.assertIn("avg_sales_7d", result)
+        self.assertIn("avg_sales_30d", result)
+        self.assertIsInstance(result["avg_sales_7d"], float)
+        self.assertIsInstance(result["avg_sales_30d"], float)

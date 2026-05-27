@@ -10,10 +10,17 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.serializers import Serializer
 
-from apps.finance.models import AccountsPayable, AccountsReceivable, Expense, ExpenseCategory
+from apps.finance.models import (
+    AccountsPayable,
+    AccountsReceivable,
+    CashTransaction,
+    Expense,
+    ExpenseCategory,
+)
 from apps.finance.serializers import (
     AccountsPayableSerializer,
     AccountsReceivableSerializer,
+    CashTransactionSerializer,
     ExpenseCategorySerializer,
     ExpenseListSerializer,
     ExpenseSerializer,
@@ -233,6 +240,33 @@ class ExpenseViewSet(viewsets.ModelViewSet):
         service = ExpenseService()
         service.delete_expense(instance)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class CashTransactionViewSet(viewsets.ModelViewSet):
+    """CRUD for CashTransaction. Supports filtering by transaction_type, category, date range."""
+
+    serializer_class = CashTransactionSerializer
+    permission_classes = [IsStaffOrReadOnly]
+    http_method_names = ["get", "post", "patch", "delete"]
+
+    def get_queryset(self) -> QuerySet:
+        qs = CashTransaction.objects.filter(company=self.request.user.profile.company)
+        tx_type = self.request.query_params.get("transaction_type")
+        category = self.request.query_params.get("category")
+        date_from = self.request.query_params.get("date_from")
+        date_to = self.request.query_params.get("date_to")
+        if tx_type:
+            qs = qs.filter(transaction_type=tx_type)
+        if category:
+            qs = qs.filter(category=category)
+        if date_from:
+            qs = qs.filter(transaction_date__gte=date_from)
+        if date_to:
+            qs = qs.filter(transaction_date__lte=date_to)
+        return qs
+
+    def perform_create(self, serializer: CashTransactionSerializer) -> None:
+        serializer.save(company=self.request.user.profile.company)
 
     @action(detail=False, methods=["get"])
     def summary(self, request: Request) -> Response:

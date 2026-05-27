@@ -136,7 +136,9 @@ class InventoryService:
             .values("product_variant_id")
             .annotate(total_qty=Sum("quantity"))
         )
-        qty_map: dict[str, int] = {str(item["product_variant_id"]): item["total_qty"] for item in items}
+        qty_map: dict[str, int] = {
+            str(item["product_variant_id"]): item["total_qty"] for item in items
+        }
 
         variants = ProductVariant.objects.filter(id__in=variant_ids).values(
             "id", "sku_variant_code", "name"

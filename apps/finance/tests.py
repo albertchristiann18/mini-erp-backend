@@ -1,5 +1,6 @@
 from datetime import date, timedelta
 
+from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.utils import timezone
@@ -9,11 +10,12 @@ from rest_framework.test import APIClient, APITestCase
 from apps.finance.factories import (
     AccountsPayableFactory,
     AccountsReceivableFactory,
+    CashTransactionFactory,
     ExpenseCategoryFactory,
     ExpenseFactory,
     PaymentRecordFactory,
 )
-from apps.finance.models import AccountsPayable, AccountsReceivable, PaymentRecord
+from apps.finance.models import AccountsPayable, AccountsReceivable, CashTransaction, PaymentRecord
 from apps.finance.services.accounts_payable_service import AccountsPayableService
 from apps.finance.services.report_service import ReportService
 from apps.finance.services.stock_report_service import StockReportService
@@ -28,6 +30,7 @@ from apps.purchasing.factories import PurchaseOrderFactory
 from apps.sales.factories import SalesOrderFactory, SalesOrderItemFactory
 from apps.sales.models import SalesOrder, SalesOrderCogsDetail
 from core.factories import WarehouseFactory
+from core.models import UserProfile
 
 # ---- Service Tests ----
 
@@ -467,3 +470,76 @@ class EdgeCaseFinanceTests(TestCase):
                     "expense_date": date.today(),
                 }
             )
+
+
+class CashTransactionAPITest(APITestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.company = CompanyFactory()
+        user = User.objects.create_user(username="cash-tx-test", password="password", is_staff=True)
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        self.client.force_authenticate(user=user)
+
+    def test_create_inflow(self):
+        payload = {
+            "transaction_date": str(date.today()),
+            "description": "Equity injection",
+            "amount": 5000000,
+            "transaction_type": "INFLOW",
+            "category": "EQUITY_INJECTION",
+        }
+        response = self.client.post("/cash-transactions/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["amount"], 5000000)
+        self.assertEqual(response.data["transaction_type"], "INFLOW")
+
+    def test_list_cash_transactions(self):
+        CashTransactionFactory(company=self.company)
+        CashTransactionFactory(company=self.company)
+        CashTransactionFactory(company=self.company)
+        response = self.client.get("/cash-transactions/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertGreaterEqual(len(response.data["results"]), 3)
+
+    def test_filter_by_transaction_type(self):
+        CashTransactionFactory(
+            company=self.company, transaction_type=CashTransaction.TransactionType.INFLOW
+        )
+        CashTransactionFactory(
+            company=self.company, transaction_type=CashTransaction.TransactionType.OUTFLOW
+        )
+        response = self.client.get("/cash-transactions/?transaction_type=INFLOW")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        for item in response.data["results"]:
+            self.assertEqual(item["transaction_type"], "INFLOW")
+
+    def test_filter_by_date_from(self):
+        CashTransactionFactory(
+            company=self.company,
+            transaction_date=date.today() - timedelta(days=5),
+        )
+        CashTransactionFactory(
+            company=self.company,
+            transaction_date=date.today(),
+        )
+        response = self.client.get(
+            f"/cash-transactions/?date_from={date.today() - timedelta(days=2)}"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        for item in response.data["results"]:
+            self.assertGreaterEqual(
+                date.fromisoformat(item["transaction_date"]),
+                date.today() - timedelta(days=2),
+            )
+
+    def test_amount_always_positive(self):
+        payload = {
+            "transaction_date": str(date.today()),
+            "description": "Positive amount test",
+            "amount": 1000,
+            "transaction_type": "OUTFLOW",
+            "category": "OTHER_EXPENSE",
+        }
+        response = self.client.post("/cash-transactions/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["amount"], 1000)

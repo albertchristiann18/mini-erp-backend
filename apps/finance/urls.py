@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 from apps.finance.views import (
     AccountsPayableViewSet,
     AccountsReceivableViewSet,
+    CashTransactionViewSet,
     ExpenseCategoryViewSet,
     ExpenseViewSet,
     ReportViewSet,
@@ -14,5 +15,6 @@ router.register(r"accounts-receivable", AccountsReceivableViewSet, basename="acc
 router.register(r"reports", ReportViewSet, basename="reports")
 router.register(r"expense-categories", ExpenseCategoryViewSet, basename="expense-category")
 router.register(r"expenses", ExpenseViewSet, basename="expense")
+router.register(r"cash-transactions", CashTransactionViewSet, basename="cash-transaction")
 
 urlpatterns = router.urls

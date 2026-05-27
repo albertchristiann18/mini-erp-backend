@@ -13,13 +13,14 @@ from rest_framework.serializers import Serializer
 from rest_framework.views import APIView
 
 from apps.inventory.constants.categories import MASTER_CATEGORY
-from apps.inventory.models import Category, Product, ProductPhoto, Warehouse
+from apps.inventory.models import Category, Product, ProductPhoto, StockMovement, Warehouse
 from apps.inventory.serializers import (
     CategorySerializer,
     ProductCreateSerializer,
     ProductPhotoSerializer,
     ProductSerializer,
     ProductVariantStockSerializer,
+    StockMovementSerializer,
     WarehouseSerializer,
 )
 from apps.inventory.services import product_service
@@ -327,6 +328,46 @@ class AvgSalesView(APIView):
                 "results": results,
             }
         )
+
+
+class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = StockMovementSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self) -> QuerySet:
+        qs = (
+            StockMovement.objects.filter(company=self.request.user.profile.company).select_related(
+                "product_variant", "warehouse"
+            )
+            if self.request.user.is_authenticated
+            else StockMovement.objects.none()
+        )
+
+        warehouse_id = self.request.query_params.get("warehouse")
+        if warehouse_id:
+            qs = qs.filter(warehouse_id=warehouse_id)
+
+        product_variant_id = self.request.query_params.get("product_variant")
+        if product_variant_id:
+            qs = qs.filter(product_variant_id=product_variant_id)
+
+        movement_type = self.request.query_params.get("movement_type")
+        if movement_type:
+            try:
+                short_code = StockMovement.MovementType[movement_type].value
+                qs = qs.filter(movement_type=short_code)
+            except KeyError:
+                qs = qs.filter(movement_type=movement_type)
+
+        cdate_after = self.request.query_params.get("cdate_after")
+        if cdate_after:
+            qs = qs.filter(cdate__date__gte=cdate_after)
+
+        cdate_before = self.request.query_params.get("cdate_before")
+        if cdate_before:
+            qs = qs.filter(cdate__date__lte=cdate_before)
+
+        return qs
 
 
 class WarehouseViewSet(viewsets.ModelViewSet):

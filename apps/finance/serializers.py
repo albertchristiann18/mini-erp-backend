@@ -3,6 +3,7 @@ from rest_framework import serializers
 from apps.finance.models import (
     AccountsPayable,
     AccountsReceivable,
+    CashTransaction,
     Expense,
     ExpenseCategory,
     PaymentRecord,
@@ -247,3 +248,21 @@ class ExpenseSummarySerializer(serializers.Serializer):
     category__name = serializers.CharField()
     total_amount = serializers.IntegerField()
     count = serializers.IntegerField()
+
+
+class CashTransactionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CashTransaction
+        fields = [
+            "id",
+            "transaction_date",
+            "description",
+            "amount",
+            "transaction_type",
+            "category",
+            "reference_number",
+            "note",
+            "cdate",
+            "udate",
+        ]
+        read_only_fields = ["id", "cdate", "udate"]
