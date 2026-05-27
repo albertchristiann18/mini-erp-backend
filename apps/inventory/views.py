@@ -6,10 +6,11 @@ from django.shortcuts import get_object_or_404
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, MultiPartParser
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.serializers import Serializer
+from rest_framework.views import APIView
 
 from apps.inventory.constants.categories import MASTER_CATEGORY
 from apps.inventory.models import Category, Product, ProductPhoto, Warehouse
@@ -266,6 +267,66 @@ class InventoryBulkViewSet(viewsets.ViewSet):
             ]
         )
         return Response(result, status=200)
+
+
+class AvgSalesView(APIView):
+    """
+    GET /api/inventory/avg-sales/
+    Query params:
+      - days: int (default 30, must be 7 or 30)
+      - variant_ids: comma-separated string of variant IDs
+                     e.g. ?variant_ids=01ABC,01DEF
+    Returns AVG sales/day per variant over the specified window.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request) -> Response:
+        days_param = request.query_params.get("days", "30")
+        try:
+            days = int(days_param)
+        except ValueError:
+            return Response(
+                {"error": "days must be an integer (7 or 30)"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if days not in [7, 30]:
+            return Response(
+                {"error": "days must be 7 or 30"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        variant_ids_param = request.query_params.get("variant_ids", "")
+        if not variant_ids_param:
+            return Response(
+                {"error": "variant_ids is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        variant_ids = [v.strip() for v in variant_ids_param.split(",") if v.strip()]
+        if not variant_ids:
+            return Response(
+                {"error": "variant_ids is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from apps.inventory.services.inventory_service import InventoryService
+
+        service = InventoryService()
+        results = service.get_avg_sales_per_day(variant_ids=variant_ids, days=days)
+
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        date_from = (timezone.now().date() - timedelta(days=days)).isoformat()
+
+        return Response(
+            {
+                "days": days,
+                "date_from": date_from,
+                "results": results,
+            }
+        )
 
 
 class WarehouseViewSet(viewsets.ModelViewSet):

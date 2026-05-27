@@ -105,6 +105,63 @@ class InventoryService:
             )
         self._trigger_shopee_sync(str(variant.id), str(company_id))
 
+    def get_avg_sales_per_day(
+        self,
+        variant_ids: list[str],
+        days: int,
+    ) -> list[dict]:
+        from datetime import timedelta
+
+        from django.db.models import Sum
+        from django.utils import timezone
+
+        from apps.inventory.models import ProductVariant
+        from apps.sales.models import SalesOrder, SalesOrderItem
+
+        date_from = timezone.now().date() - timedelta(days=days)
+
+        valid_statuses = [
+            SalesOrder.OrderStatus.CONFIRMED,
+            SalesOrder.OrderStatus.SHIPPING,
+            SalesOrder.OrderStatus.DELIVERED,
+            SalesOrder.OrderStatus.COMPLETED,
+        ]
+
+        items = (
+            SalesOrderItem.objects.filter(
+                product_variant_id__in=variant_ids,
+                sales_order__status__in=valid_statuses,
+                sales_order__order_date__date__gte=date_from,
+            )
+            .values("product_variant_id")
+            .annotate(total_qty=Sum("quantity"))
+        )
+        qty_map: dict[str, int] = {str(item["product_variant_id"]): item["total_qty"] for item in items}
+
+        variants = ProductVariant.objects.filter(id__in=variant_ids).values(
+            "id", "sku_variant_code", "name"
+        )
+
+        result = []
+        for variant in variants:
+            vid = str(variant["id"])
+            total_qty = qty_map.get(vid, 0)
+            avg = round(total_qty / days, 3) if days > 0 else 0.0
+            result.append(
+                {
+                    "variant_id": vid,
+                    "sku_variant_code": variant["sku_variant_code"],
+                    "variant_name": variant["name"],
+                    "avg_sales_per_day": avg,
+                    "total_qty_sold": total_qty,
+                    "days": days,
+                }
+            )
+
+        id_order = {vid: i for i, vid in enumerate(variant_ids)}
+        result.sort(key=lambda r: id_order.get(str(r["variant_id"]), 9999))
+        return result
+
     def _trigger_shopee_sync(self, variant_id: str, company_id: str) -> None:
         from apps.omnichannel.vendor.shopee.stock_sync import ShopeeStockSyncService
         from core.models import MarketplaceConnection

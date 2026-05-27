@@ -1,8 +1,11 @@
+from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from apps.inventory import views
 
-urlpatterns = []
+urlpatterns = [
+    path("avg-sales/", views.AvgSalesView.as_view(), name="inventory-avg-sales"),
+]
 
 router = DefaultRouter()
 router.register(r"category", views.CategoryViewSet)

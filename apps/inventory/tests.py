@@ -1,8 +1,10 @@
 # apps/inventory/tests/test_api.py
 from decimal import Decimal
 
+from django.contrib.auth.models import User
 from django.test import TestCase
-from rest_framework.test import APITestCase
+from django.utils import timezone
+from rest_framework.test import APIClient, APITestCase
 
 from apps.inventory.factories import (
     CategoryFactory,
@@ -1176,6 +1178,103 @@ class InventoryServiceCOGSUpdateTest(TestCase):
         self.assertIsNotNone(cogs)
         self.assertEqual(cogs.original_qty, 30)
         self.assertEqual(cogs.remaining_qty, 30)
+
+
+class AvgSalesViewTest(APITestCase):
+    """Tests for GET /avg-sales/ endpoint"""
+
+    def setUp(self):
+        self.client = APIClient()
+        user = User.objects.create_user(username="staff", password="password", is_staff=True)
+        self.client.force_authenticate(user=user)
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+
+    def test_missing_variant_ids_returns_400(self):
+        response = self.client.get("/avg-sales/?days=30")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("error", response.data)
+
+    def test_invalid_days_returns_400(self):
+        response = self.client.get("/avg-sales/?days=14&variant_ids=abc")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("error", response.data)
+
+    def test_valid_request_no_sales(self):
+        variant = ProductVariantFactory(company=self.company)
+        response = self.client.get(
+            f"/avg-sales/?days=30&variant_ids={variant.id}"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["results"][0]["avg_sales_per_day"], 0.0)
+        self.assertEqual(response.data["results"][0]["total_qty_sold"], 0)
+
+    def test_valid_request_with_sales(self):
+        from apps.sales.factories import SalesOrderFactory, SalesOrderItemFactory
+        from apps.sales.models import SalesOrder
+
+        variant = ProductVariantFactory(company=self.company)
+        so = SalesOrderFactory(
+            company=self.company,
+            warehouse=self.warehouse,
+            status=SalesOrder.OrderStatus.COMPLETED,
+            order_date=timezone.now(),
+        )
+        SalesOrderItemFactory(
+            sales_order=so,
+            product_variant=variant,
+            quantity=30,
+        )
+        response = self.client.get(
+            f"/avg-sales/?days=30&variant_ids={variant.id}"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["results"][0]["avg_sales_per_day"], 1.0)
+        self.assertEqual(response.data["results"][0]["total_qty_sold"], 30)
+
+    def test_cancelled_orders_excluded(self):
+        from apps.sales.factories import SalesOrderFactory, SalesOrderItemFactory
+        from apps.sales.models import SalesOrder
+
+        variant = ProductVariantFactory(company=self.company)
+        so = SalesOrderFactory(
+            company=self.company,
+            warehouse=self.warehouse,
+            status=SalesOrder.OrderStatus.CANCELLED,
+            order_date=timezone.now(),
+        )
+        SalesOrderItemFactory(
+            sales_order=so,
+            product_variant=variant,
+            quantity=30,
+        )
+        response = self.client.get(
+            f"/avg-sales/?days=30&variant_ids={variant.id}"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["results"][0]["avg_sales_per_day"], 0.0)
+
+    def test_7_day_window(self):
+        from apps.sales.factories import SalesOrderFactory, SalesOrderItemFactory
+        from apps.sales.models import SalesOrder
+
+        variant = ProductVariantFactory(company=self.company)
+        so = SalesOrderFactory(
+            company=self.company,
+            warehouse=self.warehouse,
+            status=SalesOrder.OrderStatus.COMPLETED,
+            order_date=timezone.now(),
+        )
+        SalesOrderItemFactory(
+            sales_order=so,
+            product_variant=variant,
+            quantity=7,
+        )
+        response = self.client.get(
+            f"/avg-sales/?days=7&variant_ids={variant.id}"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["results"][0]["avg_sales_per_day"], 1.0)
 
 
 class EdgeCaseInventoryTests(TestCase):
