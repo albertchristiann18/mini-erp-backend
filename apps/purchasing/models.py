@@ -35,6 +35,10 @@ class PurchaseOrder(DefaultModel):
     invoice_date = models.DateField(null=True, blank=True)
     delivery_order_number = models.CharField(max_length=100, blank=True, null=True)
     delivery_date = models.DateField(null=True, blank=True)  # latest delivery date
+    forecast_delivery_date = models.DateField(null=True, blank=True)
+    forecast_cbm = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True)
+    forecast_shipping_fee = models.BigIntegerField(null=True, blank=True)  # IDR
+    commission_fee_rmb = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True)  # RMB
 
     warehouse = models.ForeignKey(
         Warehouse, on_delete=models.CASCADE

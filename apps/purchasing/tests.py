@@ -1777,3 +1777,50 @@ class EdgeCasePurchasingTests(TestCase):
         ap.refresh_from_db()
         po.refresh_from_db()
         self.assertEqual(ap.total_amount, po.total_amount)
+
+
+class ForecastFieldsTest(TestCase):
+    """Tests for forecast fields and commission_fee_rmb on PurchaseOrder."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+
+    def test_forecast_fields_default_null(self):
+        """All 4 new fields should be None when creating a PO via factory."""
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        self.assertIsNone(po.forecast_delivery_date)
+        self.assertIsNone(po.forecast_cbm)
+        self.assertIsNone(po.forecast_shipping_fee)
+        self.assertIsNone(po.commission_fee_rmb)
+
+    def test_patch_forecast_fields(self):
+        """PATCH a DRAFT PO with forecast fields should save correctly."""
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        payload = {
+            "forecast_delivery_date": "2026-08-01",
+            "forecast_cbm": "2.500",
+            "forecast_shipping_fee": 5000000,
+            "commission_fee_rmb": "150.000",
+        }
+
+        response = self.client.patch(
+            f"/purchase-order/{po.id}/", payload, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        po.refresh_from_db()
+        self.assertEqual(str(po.forecast_delivery_date), "2026-08-01")
+        self.assertEqual(po.forecast_cbm, 2.500)
+        self.assertEqual(po.forecast_shipping_fee, 5000000)
+        self.assertEqual(po.commission_fee_rmb, 150.000)
+
+    def test_list_serializer_includes_forecast_delivery_date(self):
+        """GET /purchase-order/ should include forecast_delivery_date in results."""
+        PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+
+        response = self.client.get("/purchase-order/", format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("forecast_delivery_date", response.data["results"][0])
