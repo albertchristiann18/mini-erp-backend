@@ -1,3 +1,6 @@
+import datetime as dt
+
+from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.utils import timezone
@@ -743,3 +746,36 @@ class EdgeCaseSalesTests(TestCase):
         ar.refresh_from_db()
         # AR expected_amount should have been updated (decreased)
         self.assertNotEqual(ar.expected_amount, original_amount)
+
+
+class SalesOrderDateFilterTest(APITestCase):
+    def setUp(self):
+        self.client = APIClient()
+        user = User.objects.create_user(username="staff", password="password", is_staff=True)
+        self.client.force_authenticate(user=user)
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.early_order = SalesOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            order_date=timezone.datetime(2026, 1, 1, tzinfo=dt.timezone.utc),
+        )
+        self.late_order = SalesOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            order_date=timezone.datetime(2026, 6, 1, tzinfo=dt.timezone.utc),
+        )
+
+    def test_date_from_filter(self):
+        response = self.client.get("/sales-orders/?date_from=2026-03-01", format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [so["id"] for so in response.data["results"]]
+        self.assertNotIn(str(self.early_order.id), ids)
+        self.assertIn(str(self.late_order.id), ids)
+
+    def test_date_to_filter(self):
+        response = self.client.get("/sales-orders/?date_to=2026-03-01", format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [so["id"] for so in response.data["results"]]
+        self.assertIn(str(self.early_order.id), ids)
+        self.assertNotIn(str(self.late_order.id), ids)
