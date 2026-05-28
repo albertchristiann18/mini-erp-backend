@@ -1188,6 +1188,59 @@ class InventoryServiceCOGSUpdateTest(TestCase):
         self.assertEqual(cogs.remaining_qty, 30)
 
 
+class CompanyScopedViewsTest(APITestCase):
+    """Tests for company-scoped data isolation in inventory views."""
+
+    def setUp(self):
+        self.company_a = CompanyFactory()
+        self.company_b = CompanyFactory()
+        self.user_a = User.objects.create_user(
+            username="user_a", password="password", is_staff=True
+        )
+        self.user_b = User.objects.create_user(
+            username="user_b", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+        UserProfile.objects.create(user=self.user_a, company=self.company_a, role="admin")
+        UserProfile.objects.create(user=self.user_b, company=self.company_b, role="admin")
+
+        self.warehouse_a = WarehouseFactory(company=self.company_a, is_active=True)
+        self.warehouse_b = WarehouseFactory(company=self.company_b, is_active=True)
+
+        self.category_a = CategoryFactory(company=self.company_a)
+        self.category_b = CategoryFactory(company=self.company_b)
+
+        self.product_a = ProductFactory(company=self.company_a, category=self.category_a, is_active=True)
+        self.product_b = ProductFactory(company=self.company_b, category=self.category_b, is_active=True)
+
+        self.variant_a = ProductVariantFactory(product=self.product_a, company=self.company_a, is_active=True)
+        self.variant_b = ProductVariantFactory(product=self.product_b, company=self.company_b, is_active=True)
+
+    def test_warehouse_list_scoped_by_company(self):
+        self.client.force_authenticate(user=self.user_a)
+        response = self.client.get("/warehouse/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [w["id"] for w in response.data["results"]]
+        self.assertIn(str(self.warehouse_a.id), ids)
+        self.assertNotIn(str(self.warehouse_b.id), ids)
+
+    def test_product_list_scoped_by_company(self):
+        self.client.force_authenticate(user=self.user_a)
+        response = self.client.get("/product/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [p["id"] for p in response.data["results"]]
+        self.assertIn(str(self.product_a.id), ids)
+        self.assertNotIn(str(self.product_b.id), ids)
+
+    def test_variant_stock_list_scoped_by_company(self):
+        self.client.force_authenticate(user=self.user_a)
+        response = self.client.get("/product-variants/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [v["id"] for v in response.data["results"]]
+        self.assertIn(str(self.variant_a.id), ids)
+        self.assertNotIn(str(self.variant_b.id), ids)
+
+
 class AvgSalesViewTest(APITestCase):
     """Tests for GET /avg-sales/ endpoint"""
 

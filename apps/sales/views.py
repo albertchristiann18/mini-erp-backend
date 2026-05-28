@@ -22,7 +22,7 @@ from core.permissions import IsStaffOrReadOnly
 
 
 class SalesOrderViewSet(viewsets.ModelViewSet):
-    queryset = SalesOrder.objects.all()
+    queryset = SalesOrder.objects.none()
     http_method_names = ["get", "post", "patch"]
     permission_classes = [IsStaffOrReadOnly]
 
@@ -37,7 +37,9 @@ class SalesOrderViewSet(viewsets.ModelViewSet):
             return SalesOrderDetailSerializer
 
     def get_queryset(self) -> QuerySet[SalesOrder]:
-        qs = super().get_queryset()
+        if not self.request.user.is_authenticated:
+            return SalesOrder.objects.none()
+        qs = SalesOrder.objects.filter(company=self.request.user.profile.company)
         status_filter = self.request.query_params.get("status")
         source_platform_filter = self.request.query_params.get("source_platform")
         if status_filter:
@@ -108,9 +110,14 @@ class SalesOrderViewSet(viewsets.ModelViewSet):
 
 
 class SalesReturnViewSet(viewsets.ModelViewSet):
-    queryset = SalesReturn.objects.all()
+    queryset = SalesReturn.objects.none()
     http_method_names = ["get", "post", "patch"]
     permission_classes = [IsStaffOrReadOnly]
+
+    def get_queryset(self) -> QuerySet:
+        if not self.request.user.is_authenticated:
+            return SalesReturn.objects.none()
+        return SalesReturn.objects.filter(company=self.request.user.profile.company)
 
     def get_serializer_class(self) -> Type[Serializer]:
         if self.action == "create":
@@ -135,7 +142,10 @@ class SalesReturnViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
-            sales_order = SalesOrder.objects.get(id=serializer.validated_data["sales_order_id"])
+            sales_order = SalesOrder.objects.get(
+                id=serializer.validated_data["sales_order_id"],
+                company=request.user.profile.company,
+            )
             service = SalesReturnService()
             sales_return = service.create_return(
                 sales_order,
@@ -149,6 +159,8 @@ class SalesReturnViewSet(viewsets.ModelViewSet):
             return Response(
                 SalesReturnSerializer(sales_return).data, status=status.HTTP_201_CREATED
             )
+        except SalesOrder.DoesNotExist:
+            return Response({"error": "Sales order not found."}, status=status.HTTP_404_NOT_FOUND)
         except ValidationError as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 

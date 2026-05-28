@@ -31,7 +31,7 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
     - PUT/PATCH /purchase-orders/{id}/ - Update purchase order and details
     """
 
-    queryset = PurchaseOrder.objects.all()
+    queryset = PurchaseOrder.objects.none()
     http_method_names = ["get", "post", "put", "patch"]
     permission_classes = [IsStaffOrReadOnly]
 
@@ -46,7 +46,9 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
             return PurchaseOrderReadSerializer
 
     def get_queryset(self) -> QuerySet[PurchaseOrder]:
-        qs = super().get_queryset()
+        if not self.request.user.is_authenticated:
+            return PurchaseOrder.objects.none()
+        qs = PurchaseOrder.objects.filter(company=self.request.user.profile.company)
         status_filter = self.request.query_params.get("status")
         if status_filter:
             qs = qs.filter(status=status_filter)
@@ -148,6 +150,7 @@ class ReplenishmentView(APIView):
         # SOH per variant
         pvw_qs = ProductVariantWarehouse.objects.filter(
             product_variant__is_active=True,
+            product_variant__company=request.user.profile.company,
         )
         if warehouse_id:
             pvw_qs = pvw_qs.filter(warehouse_id=warehouse_id)
@@ -165,6 +168,7 @@ class ReplenishmentView(APIView):
         detail_qs = PurchaseOrderDetail.objects.filter(
             purchase_order__status__in=open_statuses,
             product_variant__is_active=True,
+            purchase_order__company=request.user.profile.company,
         )
         if warehouse_id:
             detail_qs = detail_qs.filter(purchase_order__warehouse_id=warehouse_id)
@@ -179,7 +183,9 @@ class ReplenishmentView(APIView):
         all_ids = sorted(set(list(soh_map.keys()) + list(incoming_map.keys())))
         if not all_ids:
             all_ids = list(
-                ProductVariant.objects.filter(is_active=True).values_list("id", flat=True)
+                ProductVariant.objects.filter(
+                    is_active=True, company=request.user.profile.company
+                ).values_list("id", flat=True)
             )
             all_ids = [str(v) for v in all_ids]
 
@@ -195,7 +201,9 @@ class ReplenishmentView(APIView):
         avg30_map = {r["variant_id"]: r["avg_sales_per_day"] for r in avg30}
 
         # Variant metadata
-        variants = ProductVariant.objects.filter(id__in=all_ids).select_related("product")
+        variants = ProductVariant.objects.filter(
+            id__in=all_ids, company=request.user.profile.company
+        ).select_related("product")
 
         results = []
         for v in variants:

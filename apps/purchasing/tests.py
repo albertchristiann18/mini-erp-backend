@@ -7,7 +7,7 @@ from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 from rest_framework import status
-from rest_framework.test import APIClient
+from rest_framework.test import APIClient, APITestCase
 
 from apps.inventory.factories import (
     CategoryFactory,
@@ -31,12 +31,19 @@ class PurchaseOrderAPITest(TestCase):
     """API test cases for Purchase Orders"""
 
     def setUp(self):
+        from core.models import UserProfile
+
         self.client = APIClient()
         self.company = CompanyFactory()
         self.warehouse = WarehouseFactory(company=self.company)
         self.category = CategoryFactory(company=self.company)
         self.product = ProductFactory(category=self.category, company=self.company)
         self.product_variant = ProductVariantFactory(product=self.product)
+        self.user = User.objects.create_user(
+            username="po_test_user", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
 
     def test_get_single_po_with_details(self):
         """Get 1 PO and the details"""
@@ -1784,9 +1791,16 @@ class ForecastFieldsTest(TestCase):
     """Tests for forecast fields and commission_fee_rmb on PurchaseOrder."""
 
     def setUp(self):
+        from core.models import UserProfile
+
         self.client = APIClient()
         self.company = CompanyFactory()
         self.warehouse = WarehouseFactory(company=self.company)
+        self.user = User.objects.create_user(
+            username="forecast_test_user", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
 
     def test_forecast_fields_default_null(self):
         """All 4 new fields should be None when creating a PO via factory."""
@@ -1831,11 +1845,14 @@ class POListSerializerExpansionTest(TestCase):
     """Tests for expanded PurchaseOrderListSerializer fields and filters"""
 
     def setUp(self):
+        from core.models import UserProfile
+
         self.client = APIClient()
         self.company = CompanyFactory()
         self.warehouse = WarehouseFactory(company=self.company)
 
         user = User.objects.create_user(username="staff", password="password", is_staff=True)
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
         self.client.force_authenticate(user=user)
 
     def test_list_includes_cost_ratio_cogs(self):
@@ -1925,10 +1942,48 @@ class POListSerializerExpansionTest(TestCase):
         self.assertNotIn(str(po2.id), result_ids)
 
 
+class CompanyScopedViewsTest(APITestCase):
+    """Tests for company-scoped data isolation in purchasing views."""
+
+    def setUp(self):
+        self.company_a = CompanyFactory()
+        self.company_b = CompanyFactory()
+        self.user_a = User.objects.create_user(
+            username="po_user_a", password="password", is_staff=True
+        )
+        self.user_b = User.objects.create_user(
+            username="po_user_b", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+        UserProfile.objects.create(user=self.user_a, company=self.company_a, role="admin")
+        UserProfile.objects.create(user=self.user_b, company=self.company_b, role="admin")
+
+        self.warehouse_a = WarehouseFactory(company=self.company_a)
+        self.warehouse_b = WarehouseFactory(company=self.company_b)
+
+        self.po_a = PurchaseOrderFactory(warehouse=self.warehouse_a, company=self.company_a)
+        self.po_b = PurchaseOrderFactory(warehouse=self.warehouse_b, company=self.company_b)
+
+    def test_purchase_order_list_scoped_by_company(self):
+        self.client.force_authenticate(user=self.user_a)
+        response = self.client.get("/purchase-order/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [po["id"] for po in response.data["results"]]
+        self.assertIn(str(self.po_a.id), ids)
+        self.assertNotIn(str(self.po_b.id), ids)
+
+    def test_replenishment_scoped_by_company(self):
+        self.client.force_authenticate(user=self.user_a)
+        response = self.client.get("/replenishment/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+
 class ReplenishmentViewTest(TestCase):
     """Tests for the replenishment planning endpoint."""
 
     def setUp(self):
+        from core.models import UserProfile
+
         self.client = APIClient()
         self.user = User.objects.create_user(
             username="replenishment_staff",
@@ -1937,6 +1992,7 @@ class ReplenishmentViewTest(TestCase):
         )
         self.client.force_authenticate(user=self.user)
         self.company = CompanyFactory()
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
         self.warehouse = WarehouseFactory(company=self.company)
         self.category = CategoryFactory(company=self.company)
         self.product = ProductFactory(category=self.category, company=self.company)

@@ -35,11 +35,13 @@ class CategoryViewSet(viewsets.ModelViewSet):
 
 
 class ProductViewSet(viewsets.ModelViewSet):
-    queryset = Product.objects.filter(is_active=True).all()
+    queryset = Product.objects.none()
     permission_classes = [IsStaffOrReadOnly]
 
     def get_queryset(self) -> QuerySet[Product]:
-        qs = Product.objects.filter(is_active=True)
+        if not self.request.user.is_authenticated:
+            return Product.objects.none()
+        qs = Product.objects.filter(is_active=True, company=self.request.user.profile.company)
         search = self.request.query_params.get("search")
         if search:
             qs = qs.filter(models.Q(name__icontains=search) | models.Q(sku_code__icontains=search))
@@ -206,9 +208,11 @@ class ProductVariantStockViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self) -> QuerySet:
         from apps.inventory.models import ProductVariant
 
-        qs = ProductVariant.objects.filter(is_active=True).select_related(
-            "product", "product__category"
-        )
+        if not self.request.user.is_authenticated:
+            return ProductVariant.objects.none()
+        qs = ProductVariant.objects.filter(
+            is_active=True, company=self.request.user.profile.company
+        ).select_related("product", "product__category")
         search = self.request.query_params.get("search")
         if search:
             from django.db import models as db_models
@@ -371,6 +375,13 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class WarehouseViewSet(viewsets.ModelViewSet):
-    queryset = Warehouse.objects.filter(is_active=True).all()
+    queryset = Warehouse.objects.none()
     serializer_class = WarehouseSerializer
     permission_classes = [IsStaffOrReadOnly]
+
+    def get_queryset(self) -> QuerySet:
+        if not self.request.user.is_authenticated:
+            return Warehouse.objects.none()
+        return Warehouse.objects.filter(
+            is_active=True, company=self.request.user.profile.company
+        )
