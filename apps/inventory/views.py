@@ -1,7 +1,7 @@
-from typing import Any, Type
+from typing import Any, Type, cast
 
 from django.db import models, transaction
-from django.db.models import QuerySet
+from django.db.models import Prefetch, QuerySet
 from django.shortcuts import get_object_or_404
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -13,7 +13,14 @@ from rest_framework.serializers import Serializer
 from rest_framework.views import APIView
 
 from apps.inventory.constants.categories import MASTER_CATEGORY
-from apps.inventory.models import Category, Product, ProductPhoto, StockMovement, Warehouse
+from apps.inventory.models import (
+    Category,
+    Product,
+    ProductPhoto,
+    ProductVariant,
+    StockMovement,
+    Warehouse,
+)
 from apps.inventory.serializers import (
     CategorySerializer,
     ProductCreateSerializer,
@@ -334,6 +341,94 @@ class AvgSalesView(APIView):
         )
 
 
+class InventorySummaryView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request) -> Response:
+        company = request.user.profile.company
+
+        warehouses = list(
+            Warehouse.objects.filter(is_active=True, company=company).order_by("name")
+        )
+
+        products = (
+            Product.objects.filter(is_active=True, company=company)
+            .order_by("sku_code")
+            .prefetch_related(
+                Prefetch(
+                    "variants",
+                    queryset=ProductVariant.objects.filter(is_active=True)
+                    .order_by("sku_variant_code")
+                    .prefetch_related("warehouse_stocks"),
+                    to_attr="active_variants",
+                ),
+                Prefetch(
+                    "photos",
+                    queryset=ProductPhoto.objects.filter(is_primary=True),
+                    to_attr="primary_photos",
+                ),
+            )
+        )
+
+        total_cogs_stock = 0
+        total_selling_price = 0
+        total_variants = 0
+
+        product_list = []
+        for product in products:
+            variant_list = []
+            for _v in product.active_variants:
+                v = cast(ProductVariant, _v)
+                pvw_list = list(v.warehouse_stocks.all())
+                total_qty = sum(pvw.physical_qty for pvw in pvw_list)
+                warehouse_stocks = {str(pvw.warehouse_id): pvw.physical_qty for pvw in pvw_list}  # type: ignore[attr-defined]
+                total_cogs_stock += v.current_cogs * total_qty
+                total_selling_price += v.base_price * total_qty
+                total_variants += 1
+                variant_list.append(
+                    {
+                        "variant_id": str(v.id),
+                        "sku_variant_code": v.sku_variant_code,
+                        "variant_name": v.name,
+                        "variant_values": v.variant_values,
+                        "total_qty": total_qty,
+                        "warehouse_stocks": warehouse_stocks,
+                        "current_cogs": v.current_cogs,
+                        "base_price": v.base_price,
+                    }
+                )
+
+            primary_photo = cast(
+                ProductPhoto | None, product.primary_photos[0] if product.primary_photos else None
+            )
+            product_list.append(
+                {
+                    "product_id": str(product.id),
+                    "product_name": product.name,
+                    "sku_code": product.sku_code,
+                    "photo_url": (
+                        request.build_absolute_uri(primary_photo.image.url)
+                        if primary_photo
+                        else None
+                    ),
+                    "variants": variant_list,
+                }
+            )
+
+        return Response(
+            {
+                "warehouses": [{"id": str(w.id), "name": w.name} for w in warehouses],
+                "products": product_list,
+                "summary": {
+                    "total_cogs_stock": total_cogs_stock,
+                    "total_selling_price": total_selling_price,
+                    "total_products": len(product_list),
+                    "total_variants": total_variants,
+                },
+            }
+        )
+
+
 class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = StockMovementSerializer
     permission_classes = [IsAuthenticated]
@@ -382,6 +477,4 @@ class WarehouseViewSet(viewsets.ModelViewSet):
     def get_queryset(self) -> QuerySet:
         if not self.request.user.is_authenticated:
             return Warehouse.objects.none()
-        return Warehouse.objects.filter(
-            is_active=True, company=self.request.user.profile.company
-        )
+        return Warehouse.objects.filter(is_active=True, company=self.request.user.profile.company)

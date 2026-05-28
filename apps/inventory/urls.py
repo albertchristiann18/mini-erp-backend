@@ -5,6 +5,7 @@ from apps.inventory import views
 
 urlpatterns = [
     path("avg-sales/", views.AvgSalesView.as_view(), name="inventory-avg-sales"),
+    path("inventory-summary/", views.InventorySummaryView.as_view(), name="inventory-summary"),
 ]
 
 router = DefaultRouter()

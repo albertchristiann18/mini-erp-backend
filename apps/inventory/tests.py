@@ -3,7 +3,9 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework import status
@@ -23,6 +25,7 @@ from apps.inventory.factories import (
 from apps.inventory.models import (
     Product,
     ProductCogs,
+    ProductPhoto,
     ProductVariant,
     ProductVariantMarketplace,
     ProductVariantWarehouse,
@@ -1201,6 +1204,7 @@ class CompanyScopedViewsTest(APITestCase):
             username="user_b", password="password", is_staff=True
         )
         from core.models import UserProfile
+
         UserProfile.objects.create(user=self.user_a, company=self.company_a, role="admin")
         UserProfile.objects.create(user=self.user_b, company=self.company_b, role="admin")
 
@@ -1210,11 +1214,19 @@ class CompanyScopedViewsTest(APITestCase):
         self.category_a = CategoryFactory(company=self.company_a)
         self.category_b = CategoryFactory(company=self.company_b)
 
-        self.product_a = ProductFactory(company=self.company_a, category=self.category_a, is_active=True)
-        self.product_b = ProductFactory(company=self.company_b, category=self.category_b, is_active=True)
+        self.product_a = ProductFactory(
+            company=self.company_a, category=self.category_a, is_active=True
+        )
+        self.product_b = ProductFactory(
+            company=self.company_b, category=self.category_b, is_active=True
+        )
 
-        self.variant_a = ProductVariantFactory(product=self.product_a, company=self.company_a, is_active=True)
-        self.variant_b = ProductVariantFactory(product=self.product_b, company=self.company_b, is_active=True)
+        self.variant_a = ProductVariantFactory(
+            product=self.product_a, company=self.company_a, is_active=True
+        )
+        self.variant_b = ProductVariantFactory(
+            product=self.product_b, company=self.company_b, is_active=True
+        )
 
     def test_warehouse_list_scoped_by_company(self):
         self.client.force_authenticate(user=self.user_a)
@@ -1328,6 +1340,241 @@ class AvgSalesViewTest(APITestCase):
         response = self.client.get(f"/avg-sales/?days=7&variant_ids={variant.id}")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["results"][0]["avg_sales_per_day"], 1.0)
+
+
+class InventorySummaryAPITest(APITestCase):
+    """Tests for GET /api/inventory/inventory-summary/ endpoint"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.company = CompanyFactory()
+        self.other_company = CompanyFactory()
+        self.user = User.objects.create_user(
+            username="inventory_user", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+        self.warehouse = WarehouseFactory(company=self.company, is_active=True)
+        self.other_warehouse = WarehouseFactory(company=self.other_company, is_active=True)
+
+    def test_returns_products_scoped_to_company(self):
+        """Company A sees only its own products."""
+        category_a = CategoryFactory(company=self.company)
+        product_a = ProductFactory(company=self.company, category=category_a, is_active=True)
+        variant_a1 = ProductVariantFactory(
+            product=product_a,
+            company=self.company,
+            is_active=True,
+            current_cogs=50000,
+            base_price=100000,
+            variant_values={"1": "Navy"},
+        )
+        variant_a2 = ProductVariantFactory(
+            product=product_a,
+            company=self.company,
+            is_active=True,
+            current_cogs=60000,
+            base_price=120000,
+            variant_values={"1": "Red"},
+        )
+        ProductVariantWarehouseFactory(
+            product_variant=variant_a1,
+            warehouse=self.warehouse,
+            company=self.company,
+            physical_qty=10,
+        )
+        ProductVariantWarehouseFactory(
+            product_variant=variant_a2,
+            warehouse=self.warehouse,
+            company=self.company,
+            physical_qty=5,
+        )
+
+        category_b = CategoryFactory(company=self.other_company)
+        product_b = ProductFactory(company=self.other_company, category=category_b, is_active=True)
+        variant_b = ProductVariantFactory(
+            product=product_b,
+            company=self.other_company,
+            is_active=True,
+            variant_values={"1": "Blue"},
+        )
+        ProductVariantWarehouseFactory(
+            product_variant=variant_b,
+            warehouse=self.other_warehouse,
+            company=self.other_company,
+            physical_qty=3,
+        )
+
+        response = self.client.get("/inventory-summary/")
+        self.assertEqual(response.status_code, 200)
+
+        product_ids = [p["product_id"] for p in response.data["products"]]
+        self.assertIn(str(product_a.id), product_ids)
+        self.assertNotIn(str(product_b.id), product_ids)
+
+        self.assertIn("warehouses", response.data)
+        self.assertIn("products", response.data)
+        self.assertIn("summary", response.data)
+
+    def test_variant_includes_warehouse_stocks(self):
+        """Variant response includes warehouse_stocks dict and total_qty."""
+        category = CategoryFactory(company=self.company)
+        product = ProductFactory(company=self.company, category=category, is_active=True)
+        variant = ProductVariantFactory(
+            product=product,
+            company=self.company,
+            is_active=True,
+            current_cogs=50000,
+            base_price=100000,
+        )
+        warehouse2 = WarehouseFactory(company=self.company, is_active=True)
+
+        ProductVariantWarehouseFactory(
+            product_variant=variant,
+            warehouse=self.warehouse,
+            company=self.company,
+            physical_qty=7,
+        )
+        ProductVariantWarehouseFactory(
+            product_variant=variant,
+            warehouse=warehouse2,
+            company=self.company,
+            physical_qty=3,
+        )
+
+        response = self.client.get("/inventory-summary/")
+        self.assertEqual(response.status_code, 200)
+
+        variant_data = response.data["products"][0]["variants"][0]
+        self.assertEqual(variant_data["total_qty"], 10)
+        self.assertIn(str(self.warehouse.id), variant_data["warehouse_stocks"])
+        self.assertIn(str(warehouse2.id), variant_data["warehouse_stocks"])
+        self.assertEqual(variant_data["warehouse_stocks"][str(self.warehouse.id)], 7)
+        self.assertEqual(variant_data["warehouse_stocks"][str(warehouse2.id)], 3)
+
+    def test_summary_totals(self):
+        """Summary totals are computed correctly from current_cogs * total_qty."""
+        category = CategoryFactory(company=self.company)
+        product = ProductFactory(company=self.company, category=category, is_active=True)
+        variant = ProductVariantFactory(
+            product=product,
+            company=self.company,
+            is_active=True,
+            current_cogs=100000,
+            base_price=200000,
+        )
+        ProductVariantWarehouseFactory(
+            product_variant=variant,
+            warehouse=self.warehouse,
+            company=self.company,
+            physical_qty=5,
+        )
+
+        response = self.client.get("/inventory-summary/")
+        self.assertEqual(response.status_code, 200)
+
+        summary = response.data["summary"]
+        self.assertEqual(summary["total_cogs_stock"], 500000)
+        self.assertEqual(summary["total_selling_price"], 1000000)
+
+    def test_unauthenticated_returns_403(self):
+        """Unauthenticated request returns 403."""
+        with patch.object(IsAuthenticatedPermission, "has_permission", _real_auth_has_permission):
+            client = APIClient()
+            response = client.get("/inventory-summary/")
+            self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_photo_url_is_none_when_no_photo(self):
+        """Product without photo returns null photo_url."""
+        category = CategoryFactory(company=self.company)
+        product = ProductFactory(
+            company=self.company,
+            category=category,
+            is_active=True,
+            product_photo=None,
+        )
+        ProductVariantFactory(
+            product=product,
+            company=self.company,
+            is_active=True,
+            current_cogs=10000,
+            base_price=20000,
+        )
+
+        response = self.client.get("/inventory-summary/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.data["products"][0]["photo_url"])
+
+    def test_photo_url_uses_primary_photo_from_gallery(self):
+        """Photo URL comes from the primary ProductPhoto gallery, not legacy product_photo."""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        category = CategoryFactory(company=self.company)
+        product = ProductFactory(
+            company=self.company,
+            category=category,
+            is_active=True,
+            product_photo=None,
+        )
+        ProductVariantFactory(
+            product=product,
+            company=self.company,
+            is_active=True,
+            current_cogs=10000,
+            base_price=20000,
+        )
+        ProductPhoto.objects.create(
+            product=product,
+            company=self.company,
+            image=SimpleUploadedFile("primary_test.jpg", b"x"),
+            is_primary=True,
+            order=0,
+        )
+
+        response = self.client.get("/inventory-summary/")
+        self.assertEqual(response.status_code, 200)
+        photo_url = response.data["products"][0]["photo_url"]
+        self.assertIsNotNone(photo_url)
+        self.assertIn("primary_test.jpg", photo_url)
+
+    def test_no_n1_queries(self):
+        """Number of queries is bounded (no N+1)."""
+        category = CategoryFactory(company=self.company)
+        warehouse2 = WarehouseFactory(company=self.company, is_active=True)
+        products = ProductFactory.create_batch(
+            3, company=self.company, category=category, is_active=True
+        )
+        value_keys = ["1", "2"]
+        for p_idx, product in enumerate(products):
+            for v_idx in range(2):
+                variant = ProductVariantFactory(
+                    product=product,
+                    company=self.company,
+                    is_active=True,
+                    current_cogs=10000,
+                    base_price=20000,
+                    variant_values={value_keys[v_idx]: f"VAL{p_idx}{v_idx}"},
+                )
+                ProductVariantWarehouseFactory(
+                    product_variant=variant,
+                    warehouse=self.warehouse,
+                    company=self.company,
+                    physical_qty=5,
+                )
+                ProductVariantWarehouseFactory(
+                    product_variant=variant,
+                    warehouse=warehouse2,
+                    company=self.company,
+                    physical_qty=5,
+                )
+
+        with CaptureQueriesContext(connection) as ctx:
+            response = self.client.get("/inventory-summary/")
+            self.assertEqual(response.status_code, 200)
+            self.assertLessEqual(len(ctx), 8)
 
 
 class EdgeCaseInventoryTests(TestCase):
