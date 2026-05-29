@@ -69,6 +69,21 @@ class PurchaseOrderAPITest(TestCase):
         # Default ordering is -cdate (newest first), so po2 comes first
         self.assertEqual(response.data["results"][0]["id"], str(po2.id))
 
+    def test_delivery_fee_idr_in_list_response(self):
+        """delivery_fee_idr should be delivery_fee * exchange_rate in list response"""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            delivery_fee=300,
+            exchange_rate=2250,
+        )
+
+        response = self.client.get("/purchase-order/", format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        po_data = next(r for r in response.data["results"] if r["id"] == str(po.id))
+        self.assertEqual(po_data["delivery_fee_idr"], 675000)
+
     def test_create_po(self):
         """Create a PO"""
         payload = {

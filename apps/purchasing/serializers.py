@@ -117,6 +117,7 @@ class PurchaseOrderListSerializer(serializers.ModelSerializer):
     company_name = serializers.CharField(source="company.name", read_only=True)
     cost_ratio_cogs = serializers.SerializerMethodField()
     shipping_per_qty = serializers.SerializerMethodField()
+    delivery_fee_idr = serializers.SerializerMethodField()
 
     class Meta:
         model = PurchaseOrder
@@ -143,6 +144,7 @@ class PurchaseOrderListSerializer(serializers.ModelSerializer):
             "total_amount",
             "cost_ratio_cogs",
             "shipping_per_qty",
+            "delivery_fee_idr",
             "cdate",
             "udate",
         ]
@@ -153,6 +155,12 @@ class PurchaseOrderListSerializer(serializers.ModelSerializer):
 
     def get_shipping_per_qty(self, obj: PurchaseOrder) -> int:
         return obj.get_shipping_per_qty()
+
+    def get_delivery_fee_idr(self, obj: PurchaseOrder) -> int:
+        from decimal import Decimal
+        delivery_fee = obj.delivery_fee or Decimal("0")
+        exchange_rate = obj.exchange_rate or Decimal("0")
+        return int(round(Decimal(str(delivery_fee)) * Decimal(str(exchange_rate))))
 
 
 class PurchaseOrderCreateSerializer(serializers.ModelSerializer):
