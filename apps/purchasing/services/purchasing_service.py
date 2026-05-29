@@ -1,7 +1,6 @@
 import logging
 from datetime import datetime
 from decimal import Decimal
-from typing import Dict, List
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
@@ -22,7 +21,7 @@ class PurchaseOrderService:
     Handles creation, updates, and inventory-related logic.
     """
 
-    STATUS_TRANSITIONS: Dict[str, List[str]] = {
+    STATUS_TRANSITIONS: dict[str, list[str]] = {
         PurchaseOrder.POStatus.DRAFT: [PurchaseOrder.POStatus.ORDERED],
         PurchaseOrder.POStatus.ORDERED: [
             PurchaseOrder.POStatus.SHIPPED,
@@ -257,6 +256,7 @@ class PurchaseOrderService:
 
         elif new_status == PurchaseOrder.POStatus.DELIVERED:
             for item in order_details:
+                detail_id = item.get("id")
                 receive_date_str = item.get("received_date")
                 received_qty = item.get("received_qty", 0)
                 ordered_qty = item.get("ordered_qty", 0)
@@ -276,6 +276,11 @@ class PurchaseOrderService:
                 if qty_is_zero:
                     continue
 
+                existing_detail_obj = existing_details_map.get(detail_id) if detail_id else None
+                discounted_total_price_base = 0
+                if existing_detail_obj:
+                    discounted_total_price_base = existing_detail_obj.discounted_total_price_base or 0
+
                 inventory_data.append(
                     {
                         "product_variant_id": product_variant_id,
@@ -285,6 +290,7 @@ class PurchaseOrderService:
                         "unit_price_base": item.get("unit_price_base"),
                         "unit_price_foreign": item.get("unit_price_foreign"),
                         "discounted_unit_price_foreign": item.get("discounted_unit_price_foreign"),
+                        "discounted_total_price_base": discounted_total_price_base,
                         "exchange_rate": po.exchange_rate,
                         "note": f"Stock movement for PO {po.purchase_order_number} inbound",
                     }
@@ -334,7 +340,7 @@ class PurchaseOrderService:
 
         updated_fields = ["udate"]
         for attr, value in data.items():
-            if attr != "id":
+            if attr not in ("id", "_purchase_order"):
                 updated_fields.append(attr)
                 setattr(po, attr, value)
         po.save(update_fields=updated_fields)
@@ -377,6 +383,12 @@ class PurchaseOrderService:
                 else:
                     continue
 
+                detail_id = item.get("id")
+                existing_detail_obj = existing_details_map.get(detail_id) if detail_id else None
+                discounted_total_price_base = 0
+                if existing_detail_obj:
+                    discounted_total_price_base = existing_detail_obj.discounted_total_price_base or 0
+
                 inventory_data.append(
                     {
                         "product_variant_id": product_variant_id,
@@ -386,6 +398,7 @@ class PurchaseOrderService:
                         "unit_price_base": item.get("unit_price_base"),
                         "unit_price_foreign": item.get("unit_price_foreign"),
                         "discounted_unit_price_foreign": item.get("discounted_unit_price_foreign"),
+                        "discounted_total_price_base": discounted_total_price_base,
                         "exchange_rate": po.exchange_rate,
                         "note": f"Stock movement for PO {po.purchase_order_number} inbound",
                     }
@@ -491,19 +504,20 @@ class PurchaseOrderService:
         total_ordered_qty = 0
         total_received_qty = 0
         total_item_amount = 0
+        total_item_rmb = Decimal("0")
 
         for detail in po.order_details.all():
             total_ordered_qty += detail.ordered_qty or 0
             total_received_qty += detail.received_qty or 0
             total_item_amount += detail.discounted_total_price_base or 0
+            total_item_rmb += Decimal(str(detail.discounted_total_price_foreign or 0))
 
         exchange_rate = Decimal(str(po.exchange_rate or 0))
         commission_fee_pct = Decimal(str(po.commission_fee_pct or 0))
-        delivery_fee = Decimal(str(po.delivery_fee or 0))
         shipping_fee_per_cbm = Decimal(str(po.shipping_fee_per_cbm or 0))
         cbm = Decimal(str(po.cbm or 0))
 
-        commission_fee = int(round(commission_fee_pct * delivery_fee * exchange_rate))
+        commission_fee = int(round(commission_fee_pct / Decimal("100") * total_item_rmb * exchange_rate))
         shipping_fee = int(round(shipping_fee_per_cbm * cbm))
         procure_amount = shipping_fee + commission_fee
         total_order_amount = total_item_amount + commission_fee

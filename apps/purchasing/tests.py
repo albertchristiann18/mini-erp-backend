@@ -17,12 +17,13 @@ from apps.inventory.factories import (
     ProductVariantWarehouseFactory,
 )
 from apps.inventory.models import ProductCogs, ProductVariantWarehouse
+from apps.inventory.services.inventory_service import InventoryService
 from apps.purchasing.factories import (
     PurchaseOrderDetailFactory,
     PurchaseOrderFactory,
 )
 from apps.purchasing.models import PurchaseOrder
-from apps.purchasing.serializers import PurchaseOrderUpdateSerializer
+from apps.purchasing.serializers import PurchaseOrderReadSerializer, PurchaseOrderUpdateSerializer
 from apps.purchasing.services.purchasing_service import PurchaseOrderService
 from core.factories import WarehouseFactory
 
@@ -1070,6 +1071,79 @@ class PurchaseOrderServiceTest(TestCase):
         self.assertEqual(po.total_order_amount, 440000)
         self.assertEqual(po.total_amount, 440000)
 
+    def test_commission_fee_uses_total_item_rmb(self):
+        """Commission fee = commission_fee_pct / 100 * sum(discounted_total_price_foreign) * exchange_rate."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DRAFT,
+            commission_fee_pct=5,
+            delivery_fee=Decimal("0"),
+            cbm=Decimal("0"),
+            shipping_fee_per_cbm=0,
+            exchange_rate=2200,
+        )
+        PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            ordered_qty=10,
+            unit_price_foreign=Decimal("10"),
+            discounted_unit_price_foreign=Decimal("10"),
+            discounted_total_price_foreign=Decimal("100"),  # 10 * 10
+            discounted_total_price_base=220000,
+        )
+        product2 = ProductFactory(category=self.category, company=self.company)
+        product_variant2 = ProductVariantFactory(product=product2)
+        PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=product_variant2,
+            ordered_qty=5,
+            unit_price_foreign=Decimal("20"),
+            discounted_unit_price_foreign=Decimal("20"),
+            discounted_total_price_foreign=Decimal("100"),  # 20 * 5
+            discounted_total_price_base=220000,
+        )
+
+        po = self.service.update_purchase_order(po, {})
+
+        po.refresh_from_db()
+        expected_commission = int(round(Decimal("5") / Decimal("100") * Decimal("200") * Decimal("2200")))  # 5/100 * 200 * 2200 = 22000
+        self.assertEqual(po.commission_fee, expected_commission)
+
+    def test_cost_ratio_cogs_formula(self):
+        """cost_ratio_cogs = (delivery_fee_idr + commission_fee + shipping_fee) / total_item_amount * 100."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DRAFT,
+            delivery_fee=Decimal("50"),
+            commission_fee=50000,
+            shipping_fee=25000,
+            exchange_rate=2200,
+            total_item_amount=1000000,
+        )
+
+        ratio = po.cost_ratio_cogs()
+        expected = (Decimal("50") * 2200 + 50000 + 25000) / Decimal("1000000") * 100
+        self.assertEqual(ratio, round(expected, 2))
+
+    def test_read_serializer_includes_cost_ratio_cogs(self):
+        """ReadSerializer should include cost_ratio_cogs and shipping_per_qty fields."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            shipping_fee=1000,
+            total_ordered_qty=100,
+            delivery_fee=Decimal("50"),
+            commission_fee=50000,
+            exchange_rate=2200,
+            total_item_amount=1000000,
+        )
+
+        serializer = PurchaseOrderReadSerializer(po)
+        self.assertIn("cost_ratio_cogs", serializer.data)
+        self.assertIn("shipping_per_qty", serializer.data)
+
 
 class PurchaseOrderSerializerValidationTest(TestCase):
     """Test cases for PurchaseOrderUpdateSerializer validation"""
@@ -1976,6 +2050,122 @@ class CompanyScopedViewsTest(APITestCase):
         self.client.force_authenticate(user=self.user_a)
         response = self.client.get("/replenishment/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+
+class CogsAllocationEdgeCaseTests(TestCase):
+    """Tests for COGS allocation zero-guard edge cases (Phase Cogs Fix)."""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(category=self.category, company=self.company)
+        self.product_variant = ProductVariantFactory(product=self.product)
+        self.inventory_service = InventoryService()
+
+    def _build_cogs_data(self, variant, ordered_qty=10, received_qty=10, **kwargs):
+        data = {
+            "product_variant_id": str(variant.id),
+            "ordered_qty": ordered_qty,
+            "received_qty": received_qty,
+            "updated_qty": 0,
+            "unit_price_foreign": 10,
+            "discounted_unit_price_foreign": 10,
+            "discounted_total_price_base": 220000,
+            "exchange_rate": 2200,
+        }
+        data.update(kwargs)
+        return [data]
+
+    def test_zero_total_item_amount_delivery_and_commission_zero(self):
+        """Test A: zero total_item_amount -> delivery and commission allocations are 0."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DELIVERED,
+            shipping_fee=50000,
+            delivery_fee=Decimal("10"),
+            exchange_rate=2200,
+            total_item_amount=0,
+            commission_fee=10000,
+        )
+        data = self._build_cogs_data(
+            self.product_variant,
+            discounted_total_price_base=0,
+        )
+        self.inventory_service.update_cogs_on_po(
+            po, PurchaseOrder.POStatus.DELIVERED, data
+        )
+        cogs = ProductCogs.objects.get(
+            product_variant=self.product_variant,
+            warehouse=self.warehouse,
+            reference_number=po.purchase_order_number,
+        )
+        self.assertEqual(cogs.allocated_delivery_fee, 0)
+        self.assertEqual(cogs.allocated_commission_fee, 0)
+        self.assertEqual(cogs.allocated_shipping_fee, 0)
+
+    def test_zero_product_dimensions_shipping_allocation_zero(self):
+        """Test B: all product dimensions are 0 -> total CBM is 0 -> shipping allocation is 0."""
+        zero_dim_product = ProductFactory(
+            category=self.category,
+            company=self.company,
+            length=0,
+            width=0,
+            height=0,
+        )
+        zero_dim_variant = ProductVariantFactory(product=zero_dim_product)
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DELIVERED,
+            shipping_fee=50000,
+            delivery_fee=Decimal("0"),
+            exchange_rate=2200,
+            total_item_amount=220000,
+            commission_fee=0,
+        )
+        data = self._build_cogs_data(zero_dim_variant)
+        self.inventory_service.update_cogs_on_po(
+            po, PurchaseOrder.POStatus.DELIVERED, data
+        )
+        cogs = ProductCogs.objects.get(
+            product_variant=zero_dim_variant,
+            warehouse=self.warehouse,
+            reference_number=po.purchase_order_number,
+        )
+        self.assertEqual(cogs.allocated_shipping_fee, 0)
+        unit_price_idr = Decimal("10") * Decimal("2200")
+        expected_cogs = int(unit_price_idr)
+        self.assertEqual(cogs.cogs_amount, expected_cogs)
+
+    def test_zero_commission_fee_commission_allocation_zero(self):
+        """Test C: commission_fee_pct=0 -> allocated_commission_fee is 0."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DELIVERED,
+            commission_fee_pct=0,
+            commission_fee=0,
+            delivery_fee=Decimal("5"),
+            exchange_rate=2200,
+            shipping_fee=30000,
+            total_item_amount=220000,
+        )
+        data = self._build_cogs_data(self.product_variant)
+        self.inventory_service.update_cogs_on_po(
+            po, PurchaseOrder.POStatus.DELIVERED, data
+        )
+        cogs = ProductCogs.objects.get(
+            product_variant=self.product_variant,
+            warehouse=self.warehouse,
+            reference_number=po.purchase_order_number,
+        )
+        self.assertEqual(cogs.allocated_commission_fee, 0)
+        unit_price_idr = int(Decimal("10") * Decimal("2200"))
+        delivery_per_unit = int(int(Decimal("5") * Decimal("2200")) / 10)
+        expected_cogs = unit_price_idr + delivery_per_unit
+        self.assertEqual(cogs.cogs_amount, expected_cogs)
 
 
 class ReplenishmentViewTest(TestCase):

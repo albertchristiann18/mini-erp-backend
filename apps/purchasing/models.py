@@ -89,10 +89,12 @@ class PurchaseOrder(DefaultModel):
         return int(round(self.shipping_fee / self.total_ordered_qty))
 
     def cost_ratio_cogs(self) -> Decimal:
-        if self.procure_amount and self.total_item_amount and self.shipping_fee:
-            val = (self.procure_amount + self.shipping_fee) / self.total_item_amount * 100.0
+        if self.total_item_amount and self.total_item_amount > 0:
+            delivery_fee_idr = Decimal(str(self.delivery_fee or 0)) * Decimal(str(self.exchange_rate or 0))
+            commission = Decimal(str(self.commission_fee or 0))
+            shipping = Decimal(str(self.shipping_fee or 0))
+            val = (delivery_fee_idr + commission + shipping) / Decimal(str(self.total_item_amount)) * 100
             return round_decimal(val)
-
         return Decimal("0.0")
 
 

@@ -921,7 +921,7 @@ class InventoryServiceCOGSUpdateTest(TestCase):
         self.assertEqual(ProductCogs.objects.count(), 0)
 
     def test_update_cogs_on_po_with_allocated_shipping_and_delivery_fees_single_item(self):
-        """Test COGS includes allocated shipping and delivery fees per unit for single item."""
+        """Test COGS includes allocated shipping, delivery, and commission fees for single item."""
         product = self.product_variant.product
         product.length = 10
         product.width = 10
@@ -941,6 +941,8 @@ class InventoryServiceCOGSUpdateTest(TestCase):
             cbm=cbm,
             shipping_fee=shipping_fee,
             delivery_fee=Decimal("100.5"),
+            commission_fee=22000,
+            total_item_amount=220000,
         )
 
         data = [
@@ -950,6 +952,7 @@ class InventoryServiceCOGSUpdateTest(TestCase):
                 "received_qty": 10,
                 "updated_qty": 0,
                 "unit_price_foreign": Decimal("10"),
+                "discounted_total_price_base": 220000,
             }
         ]
 
@@ -970,15 +973,19 @@ class InventoryServiceCOGSUpdateTest(TestCase):
         self.assertEqual(cogs.remaining_qty, 10)
 
         unit_price_idr = 10 * 2200
-        allocated_shipping = 1000
-        allocated_delivery = int(100.5 * 2200)
-        total_allocated = allocated_shipping + allocated_delivery
-        shipping_per_unit = total_allocated / 10
-        expected_cogs = unit_price_idr + shipping_per_unit
+        # Single item: all fees allocated to this item
+        allocated_shipping = shipping_fee  # 1000
+        allocated_delivery = int(Decimal("100.5") * 2200)  # 221100
+        allocated_commission = 22000
+        shipping_per_unit = allocated_shipping / 10
+        delivery_per_unit = allocated_delivery / 10
+        commission_per_unit = allocated_commission / 10
+        expected_cogs = int(unit_price_idr + shipping_per_unit + delivery_per_unit + commission_per_unit)
 
         self.assertEqual(cogs.cogs_amount, expected_cogs)
         self.assertEqual(cogs.allocated_shipping_fee, allocated_shipping)
         self.assertEqual(cogs.allocated_delivery_fee, allocated_delivery)
+        self.assertEqual(cogs.allocated_commission_fee, allocated_commission)
 
     def test_update_cogs_on_po_with_allocated_fees_multiple_items_same_volume(self):
         """Test COGS with multiple items sharing shipping fees equally when same LxWxH."""
@@ -1192,6 +1199,239 @@ class InventoryServiceCOGSUpdateTest(TestCase):
         self.assertIsNotNone(cogs)
         self.assertEqual(cogs.original_qty, 30)
         self.assertEqual(cogs.remaining_qty, 30)
+
+    def test_cogs_cbm_proportional_shipping(self):
+        """2 items with different CBM: shipping allocated proportionally by CBM, delivery+commission by value."""
+        product1 = self.product_variant.product
+        product1.length = 10
+        product1.width = 10
+        product1.height = 10
+        product1.save()
+
+        product2 = ProductFactory(
+            category=self.category, company=self.company, length=20, width=20, height=20
+        )
+        product_variant2 = ProductVariantFactory(product=product2)
+        ProductVariantWarehouseFactory(
+            product_variant=product_variant2, warehouse=self.warehouse, company=self.company
+        )
+
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.SHIPPED,
+            exchange_rate=2200,
+            shipping_fee=10000,
+            shipping_fee_per_cbm=100000,
+            cbm=Decimal("0.09"),
+            delivery_fee=Decimal("50"),
+            commission_fee=22000,
+            total_item_amount=660000,
+        )
+
+        data = [
+            {
+                "product_variant_id": str(self.product_variant.id),
+                "ordered_qty": 10,
+                "received_qty": 10,
+                "updated_qty": 0,
+                "unit_price_foreign": Decimal("10"),
+                "discounted_total_price_base": 220000,
+            },
+            {
+                "product_variant_id": str(product_variant2.id),
+                "ordered_qty": 10,
+                "received_qty": 10,
+                "updated_qty": 0,
+                "unit_price_foreign": Decimal("20"),
+                "discounted_total_price_base": 440000,
+            },
+        ]
+
+        self.service.update_cogs_on_po(
+            po=po,
+            new_status=PurchaseOrder.POStatus.DELIVERED,
+            data=data,
+        )
+
+        cogs1 = ProductCogs.objects.filter(
+            product_variant=self.product_variant,
+            warehouse=self.warehouse,
+            reference_number=po.purchase_order_number,
+        ).first()
+        cogs2 = ProductCogs.objects.filter(
+            product_variant=product_variant2,
+            warehouse=self.warehouse,
+            reference_number=po.purchase_order_number,
+        ).first()
+
+        self.assertIsNotNone(cogs1)
+        self.assertIsNotNone(cogs2)
+
+        # CBM: item1 = 10*10*10/1e6 * 10 = 0.01, item2 = 20*20*20/1e6 * 10 = 0.08, total = 0.09
+        cbm1 = Decimal("10") * Decimal("10") * Decimal("10") / Decimal("1000000") * Decimal("10")
+        cbm2 = Decimal("20") * Decimal("20") * Decimal("20") / Decimal("1000000") * Decimal("10")
+        total_cbm = cbm1 + cbm2
+
+        # Shipping: CBM-proportional
+        expected_shipping1 = int(round(10000 * cbm1 / total_cbm))
+        expected_shipping2 = int(round(10000 * cbm2 / total_cbm))
+        self.assertEqual(cogs1.allocated_shipping_fee, expected_shipping1)
+        self.assertEqual(cogs2.allocated_shipping_fee, expected_shipping2)
+
+        # Delivery: value-proportional
+        total_delivery_idr = Decimal("50") * 2200
+        value_ratio1 = Decimal("220000") / Decimal("660000")
+        value_ratio2 = Decimal("440000") / Decimal("660000")
+        expected_delivery1 = int(round(total_delivery_idr * value_ratio1))
+        expected_delivery2 = int(round(total_delivery_idr * value_ratio2))
+        self.assertEqual(cogs1.allocated_delivery_fee, expected_delivery1)
+        self.assertEqual(cogs2.allocated_delivery_fee, expected_delivery2)
+
+        # Commission: value-proportional
+        expected_commission1 = int(round(Decimal("22000") * value_ratio1))
+        expected_commission2 = int(round(Decimal("22000") * value_ratio2))
+        self.assertEqual(cogs1.allocated_commission_fee, expected_commission1)
+        self.assertEqual(cogs2.allocated_commission_fee, expected_commission2)
+
+    def test_cogs_value_proportional_delivery_and_commission(self):
+        """2 items with different values: delivery_fee and commission allocated proportionally by item value."""
+        product1 = self.product_variant.product
+        product1.length = 10
+        product1.width = 10
+        product1.height = 10
+        product1.save()
+
+        product2 = ProductFactory(
+            category=self.category, company=self.company, length=10, width=10, height=10
+        )
+        product_variant2 = ProductVariantFactory(product=product2)
+        ProductVariantWarehouseFactory(
+            product_variant=product_variant2, warehouse=self.warehouse, company=self.company
+        )
+
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.SHIPPED,
+            exchange_rate=2200,
+            shipping_fee=5000,
+            shipping_fee_per_cbm=100000,
+            cbm=Decimal("0.02"),
+            delivery_fee=Decimal("100"),
+            commission_fee=33000,
+            total_item_amount=660000,
+        )
+
+        data = [
+            {
+                "product_variant_id": str(self.product_variant.id),
+                "ordered_qty": 10,
+                "received_qty": 10,
+                "updated_qty": 0,
+                "unit_price_foreign": Decimal("10"),
+                "discounted_total_price_base": 220000,
+            },
+            {
+                "product_variant_id": str(product_variant2.id),
+                "ordered_qty": 10,
+                "received_qty": 10,
+                "updated_qty": 0,
+                "unit_price_foreign": Decimal("20"),
+                "discounted_total_price_base": 440000,
+            },
+        ]
+
+        self.service.update_cogs_on_po(
+            po=po,
+            new_status=PurchaseOrder.POStatus.DELIVERED,
+            data=data,
+        )
+
+        cogs1 = ProductCogs.objects.filter(
+            product_variant=self.product_variant,
+            warehouse=self.warehouse,
+            reference_number=po.purchase_order_number,
+        ).first()
+        cogs2 = ProductCogs.objects.filter(
+            product_variant=product_variant2,
+            warehouse=self.warehouse,
+            reference_number=po.purchase_order_number,
+        ).first()
+
+        self.assertIsNotNone(cogs1)
+        self.assertIsNotNone(cogs2)
+
+        # Same CBM, so shipping is split equally
+        self.assertEqual(cogs1.allocated_shipping_fee, 2500)
+        self.assertEqual(cogs2.allocated_shipping_fee, 2500)
+
+        # Delivery fee: value-proportional
+        total_delivery_idr = Decimal("100") * 2200
+        expected_delivery1 = int(round(total_delivery_idr * Decimal("220000") / Decimal("660000")))
+        expected_delivery2 = int(round(total_delivery_idr * Decimal("440000") / Decimal("660000")))
+        self.assertEqual(cogs1.allocated_delivery_fee, expected_delivery1)
+        self.assertEqual(cogs2.allocated_delivery_fee, expected_delivery2)
+
+        # Commission: value-proportional
+        expected_commission1 = int(round(Decimal("33000") * Decimal("220000") / Decimal("660000")))
+        expected_commission2 = int(round(Decimal("33000") * Decimal("440000") / Decimal("660000")))
+        self.assertEqual(cogs1.allocated_commission_fee, expected_commission1)
+        self.assertEqual(cogs2.allocated_commission_fee, expected_commission2)
+
+    def test_cogs_amount_includes_commission(self):
+        """cogs_amount = unit_price_idr + shipping_per_unit + delivery_per_unit + commission_per_unit."""
+        product = self.product_variant.product
+        product.length = 10
+        product.width = 10
+        product.height = 10
+        product.save()
+
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.SHIPPED,
+            exchange_rate=2200,
+            shipping_fee=1000,
+            shipping_fee_per_cbm=100000,
+            cbm=Decimal("0.01"),
+            delivery_fee=Decimal("50"),
+            commission_fee=22000,
+            total_item_amount=220000,
+        )
+
+        data = [
+            {
+                "product_variant_id": str(self.product_variant.id),
+                "ordered_qty": 10,
+                "received_qty": 10,
+                "updated_qty": 0,
+                "unit_price_foreign": Decimal("10"),
+                "discounted_total_price_base": 220000,
+            },
+        ]
+
+        self.service.update_cogs_on_po(
+            po=po,
+            new_status=PurchaseOrder.POStatus.DELIVERED,
+            data=data,
+        )
+
+        cogs = ProductCogs.objects.filter(
+            product_variant=self.product_variant,
+            warehouse=self.warehouse,
+            reference_number=po.purchase_order_number,
+        ).first()
+
+        self.assertIsNotNone(cogs)
+
+        unit_price_idr = Decimal("10") * 2200  # 22000
+        shipping_per_unit = Decimal(str(cogs.allocated_shipping_fee)) / Decimal("10")
+        delivery_per_unit = Decimal(str(cogs.allocated_delivery_fee)) / Decimal("10")
+        commission_per_unit = Decimal(str(cogs.allocated_commission_fee)) / Decimal("10")
+        expected_cogs = int(unit_price_idr + shipping_per_unit + delivery_per_unit + commission_per_unit)
+
+        self.assertEqual(cogs.cogs_amount, expected_cogs)
 
 
 class CompanyScopedViewsTest(APITestCase):
