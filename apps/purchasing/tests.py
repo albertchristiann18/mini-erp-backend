@@ -59,14 +59,15 @@ class PurchaseOrderAPITest(TestCase):
 
     def test_get_list_of_two_pos(self):
         """Get list of 2 POs"""
-        po1 = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
         PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        po2 = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
 
         response = self.client.get("/purchase-order/", format="json")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertGreaterEqual(len(response.data["results"]), 2)
-        self.assertEqual(response.data["results"][0]["id"], str(po1.id))
+        # Default ordering is -cdate (newest first), so po2 comes first
+        self.assertEqual(response.data["results"][0]["id"], str(po2.id))
 
     def test_create_po(self):
         """Create a PO"""
@@ -2242,3 +2243,107 @@ class ReplenishmentViewTest(TestCase):
         self.assertIn("avg_sales_30d", result)
         self.assertIsInstance(result["avg_sales_7d"], float)
         self.assertIsInstance(result["avg_sales_30d"], float)
+
+
+class PaginationOrderingSummaryTest(TestCase):
+    """Tests for pagination, ordering, and summary endpoint on PurchaseOrder views."""
+
+    def setUp(self):
+        from core.models import UserProfile
+
+        self.client = APIClient()
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+
+        user = User.objects.create_user(username="pos_staff", password="password", is_staff=True)
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        self.client.force_authenticate(user=user)
+
+    def test_pagination_default_page_size_is_10(self):
+        """create 15 POs, GET without page_size, assert len(results)==10 and count==15"""
+        for _ in range(15):
+            PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+
+        response = self.client.get("/purchase-order/", format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["results"]), 10)
+        self.assertEqual(response.data["count"], 15)
+
+    def test_pagination_custom_page_size(self):
+        """GET with page_size=5, assert len(results)==5"""
+        for _ in range(15):
+            PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+
+        response = self.client.get("/purchase-order/?page_size=5", format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["results"]), 5)
+
+    def test_ordering_by_total_amount_asc(self):
+        """create 3 POs with different total_amount, GET ?ordering=total_amount, assert ascending"""
+        amounts = [100000, 500000, 250000]
+        for amt in amounts:
+            PurchaseOrderFactory(
+                warehouse=self.warehouse,
+                company=self.company,
+                total_amount=amt,
+            )
+
+        response = self.client.get("/purchase-order/?ordering=total_amount", format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        result_amounts = [item["total_amount"] for item in response.data["results"]]
+        self.assertEqual(result_amounts, sorted(result_amounts))
+
+    def test_summary_returns_upcoming_only(self):
+        """create 1 ORDERED + 1 SHIPPED + 1 DELIVERED PO, GET /summary/, assert upcoming_count==2"""
+        ordered_po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.ORDERED,
+            total_amount=100000,
+            total_item_amount=80000,
+            procure_amount=20000,
+        )
+        shipped_po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.SHIPPED,
+            total_amount=200000,
+            total_item_amount=150000,
+            procure_amount=50000,
+        )
+        PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DELIVERED,
+            total_amount=300000,
+            total_item_amount=250000,
+            procure_amount=50000,
+        )
+
+        response = self.client.get("/purchase-order/summary/", format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["upcoming_count"], 2)
+        expected_total_amount = (ordered_po.total_amount or 0) + (shipped_po.total_amount or 0)
+        expected_total_item_amount = (ordered_po.total_item_amount or 0) + (shipped_po.total_item_amount or 0)
+        expected_procure_amount = (ordered_po.procure_amount or 0) + (shipped_po.procure_amount or 0)
+        self.assertEqual(response.data["upcoming_total_amount"], expected_total_amount)
+        self.assertEqual(response.data["upcoming_total_item_amount"], expected_total_item_amount)
+        self.assertEqual(response.data["upcoming_procure_amount"], expected_procure_amount)
+
+    def test_forecast_cbm_in_list_response(self):
+        """create PO with forecast_cbm set, assert it appears in list response"""
+        PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            forecast_cbm=2.5,
+        )
+
+        response = self.client.get("/purchase-order/", format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("forecast_cbm", response.data["results"][0])
+        self.assertEqual(response.data["results"][0]["forecast_cbm"], "2.500")

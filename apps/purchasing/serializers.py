@@ -134,6 +134,7 @@ class PurchaseOrderListSerializer(serializers.ModelSerializer):
             "forwarder_name",
             "exchange_rate",
             "cbm",
+            "forecast_cbm",
             "shipping_fee",
             "procure_amount",
             "total_item_amount",

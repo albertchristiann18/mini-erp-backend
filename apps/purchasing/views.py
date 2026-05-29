@@ -1,9 +1,11 @@
 from typing import Any, Type
 
 from django.core.exceptions import ValidationError
-from django.db.models import QuerySet
+from django.db.models import Count, QuerySet, Sum
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
+from rest_framework.filters import OrderingFilter
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -22,6 +24,12 @@ from apps.purchasing.services.purchasing_service import PurchaseOrderService
 from core.permissions import IsStaffOrReadOnly
 
 
+class PurchaseOrderPagination(PageNumberPagination):
+    page_size = 10
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
+
 class PurchaseOrderViewSet(viewsets.ModelViewSet):
     """
     API endpoints for Purchase Orders.
@@ -34,6 +42,17 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
     queryset = PurchaseOrder.objects.none()
     http_method_names = ["get", "post", "put", "patch"]
     permission_classes = [IsStaffOrReadOnly]
+    pagination_class = PurchaseOrderPagination
+    filter_backends = [OrderingFilter]
+    ordering_fields = [
+        "invoice_date",
+        "delivery_date",
+        "forecast_delivery_date",
+        "total_amount",
+        "total_ordered_qty",
+        "cdate",
+    ]
+    ordering = ["-cdate"]
 
     def get_serializer_class(self) -> Type[Serializer]:
         if self.action == "create":
@@ -120,6 +139,41 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
             return Response(PurchaseOrderReadSerializer(po).data, status=status.HTTP_200_OK)
         except ValidationError as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=False, methods=["get"], url_path="summary")
+    def summary(self, request: Request) -> Response:
+        """
+        Returns aggregate totals for upcoming POs (ORDERED + SHIPPED).
+        Applies date_from, date_to, forwarder filters from query params.
+        Status filter is ignored — always scoped to ORDERED + SHIPPED.
+        """
+        qs = PurchaseOrder.objects.filter(
+            company=request.user.profile.company,
+            status__in=[PurchaseOrder.POStatus.ORDERED, PurchaseOrder.POStatus.SHIPPED],
+        )
+        date_from = request.query_params.get("date_from")
+        date_to = request.query_params.get("date_to")
+        forwarder = request.query_params.get("forwarder")
+        if date_from:
+            qs = qs.filter(invoice_date__gte=date_from)
+        if date_to:
+            qs = qs.filter(invoice_date__lte=date_to)
+        if forwarder:
+            qs = qs.filter(forwarder_name__icontains=forwarder)
+
+        agg = qs.aggregate(
+            upcoming_count=Count("id"),
+            upcoming_total_amount=Sum("total_amount"),
+            upcoming_total_item_amount=Sum("total_item_amount"),
+            upcoming_procure_amount=Sum("procure_amount"),
+        )
+
+        return Response({
+            "upcoming_count": agg["upcoming_count"] or 0,
+            "upcoming_total_amount": agg["upcoming_total_amount"] or 0,
+            "upcoming_total_item_amount": agg["upcoming_total_item_amount"] or 0,
+            "upcoming_procure_amount": agg["upcoming_procure_amount"] or 0,
+        })
 
 
 class ReplenishmentView(APIView):
