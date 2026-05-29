@@ -103,6 +103,14 @@ class ProductService:
                     exc_info=True,
                 )
 
+    def update_variant_base_price(self, variant_id: str, base_price: int) -> dict[str, str | int]:
+        from apps.inventory.models import ProductVariant
+
+        variant = ProductVariant.objects.get(id=variant_id)
+        variant.base_price = base_price
+        variant.save(update_fields=["base_price", "udate"])
+        return {"id": str(variant.id), "base_price": variant.base_price}
+
     def _trigger_shopee_price_update(self, listing_ids: list[str], company_id: str) -> None:
         from apps.inventory.models import ProductVariantMarketplace
         from apps.omnichannel.vendor.shopee.product_push import ShopeeProductPushService

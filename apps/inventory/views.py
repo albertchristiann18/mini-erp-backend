@@ -133,6 +133,30 @@ class ProductViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK,
         )
 
+    @action(detail=True, methods=["patch"], url_path=r"update_variant_price/(?P<variant_id>[^/.]+)")
+    def update_variant_price(
+        self, request: Request, pk: str | None = None, variant_id: str | None = None
+    ) -> Response:
+        product = self.get_object()
+        try:
+            variant = ProductVariant.objects.get(
+                id=variant_id, product=product, company=product.company
+            )
+        except ProductVariant.DoesNotExist:
+            return Response({"error": "Variant not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        base_price = request.data.get("base_price")
+        if base_price is None or not isinstance(base_price, int) or base_price < 0:
+            return Response(
+                {"error": "base_price is required and must be a non-negative integer"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from apps.inventory.services.product_service import ProductService
+
+        result = ProductService().update_variant_base_price(str(variant.id), base_price)
+        return Response(result, status=status.HTTP_200_OK)
+
     def create(self, request: Request, *args: Any, **kwargs: Any) -> Response:
         is_many = isinstance(request.data, list)
         serializer = self.get_serializer(data=request.data, many=is_many)

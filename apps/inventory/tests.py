@@ -35,6 +35,9 @@ from apps.inventory.services.inventory_service import InventoryService
 from apps.purchasing.factories import PurchaseOrderFactory
 from apps.purchasing.models import PurchaseOrder
 from core.factories import CompanyFactory, MarketplaceFactory, WarehouseFactory
+from core.permissions import IsStaffOrReadOnly as StaffPerm
+
+_real_staff_perm = StaffPerm.has_permission
 
 
 class InventoryAPITest(APITestCase):
@@ -1811,3 +1814,106 @@ class StockMovementAPITest(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertGreaterEqual(len(response.data["results"]), 1)
+
+
+class UpdateVariantPriceTest(APITestCase):
+    """Tests for PATCH /product/{id}/update_variant_price/{variant_id}/"""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.other_company = CompanyFactory()
+        self.staff_user = User.objects.create_user(
+            username="staff", password="password", is_staff=True
+        )
+        self.non_staff_user = User.objects.create_user(
+            username="nonstaff", password="password", is_staff=False
+        )
+        from core.models import UserProfile
+
+        UserProfile.objects.create(user=self.staff_user, company=self.company, role="admin")
+        UserProfile.objects.create(
+            user=self.non_staff_user, company=self.company, role="viewer"
+        )
+
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(company=self.company, category=self.category, is_active=True)
+        self.variant = ProductVariantFactory(
+            product=self.product, company=self.company, is_active=True, base_price=100000
+        )
+
+        self.other_category = CategoryFactory(company=self.other_company)
+        self.other_product = ProductFactory(
+            company=self.other_company, category=self.other_category, is_active=True
+        )
+        self.other_variant = ProductVariantFactory(
+            product=self.other_product, company=self.other_company, is_active=True, base_price=50000
+        )
+
+    def _url(self, product, variant):
+        return f"/product/{product.id}/update_variant_price/{variant.id}/"
+
+    def test_update_variant_price_success(self):
+        """Staff user can update base_price on a variant belonging to their company's product."""
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.patch(
+            self._url(self.product, self.variant),
+            {"base_price": 150000},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["base_price"], 150000)
+        self.assertEqual(response.data["id"], str(self.variant.id))
+        self.variant.refresh_from_db()
+        self.assertEqual(self.variant.base_price, 150000)
+
+    def test_update_variant_price_wrong_company(self):
+        """Variant belongs to different company product — expect 404."""
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.patch(
+            self._url(self.other_product, self.other_variant),
+            {"base_price": 150000},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_update_variant_price_missing_field(self):
+        """Body without base_price — expect 400."""
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.patch(
+            self._url(self.product, self.variant),
+            {},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_update_variant_price_negative(self):
+        """Body with negative base_price — expect 400."""
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.patch(
+            self._url(self.product, self.variant),
+            {"base_price": -1},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_update_variant_price_non_staff(self):
+        """Non-staff user — expect 403."""
+        with patch.object(StaffPerm, "has_permission", _real_staff_perm):
+            self.client.force_authenticate(user=self.non_staff_user)
+            response = self.client.patch(
+                self._url(self.product, self.variant),
+                {"base_price": 150000},
+                format="json",
+            )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_update_variant_price_cross_variant_isolation(self):
+        """Staff user (company A) tries to update a variant from other_company's product
+        using their own product ID in the URL — expect 404."""
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.patch(
+            self._url(self.product, self.other_variant),
+            {"base_price": 150000},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
