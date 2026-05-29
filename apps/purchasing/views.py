@@ -45,6 +45,7 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
     pagination_class = PurchaseOrderPagination
     filter_backends = [OrderingFilter]
     ordering_fields = [
+        "purchase_order_number",
         "invoice_date",
         "delivery_date",
         "forecast_delivery_date",
