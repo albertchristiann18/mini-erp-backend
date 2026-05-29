@@ -359,6 +359,7 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
             "total_amount",
             "procure_amount",
             "invoice_number",
+            "invoice_date",
             "delivery_date",
             "forecast_delivery_date",
             "forecast_cbm",
