@@ -168,6 +168,36 @@ class PurchaseOrderService:
 
         return missing
 
+    def get_transition_warnings(
+        self,
+        po: "PurchaseOrder",
+        new_status: str,
+    ) -> list[dict[str, object]]:
+        """
+        Returns soft warnings for a status transition.
+        Warnings do not block the transition — they ask the user to confirm.
+        """
+        warnings: list[dict[str, object]] = []
+
+        if new_status == PurchaseOrder.POStatus.COMPLETED:
+            partial_items = []
+            for detail in po.order_details.select_related("product_variant").all():
+                received = detail.received_qty or 0
+                if received < detail.ordered_qty:
+                    partial_items.append({
+                        "name": detail.product_variant.name,
+                        "ordered_qty": detail.ordered_qty,
+                        "received_qty": received,
+                    })
+            if partial_items:
+                warnings.append({
+                    "type": "partial_receipt",
+                    "message": f"{len(partial_items)} item(s) have received qty less than ordered qty.",
+                    "items": partial_items,
+                })
+
+        return warnings
+
     @transaction.atomic
     def update_purchase_order(
         self, po: PurchaseOrder, data: dict, changed_by: "User | None" = None

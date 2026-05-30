@@ -40,6 +40,7 @@ class PurchaseOrder(DefaultModel):
     forecast_cbm = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True)
     forecast_shipping_fee = models.BigIntegerField(null=True, blank=True)  # IDR
     commission_fee_rmb = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True)  # RMB
+    note = models.TextField(blank=True, null=True)
 
     warehouse = models.ForeignKey(
         Warehouse, on_delete=models.CASCADE
@@ -91,6 +92,55 @@ class PurchaseOrder(DefaultModel):
         POStatus.COMPLETED: [],
         POStatus.CANCELLED: [],
     }
+
+    _LOCKED_FROM_SHIPPED: frozenset[str] = frozenset({
+        "exchange_rate",
+        "purchase_order_invoice_file",
+        "invoice_number",
+        "commission_fee_pct",
+        "delivery_fee",
+    })
+
+    _LOCKED_FROM_DELIVERED: frozenset[str] = _LOCKED_FROM_SHIPPED | frozenset({
+        "delivery_order_number",
+        "cbm",
+        "delivery_order_file",
+    })
+
+    _ALL_EDITABLE_HEADER: list[str] = [
+        "supplier_name", "forwarder_name", "shop_services", "currency",
+        "exchange_rate", "commission_fee_pct", "delivery_fee", "commission_fee_rmb",
+        "invoice_number", "invoice_date", "delivery_order_number", "delivery_date",
+        "forecast_delivery_date", "cbm", "forecast_cbm", "weight",
+        "shipping_fee_per_cbm", "forecast_shipping_fee",
+        "purchase_order_invoice_file", "delivery_order_file",
+        "delivery_order_invoice_file", "packing_list_file",
+        "note",
+    ]
+
+    _ALL_EDITABLE_ORDER_DETAIL: list[str] = [
+        "ordered_qty", "unit_price_foreign", "discounted_unit_price_foreign",
+    ]
+
+    @classmethod
+    def get_editable_fields(cls, status: str) -> dict[str, list[str]]:
+        if status in (cls.POStatus.DRAFT, cls.POStatus.ORDERED):
+            return {
+                "header": list(cls._ALL_EDITABLE_HEADER),
+                "order_detail": list(cls._ALL_EDITABLE_ORDER_DETAIL),
+            }
+        elif status == cls.POStatus.SHIPPED:
+            return {
+                "header": [f for f in cls._ALL_EDITABLE_HEADER if f not in cls._LOCKED_FROM_SHIPPED],
+                "order_detail": [],
+            }
+        elif status == cls.POStatus.DELIVERED:
+            return {
+                "header": [f for f in cls._ALL_EDITABLE_HEADER if f not in cls._LOCKED_FROM_DELIVERED],
+                "order_detail": ["received_qty", "remarks"],
+            }
+        else:  # COMPLETED, CANCELLED
+            return {"header": ["note"], "order_detail": []}
 
     def get_next_status(self) -> str | None:
         transitions = self.STATUS_TRANSITIONS.get(self.status, [])

@@ -1667,9 +1667,7 @@ class PurchaseOrderSerializerValidationTest(TestCase):
                 "order_details": [
                     {
                         "product_variant_id": str(self.product_variant.id),
-                        "ordered_qty": 100,
                         "received_qty": 50,
-                        "unit_price_foreign": Decimal("10"),
                     }
                 ],
             },
@@ -1694,9 +1692,7 @@ class PurchaseOrderSerializerValidationTest(TestCase):
                 "order_details": [
                     {
                         "product_variant_id": str(self.product_variant.id),
-                        "ordered_qty": 100,
                         "received_qty": 50,
-                        "unit_price_foreign": Decimal("10"),
                     }
                 ],
             },
@@ -2590,3 +2586,99 @@ class PurchaseOrderRequirementsCheckTest(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("missing_fields", response.data)
+
+
+class EditableFieldsAndNoteTest(TestCase):
+    """Tests for editable_fields, note, locked field enforcement, and transition warnings."""
+
+    def setUp(self):
+        from core.models import UserProfile
+
+        self.client = APIClient()
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(category=self.category, company=self.company)
+        self.product_variant = ProductVariantFactory(product=self.product)
+        self.user = User.objects.create_user(
+            username="edit_fields_user", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+        self.service = PurchaseOrderService()
+
+    def test_get_editable_fields_draft(self):
+        """Assert exchange_rate in DRAFT editable header."""
+        fields = PurchaseOrder.get_editable_fields(PurchaseOrder.POStatus.DRAFT)
+        self.assertIn("exchange_rate", fields["header"])
+        self.assertIn("ordered_qty", fields["order_detail"])
+
+    def test_get_editable_fields_shipped(self):
+        """Assert exchange_rate NOT in SHIPPED; delivery_order_number IS in SHIPPED."""
+        fields = PurchaseOrder.get_editable_fields(PurchaseOrder.POStatus.SHIPPED)
+        self.assertNotIn("exchange_rate", fields["header"])
+        self.assertIn("delivery_order_number", fields["header"])
+        self.assertEqual(fields["order_detail"], [])
+
+    def test_get_editable_fields_delivered(self):
+        """Assert cbm NOT in DELIVERED; received_qty IS in DELIVERED order_detail."""
+        fields = PurchaseOrder.get_editable_fields(PurchaseOrder.POStatus.DELIVERED)
+        self.assertNotIn("cbm", fields["header"])
+        self.assertIn("received_qty", fields["order_detail"])
+
+    def test_get_editable_fields_completed(self):
+        """Assert only note is in COMPLETED header, order_detail is empty."""
+        fields = PurchaseOrder.get_editable_fields(PurchaseOrder.POStatus.COMPLETED)
+        self.assertEqual(fields["header"], ["note"])
+        self.assertEqual(fields["order_detail"], [])
+
+    def test_note_field_in_list_response(self):
+        """Create PO with note='test note', assert note appears in list API response."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse, company=self.company, note="test note"
+        )
+        response = self.client.get("/purchase-order/", format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        po_data = next(r for r in response.data["results"] if r["id"] == str(po.id))
+        self.assertEqual(po_data["note"], "test note")
+
+    def test_locked_field_rejected_by_serializer(self):
+        """PATCH with exchange_rate on a SHIPPED PO, assert 400 with error."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.SHIPPED,
+            exchange_rate=2200,
+        )
+        response = self.client.patch(
+            f"/purchase-order/{po.id}/",
+            {"exchange_rate": 2300},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("exchange_rate", str(response.data))
+
+    def test_transition_warnings_partial_receipt(self):
+        """DELIVERED PO with partial receipt -> check_transition returns partial_receipt warning."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DELIVERED,
+        )
+        PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            ordered_qty=100,
+            received_qty=80,
+        )
+        po.refresh_from_db()
+
+        response = self.client.post(
+            f"/purchase-order/{po.id}/check_transition/",
+            {"status": PurchaseOrder.POStatus.COMPLETED},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        warnings = response.data.get("warnings", [])
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0]["type"], "partial_receipt")

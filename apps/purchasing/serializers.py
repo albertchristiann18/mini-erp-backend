@@ -147,6 +147,7 @@ class PurchaseOrderListSerializer(serializers.ModelSerializer):
             "delivery_fee_idr",
             "cdate",
             "udate",
+            "note",
         ]
         read_only_fields = ["id", "cdate", "udate"]
 
@@ -199,6 +200,7 @@ class PurchaseOrderCreateSerializer(serializers.ModelSerializer):
             "delivery_order_file",
             "delivery_order_invoice_file",
             "packing_list_file",
+            "note",
         ]
         extra_kwargs = {
             "purchase_order_number": {"required": False},
@@ -206,6 +208,7 @@ class PurchaseOrderCreateSerializer(serializers.ModelSerializer):
             "delivery_order_file": {"required": False},
             "delivery_order_invoice_file": {"required": False},
             "packing_list_file": {"required": False},
+            "note": {"required": False},
         }
         read_only_fields = [
             "purchase_order_number",
@@ -379,6 +382,7 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
             "delivery_order_file",
             "delivery_order_invoice_file",
             "packing_list_file",
+            "note",
         ]
         extra_kwargs = {
             "purchase_order_number": {"required": False},
@@ -386,6 +390,7 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
             "delivery_order_file": {"required": False},
             "delivery_order_invoice_file": {"required": False},
             "packing_list_file": {"required": False},
+            "note": {"required": False},
         }
         read_only_fields = [
             "total_ordered_qty",
@@ -432,6 +437,39 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
                         "exchange_rate": f"Cannot change exchange_rate when status is {current_status}. Exchange rate can only be changed in DRAFT status."
                     }
                 )
+
+        # Enforce status-based field locks
+        editable = PurchaseOrder.get_editable_fields(current_status)
+        editable_header_set = set(editable["header"])
+        editable_detail_set = set(editable["order_detail"])
+        # During a status transition, also allow target status editable fields
+        if new_status and new_status != current_status:
+            target_editable = PurchaseOrder.get_editable_fields(new_status)
+            editable_header_set |= set(target_editable["header"])
+            editable_detail_set |= set(target_editable["order_detail"])
+
+        locked_violations = []
+        for field, value in attrs.items():
+            if field in ("status", "order_details", "warehouse_id", "_purchase_order"):
+                continue
+            if value is not None and field not in editable_header_set:
+                locked_violations.append(field)
+
+        if locked_violations:
+            raise serializers.ValidationError({
+                field: f"'{field}' cannot be edited when PO status is {current_status}."
+                for field in locked_violations
+            })
+
+        order_details = attrs.get("order_details", [])
+        for detail_data in order_details:
+            for field in detail_data:
+                if field in ("id", "product_variant_id", "received_date", "received_qty", "remarks"):
+                    continue
+                if field not in editable_detail_set and detail_data.get(field) is not None:
+                    raise serializers.ValidationError({
+                        "order_details": f"'{field}' cannot be edited when PO status is {current_status}."
+                    })
 
         if new_status not in [
             PurchaseOrder.POStatus.SHIPPED,
@@ -625,6 +663,7 @@ class PurchaseOrderReadSerializer(serializers.ModelSerializer):
     shipping_per_qty = serializers.SerializerMethodField()
     status_history = PurchaseOrderStatusHistorySerializer(many=True, read_only=True)
     next_status = serializers.SerializerMethodField()
+    editable_fields = serializers.SerializerMethodField()
 
     class Meta:
         model = PurchaseOrder
@@ -669,6 +708,8 @@ class PurchaseOrderReadSerializer(serializers.ModelSerializer):
             "delivery_order_file",
             "delivery_order_invoice_file",
             "packing_list_file",
+            "note",
+            "editable_fields",
             "cdate",
             "udate",
         ]
@@ -682,3 +723,6 @@ class PurchaseOrderReadSerializer(serializers.ModelSerializer):
 
     def get_next_status(self, obj: PurchaseOrder) -> str | None:
         return obj.get_next_status()
+
+    def get_editable_fields(self, obj: PurchaseOrder) -> dict[str, list[str]]:
+        return PurchaseOrder.get_editable_fields(obj.status)

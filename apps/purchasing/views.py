@@ -184,10 +184,12 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
 
         service = PurchaseOrderService()
         missing = service.check_purchase_order_requirements(po, target_status)
+        warnings = service.get_transition_warnings(po, target_status)
         return Response({
             "can_transition": len(missing) == 0,
             "target_status": target_status,
             "missing_fields": missing,
+            "warnings": warnings,
         })
 
     @action(detail=False, methods=["get"], url_path="summary")
