@@ -134,12 +134,61 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
         """POST /purchase-order/{id}/advance_status/ with body {"status": "ORDERED"}"""
         po = self.get_object()
         new_status = request.data.get("status")
+        if not new_status:
+            return Response({"error": "status is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not po.can_advance_to(new_status):
+            return Response(
+                {"error": f"Cannot transition from {po.status} to {new_status}."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Field-completeness check — serializer does not run on this path
+        service = PurchaseOrderService()
+        missing = service.check_purchase_order_requirements(po, new_status)
+        if missing:
+            return Response(
+                {
+                    "error": "Required fields are missing for this transition.",
+                    "missing_fields": missing,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         try:
-            service = PurchaseOrderService()
             po = service.update_purchase_order(po, {"status": new_status}, changed_by=request.user)
             return Response(PurchaseOrderReadSerializer(po).data, status=status.HTTP_200_OK)
         except ValidationError as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=["post"], url_path="check_transition")
+    def check_transition(self, request: Request, pk: Any = None) -> Response:
+        """
+        POST /purchase-order/{id}/check_transition/
+        Body: {"status": "SHIPPED"}
+        Returns all missing requirements without performing the transition.
+        Used by frontend confirmation modal to preview what needs to be filled.
+        """
+        po = self.get_object()
+        target_status = request.data.get("status")
+        if not target_status:
+            return Response({"error": "status is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not po.can_advance_to(target_status):
+            return Response({
+                "can_transition": False,
+                "target_status": target_status,
+                "missing_fields": [],
+                "error": f"Cannot transition from {po.status} to {target_status}.",
+            })
+
+        service = PurchaseOrderService()
+        missing = service.check_purchase_order_requirements(po, target_status)
+        return Response({
+            "can_transition": len(missing) == 0,
+            "target_status": target_status,
+            "missing_fields": missing,
+        })
 
     @action(detail=False, methods=["get"], url_path="summary")
     def summary(self, request: Request) -> Response:

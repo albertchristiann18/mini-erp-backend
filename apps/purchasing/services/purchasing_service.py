@@ -81,6 +81,93 @@ class PurchaseOrderService:
 
         return po
 
+    def check_purchase_order_requirements(
+        self,
+        po: "PurchaseOrder",
+        new_status: str,
+        incoming_data: dict | None = None,
+    ) -> list[dict[str, str]]:
+        """
+        Returns all unmet field requirements for a PO status transition.
+        Does NOT raise — returns empty list if all requirements are met.
+
+        incoming_data: fields being submitted in the current request (update path).
+                       Pass None when only checking the PO's existing state (advance_status path).
+
+        Returns list of {"field", "label", "section", "message"}.
+        """
+        data = incoming_data or {}
+        missing: list[dict[str, str]] = []
+
+        zero_valid_fields = {"exchange_rate", "commission_fee_pct", "delivery_fee"}
+
+        def _present(field: str) -> bool:
+            """True if the field has a usable value in incoming_data or on the PO."""
+            incoming_val = data.get(field)
+            if incoming_val is not None:
+                # File fields: treat empty string as absent
+                if field in (
+                    "purchase_order_invoice_file",
+                    "delivery_order_file",
+                    "delivery_order_invoice_file",
+                ):
+                    return bool(incoming_val)
+                return True
+            po_val = getattr(po, field, None)
+            if field in zero_valid_fields:
+                return po_val is not None
+            return bool(po_val)
+
+        if new_status == PurchaseOrder.POStatus.ORDERED:
+            for field, label, section, message in [
+                ("exchange_rate",               "Exchange Rate",       "Financial Setup",   "Exchange rate is required when moving to ORDERED."),
+                ("purchase_order_invoice_file", "PO Invoice File",    "Attachments",       "PO invoice file is required when moving to ORDERED."),
+                ("invoice_number",              "Invoice Number",      "Logistics & Dates", "Invoice number is required when moving to ORDERED."),
+                ("invoice_date",                "Invoice Date",        "Logistics & Dates", "Invoice date is required when moving to ORDERED."),
+                ("commission_fee_pct",          "Commission %",        "Financial Setup",   "Commission % is required when moving to ORDERED."),
+                ("forwarder_name",              "Forwarder",           "General",           "Forwarder name is required when moving to ORDERED."),
+                ("supplier_name",               "Supplier",            "General",           "Supplier name is required when moving to ORDERED."),
+                ("shop_services",               "Jasa Belanja",        "General",           "Jasa belanja is required when moving to ORDERED."),
+                ("delivery_fee",               "Delivery Fee (RMB)",  "Financial Setup",   "Delivery fee is required when moving to ORDERED. Can be 0."),
+            ]:
+                if not _present(field):
+                    missing.append({"field": field, "label": label, "section": section, "message": message})
+
+            # Order details: need at least one existing or incoming
+            has_incoming_details = bool(data.get("order_details"))
+            has_existing_details = (
+                po.order_details.exists() if hasattr(po, "order_details") else False
+            )
+            if not has_incoming_details and not has_existing_details:
+                missing.append({
+                    "field": "order_details",
+                    "label": "Order Items",
+                    "section": "Order Items",
+                    "message": "At least one order item is required when moving to ORDERED.",
+                })
+
+        elif new_status == PurchaseOrder.POStatus.SHIPPED:
+            for field, label, section, message in [
+                ("delivery_order_number", "Delivery Order No.",  "Logistics & Dates", "Delivery order number is required when moving to SHIPPED."),
+                ("delivery_order_file",   "Delivery Order File", "Attachments",       "Delivery order file is required when moving to SHIPPED."),
+                ("shipping_fee_per_cbm",  "Shipping Fee / CBM",  "Financial Setup",   "Shipping fee per CBM is required when moving to SHIPPED."),
+                ("cbm",                   "CBM",                 "Logistics & Dates", "CBM is required when moving to SHIPPED."),
+                ("weight",                "Weight (kg)",         "Logistics & Dates", "Weight is required when moving to SHIPPED."),
+            ]:
+                if not _present(field):
+                    missing.append({"field": field, "label": label, "section": section, "message": message})
+
+        elif new_status == PurchaseOrder.POStatus.DELIVERED:
+            if not _present("delivery_order_invoice_file"):
+                missing.append({
+                    "field": "delivery_order_invoice_file",
+                    "label": "DO Invoice File",
+                    "section": "Attachments",
+                    "message": "Delivery order invoice file is required when moving to DELIVERED.",
+                })
+
+        return missing
+
     @transaction.atomic
     def update_purchase_order(
         self, po: PurchaseOrder, data: dict, changed_by: "User | None" = None

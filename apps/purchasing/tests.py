@@ -2468,3 +2468,125 @@ class PurchaseOrderStatusHistoryTest(TestCase):
         self.assertIn("status_history", response.data)
         self.assertIsInstance(response.data["status_history"], list)
         self.assertEqual(response.data["next_status"], PurchaseOrder.POStatus.ORDERED)
+
+
+class PurchaseOrderRequirementsCheckTest(TestCase):
+    """Tests for check_purchase_order_requirements and check_transition endpoint."""
+
+    def setUp(self):
+        from core.models import UserProfile
+
+        self.client = APIClient()
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(category=self.category, company=self.company)
+        self.product_variant = ProductVariantFactory(product=self.product)
+        self.user = User.objects.create_user(
+            username="req_check_user", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+        self.service = PurchaseOrderService()
+
+    def test_check_po_requirements_ordered_missing(self):
+        """Bare DRAFT PO: all ORDERED fields should be returned as missing."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DRAFT,
+        )
+        missing = self.service.check_purchase_order_requirements(po, PurchaseOrder.POStatus.ORDERED)
+
+        field_names = {item["field"] for item in missing}
+        self.assertIn("exchange_rate", field_names)
+        self.assertIn("invoice_number", field_names)
+        self.assertIn("purchase_order_invoice_file", field_names)
+        self.assertIn("invoice_date", field_names)
+        self.assertIn("forwarder_name", field_names)
+        self.assertIn("shop_services", field_names)
+        self.assertIn("delivery_fee", field_names)
+        self.assertIn("order_details", field_names)
+
+    def test_check_po_requirements_ordered_all_present(self):
+        """Fully populated DRAFT PO: empty list returned."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DRAFT,
+            exchange_rate=2200,
+            purchase_order_invoice_file="invoice.pdf",
+            invoice_number="INV-001",
+            invoice_date=date.today(),
+            commission_fee_pct=Decimal("10"),
+            forwarder_name="Forwarder",
+            supplier_name="Supplier",
+            shop_services="Service",
+            delivery_fee=Decimal("0"),
+        )
+        PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            ordered_qty=10,
+        )
+
+        missing = self.service.check_purchase_order_requirements(po, PurchaseOrder.POStatus.ORDERED)
+        self.assertEqual(missing, [])
+
+    def test_check_po_requirements_shipped_partial(self):
+        """ORDERED PO with DO number/file but no cbm/weight: only cbm and weight in missing."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.ORDERED,
+            delivery_order_number="DO-001",
+            delivery_order_file="do.pdf",
+        )
+        missing = self.service.check_purchase_order_requirements(po, PurchaseOrder.POStatus.SHIPPED)
+        missing_fields = {item["field"] for item in missing}
+
+        self.assertIn("cbm", missing_fields)
+        self.assertIn("weight", missing_fields)
+        self.assertIn("shipping_fee_per_cbm", missing_fields)
+        self.assertNotIn("delivery_order_number", missing_fields)
+        self.assertNotIn("delivery_order_file", missing_fields)
+
+    def test_check_transition_endpoint_missing(self):
+        """POST to check_transition with SHIPPED on ORDERED PO missing cbm -> can_transition=false."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.ORDERED,
+            delivery_order_number="DO-001",
+            delivery_order_file="do.pdf",
+            shipping_fee_per_cbm=100,
+        )
+
+        response = self.client.post(
+            f"/purchase-order/{po.id}/check_transition/",
+            {"status": PurchaseOrder.POStatus.SHIPPED},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["can_transition"])
+        field_names = {item["field"] for item in response.data["missing_fields"]}
+        self.assertIn("cbm", field_names)
+        self.assertIn("weight", field_names)
+
+    def test_advance_status_blocked_when_fields_missing(self):
+        """POST advance_status on bare DRAFT PO -> 400 with missing_fields."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DRAFT,
+        )
+
+        response = self.client.post(
+            f"/purchase-order/{po.id}/advance_status/",
+            {"status": PurchaseOrder.POStatus.ORDERED},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("missing_fields", response.data)

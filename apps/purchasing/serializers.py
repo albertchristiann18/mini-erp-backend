@@ -5,6 +5,7 @@ from rest_framework import serializers
 
 from apps.inventory.models import ProductVariant, Warehouse
 from apps.purchasing.models import PurchaseOrder, PurchaseOrderDetail, PurchaseOrderStatusHistory
+from apps.purchasing.services.purchasing_service import PurchaseOrderService
 from core.models import Company
 from core.utils import compress_pdf_file
 
@@ -414,146 +415,14 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
                     }
                 )
 
-            if (
-                new_status == PurchaseOrder.POStatus.ORDERED
-                and current_status == PurchaseOrder.POStatus.DRAFT
-            ):
-                current_exchange_rate = self.instance.exchange_rate
-                new_exchange_rate = attrs.get("exchange_rate")
-                if current_exchange_rate is None and new_exchange_rate is None:
-                    raise serializers.ValidationError(
-                        {
-                            "exchange_rate": "Exchange rate is required when moving to ORDERED status. Please set exchange_rate on the Purchase Order."
-                        }
-                    )
-
-                current_invoice_file = self.instance.purchase_order_invoice_file
-                new_invoice_file = attrs.get("purchase_order_invoice_file")
-                if not current_invoice_file and new_invoice_file is None:
-                    raise serializers.ValidationError(
-                        {
-                            "purchase_order_invoice_file": "Invoice file is required when moving to ORDERED status."
-                        }
-                    )
-
-                current_invoice_number = self.instance.invoice_number
-                new_invoice_number = attrs.get("invoice_number")
-                if not current_invoice_number and not new_invoice_number:
-                    raise serializers.ValidationError(
-                        {
-                            "invoice_number": "Invoice number is required when moving to ORDERED status."
-                        }
-                    )
-
-                current_invoice_date = self.instance.invoice_date
-                new_invoice_date = attrs.get("invoice_date")
-                if not current_invoice_date and not new_invoice_date:
-                    raise serializers.ValidationError(
-                        {"invoice_date": "Invoice date is required when moving to ORDERED status."}
-                    )
-
-                current_commission_fee_pct = self.instance.commission_fee_pct
-                new_commission_fee_pct = attrs.get("commission_fee_pct")
-                if current_commission_fee_pct is None and new_commission_fee_pct is None:
-                    raise serializers.ValidationError(
-                        {
-                            "commission_fee_pct": "Commission fee percentage is required when moving to ORDERED status."
-                        }
-                    )
-
-                current_forwarder_name = self.instance.forwarder_name
-                new_forwarder_name = attrs.get("forwarder_name")
-                if not current_forwarder_name and not new_forwarder_name:
-                    raise serializers.ValidationError(
-                        {
-                            "forwarder_name": "Forwarder name is required when moving to ORDERED status."
-                        }
-                    )
-
-                current_supplier_name = self.instance.supplier_name
-                new_supplier_name = attrs.get("supplier_name")
-                if not current_supplier_name and not new_supplier_name:
-                    raise serializers.ValidationError(
-                        {
-                            "supplier_name": "Supplier name is required when moving to ORDERED status."
-                        }
-                    )
-
-                current_shop_services = self.instance.shop_services
-                new_shop_services = attrs.get("shop_services")
-                if not current_shop_services and not new_shop_services:
-                    raise serializers.ValidationError(
-                        {
-                            "shop_services": "Shop services is required when moving to ORDERED status."
-                        }
-                    )
-
-                current_delivery_fee = self.instance.delivery_fee
-                new_delivery_fee = attrs.get("delivery_fee")
-                if current_delivery_fee is None and new_delivery_fee is None:
-                    raise serializers.ValidationError(
-                        {
-                            "delivery_fee": "Delivery fee is required when moving to ORDERED status. Can be set to 0."
-                        }
-                    )
-
-            elif (
-                new_status == PurchaseOrder.POStatus.SHIPPED
-                and current_status == PurchaseOrder.POStatus.ORDERED
-            ):
-                current_do_number = self.instance.delivery_order_number
-                new_do_number = attrs.get("delivery_order_number")
-                if not current_do_number and not new_do_number:
-                    raise serializers.ValidationError(
-                        {
-                            "delivery_order_number": "Delivery order number is required when moving to SHIPPED status."
-                        }
-                    )
-
-                current_do_file = self.instance.delivery_order_file
-                new_do_file = attrs.get("delivery_order_file")
-                if not current_do_file and new_do_file is None:
-                    raise serializers.ValidationError(
-                        {
-                            "delivery_order_file": "Delivery order file is required when moving to SHIPPED status."
-                        }
-                    )
-
-                current_shipping_fee_per_cbm = self.instance.shipping_fee_per_cbm
-                new_shipping_fee_per_cbm = attrs.get("shipping_fee_per_cbm")
-                if not current_shipping_fee_per_cbm and new_shipping_fee_per_cbm is None:
-                    raise serializers.ValidationError(
-                        {
-                            "shipping_fee_per_cbm": "Shipping fee per CBM is required when moving to SHIPPED status."
-                        }
-                    )
-
-                current_cbm = self.instance.cbm
-                new_cbm = attrs.get("cbm")
-                if not current_cbm and new_cbm is None:
-                    raise serializers.ValidationError(
-                        {"cbm": "CBM is required when moving to SHIPPED status."}
-                    )
-
-                current_weight = self.instance.weight
-                new_weight = attrs.get("weight")
-                if not current_weight and new_weight is None:
-                    raise serializers.ValidationError(
-                        {"weight": "Weight is required when moving to SHIPPED status."}
-                    )
-
-            elif (
-                new_status == PurchaseOrder.POStatus.DELIVERED
-                and current_status == PurchaseOrder.POStatus.SHIPPED
-            ):
-                current_do_invoice = self.instance.delivery_order_invoice_file
-                new_do_invoice = attrs.get("delivery_order_invoice_file")
-                if not current_do_invoice and new_do_invoice is None:
-                    raise serializers.ValidationError(
-                        {
-                            "delivery_order_invoice_file": "Delivery order invoice file is required when moving to DELIVERED status."
-                        }
-                    )
+            service = PurchaseOrderService()
+            missing = service.check_purchase_order_requirements(
+                self.instance, new_status, incoming_data=attrs
+            )
+            if missing:
+                raise serializers.ValidationError(
+                    {item["field"]: item["message"] for item in missing}
+                )
 
         if current_status != PurchaseOrder.POStatus.DRAFT:
             new_exchange_rate = attrs.get("exchange_rate")
