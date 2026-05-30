@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
@@ -12,6 +13,9 @@ from apps.inventory.services.inventory_service import InventoryService
 from apps.purchasing.models import PurchaseOrder, PurchaseOrderDetail
 from core.models import Company
 
+if TYPE_CHECKING:
+    from django.contrib.auth.models import User
+
 logger = logging.getLogger(__name__)
 
 
@@ -20,16 +24,6 @@ class PurchaseOrderService:
     Service for Purchase Order operations.
     Handles creation, updates, and inventory-related logic.
     """
-
-    STATUS_TRANSITIONS: dict[str, list[str]] = {
-        PurchaseOrder.POStatus.DRAFT: [PurchaseOrder.POStatus.ORDERED],
-        PurchaseOrder.POStatus.ORDERED: [
-            PurchaseOrder.POStatus.SHIPPED,
-        ],
-        PurchaseOrder.POStatus.SHIPPED: [PurchaseOrder.POStatus.DELIVERED],
-        PurchaseOrder.POStatus.DELIVERED: [PurchaseOrder.POStatus.COMPLETED],
-        PurchaseOrder.POStatus.COMPLETED: [],
-    }
 
     def _trigger_shopee_sync_batch(self, variant_ids: list[str], company_id: str) -> None:
         from apps.omnichannel.vendor.shopee.stock_sync import ShopeeStockSyncService
@@ -88,7 +82,9 @@ class PurchaseOrderService:
         return po
 
     @transaction.atomic
-    def update_purchase_order(self, po: PurchaseOrder, data: dict) -> PurchaseOrder:
+    def update_purchase_order(
+        self, po: PurchaseOrder, data: dict, changed_by: "User | None" = None
+    ) -> PurchaseOrder:
         """Update a Purchase Order and its details.
 
         Validations are handled by PurchaseOrderUpdateSerializer before this method is called.
@@ -99,7 +95,7 @@ class PurchaseOrderService:
 
         # Enforce status transitions
         if new_status and new_status != old_status:
-            allowed = self.STATUS_TRANSITIONS.get(old_status, [])
+            allowed = PurchaseOrder.STATUS_TRANSITIONS.get(old_status, [])
             if new_status not in allowed and new_status != PurchaseOrder.POStatus.CANCELLED:
                 raise ValidationError(
                     {
@@ -337,6 +333,16 @@ class PurchaseOrderService:
                 if detail_id := detail_data.get("id"):
                     if existing_detail := existing_details_map.get(detail_id):
                         original_received_qtys[detail_id] = existing_detail.received_qty or 0
+
+        if new_status and new_status != old_status:
+            from apps.purchasing.models import PurchaseOrderStatusHistory
+            PurchaseOrderStatusHistory.objects.create(
+                purchase_order=po,
+                company=po.company,
+                from_status=old_status,
+                to_status=new_status,
+                changed_by=changed_by,
+            )
 
         updated_fields = ["udate"]
         for attr, value in data.items():

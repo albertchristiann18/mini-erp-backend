@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.conf import settings
 from django.db import models
 from django_ulid.models import ULIDField
 
@@ -82,6 +83,22 @@ class PurchaseOrder(DefaultModel):
     def __str__(self) -> str:
         return self.purchase_order_number
 
+    STATUS_TRANSITIONS: dict[str, list[str]] = {
+        POStatus.DRAFT: [POStatus.ORDERED],
+        POStatus.ORDERED: [POStatus.SHIPPED],
+        POStatus.SHIPPED: [POStatus.DELIVERED],
+        POStatus.DELIVERED: [POStatus.COMPLETED],
+        POStatus.COMPLETED: [],
+        POStatus.CANCELLED: [],
+    }
+
+    def get_next_status(self) -> str | None:
+        transitions = self.STATUS_TRANSITIONS.get(self.status, [])
+        return transitions[0] if transitions else None
+
+    def can_advance_to(self, new_status: str) -> bool:
+        return new_status in self.STATUS_TRANSITIONS.get(self.status, [])
+
     def get_shipping_per_qty(self) -> int:
         if not self.shipping_fee:
             return 0
@@ -151,3 +168,27 @@ class PurchaseOrderDetail(DefaultModel):
         return (
             f"{self.purchase_order.purchase_order_number} - {self.product_variant.sku_variant_code}"
         )
+
+
+class PurchaseOrderStatusHistory(DefaultModel):
+    """Audit log of every status transition on a PurchaseOrder."""
+
+    id = ULIDField(
+        primary_key=True, default=generate_ulid, editable=False,
+        db_column="purchase_order_status_history_id"
+    )
+    purchase_order = models.ForeignKey(
+        PurchaseOrder, on_delete=models.CASCADE, related_name="status_history"
+    )
+    from_status = models.CharField(max_length=50)
+    to_status = models.CharField(max_length=50)
+    changed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True
+    )
+    note = models.TextField(blank=True, null=True)
+
+    class Meta:
+        ordering = ["-cdate"]
+
+    def __str__(self) -> str:
+        return f"{self.purchase_order.purchase_order_number}: {self.from_status} → {self.to_status}"

@@ -1,11 +1,10 @@
 from decimal import Decimal
-from typing import Any, Dict
+from typing import Any
 
 from rest_framework import serializers
 
 from apps.inventory.models import ProductVariant, Warehouse
-from apps.purchasing.models import PurchaseOrder, PurchaseOrderDetail
-from apps.purchasing.services.purchasing_service import PurchaseOrderService
+from apps.purchasing.models import PurchaseOrder, PurchaseOrderDetail, PurchaseOrderStatusHistory
 from core.models import Company
 from core.utils import compress_pdf_file
 
@@ -39,17 +38,17 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["updated_qty"]
 
-    def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
         return self._calculate_prices(attrs)
 
-    def create(self, validated_data: Dict[str, Any]) -> PurchaseOrderDetail:
+    def create(self, validated_data: dict[str, Any]) -> PurchaseOrderDetail:
         validated_data = self._calculate_prices(validated_data)
         product_variant_id = validated_data.pop("product_variant_id")
         product_variant = ProductVariant.objects.get(id=product_variant_id)
         validated_data["product_variant"] = product_variant
         return super().create(validated_data)  # type: ignore
 
-    def _calculate_prices(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
+    def _calculate_prices(self, attrs: dict[str, Any]) -> dict[str, Any]:
         """Calculate all price fields based on input values.
 
         Input fields (user provides):
@@ -406,7 +405,7 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
         new_status = attrs.get("status")
 
         if new_status is not None and new_status != current_status:
-            allowed = PurchaseOrderService.STATUS_TRANSITIONS.get(current_status, [])
+            allowed = PurchaseOrder.STATUS_TRANSITIONS.get(current_status, [])
             if new_status not in allowed:
                 raise serializers.ValidationError(
                     {
@@ -734,6 +733,19 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
         return ret
 
 
+class PurchaseOrderStatusHistorySerializer(serializers.ModelSerializer):
+    changed_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PurchaseOrderStatusHistory
+        fields = ["id", "from_status", "to_status", "changed_by_name", "note", "cdate"]
+
+    def get_changed_by_name(self, obj: PurchaseOrderStatusHistory) -> str | None:
+        if obj.changed_by:
+            return obj.changed_by.get_full_name() or obj.changed_by.username
+        return None
+
+
 class PurchaseOrderReadSerializer(serializers.ModelSerializer):
     """Serializer for reading Purchase Orders with all details"""
 
@@ -742,6 +754,8 @@ class PurchaseOrderReadSerializer(serializers.ModelSerializer):
     company_name = serializers.CharField(source="company.name", read_only=True)
     cost_ratio_cogs = serializers.SerializerMethodField()
     shipping_per_qty = serializers.SerializerMethodField()
+    status_history = PurchaseOrderStatusHistorySerializer(many=True, read_only=True)
+    next_status = serializers.SerializerMethodField()
 
     class Meta:
         model = PurchaseOrder
@@ -749,6 +763,8 @@ class PurchaseOrderReadSerializer(serializers.ModelSerializer):
             "id",
             "cost_ratio_cogs",
             "shipping_per_qty",
+            "status_history",
+            "next_status",
             "purchase_order_number",
             "status",
             "warehouse_name",
@@ -794,3 +810,6 @@ class PurchaseOrderReadSerializer(serializers.ModelSerializer):
 
     def get_shipping_per_qty(self, obj: PurchaseOrder) -> int:
         return obj.get_shipping_per_qty()
+
+    def get_next_status(self, obj: PurchaseOrder) -> str | None:
+        return obj.get_next_status()

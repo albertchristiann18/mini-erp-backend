@@ -22,7 +22,7 @@ from apps.purchasing.factories import (
     PurchaseOrderDetailFactory,
     PurchaseOrderFactory,
 )
-from apps.purchasing.models import PurchaseOrder
+from apps.purchasing.models import PurchaseOrder, PurchaseOrderStatusHistory
 from apps.purchasing.serializers import PurchaseOrderReadSerializer, PurchaseOrderUpdateSerializer
 from apps.purchasing.services.purchasing_service import PurchaseOrderService
 from core.factories import WarehouseFactory
@@ -2362,3 +2362,109 @@ class PaginationOrderingSummaryTest(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn("forecast_cbm", response.data["results"][0])
         self.assertEqual(response.data["results"][0]["forecast_cbm"], "2.500")
+
+
+class PurchaseOrderStatusHistoryTest(TestCase):
+    """Tests for PurchaseOrder state machine and PurchaseOrderStatusHistory."""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(category=self.category, company=self.company)
+        self.product_variant = ProductVariantFactory(product=self.product)
+
+    def test_po_model_get_next_status(self):
+        """DRAFT -> ORDERED, COMPLETED -> None"""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DRAFT,
+        )
+        self.assertEqual(po.get_next_status(), PurchaseOrder.POStatus.ORDERED)
+
+        po.status = PurchaseOrder.POStatus.COMPLETED
+        self.assertIsNone(po.get_next_status())
+
+    def test_po_model_can_advance_to(self):
+        """DRAFT can advance to ORDERED, cannot advance to SHIPPED"""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DRAFT,
+        )
+        self.assertTrue(po.can_advance_to(PurchaseOrder.POStatus.ORDERED))
+        self.assertFalse(po.can_advance_to(PurchaseOrder.POStatus.SHIPPED))
+
+    def test_status_history_created_on_advance(self):
+        """Call advance_status endpoint DRAFT -> ORDERED, assert history record."""
+        from core.models import UserProfile
+
+        client = APIClient()
+        user = User.objects.create_user(
+            username="history_test", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        client.force_authenticate(user=user)
+
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DRAFT,
+            exchange_rate=2200,
+            purchase_order_invoice_file="test.pdf",
+            invoice_number="INV-001",
+            invoice_date=date.today(),
+            commission_fee_pct=Decimal("10"),
+            forwarder_name="Forwarder",
+            supplier_name="Supplier",
+            shop_services="Service",
+            delivery_fee=Decimal("0"),
+        )
+        PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            ordered_qty=10,
+            unit_price_foreign=Decimal("10"),
+        )
+
+        response = client.post(
+            f"/purchase-order/{po.id}/advance_status/",
+            {"status": PurchaseOrder.POStatus.ORDERED},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        history = PurchaseOrderStatusHistory.objects.filter(purchase_order=po)
+        self.assertEqual(history.count(), 1)
+        record = history.first()
+        self.assertEqual(record.from_status, PurchaseOrder.POStatus.DRAFT)
+        self.assertEqual(record.to_status, PurchaseOrder.POStatus.ORDERED)
+        self.assertEqual(record.changed_by, user)
+
+    def test_read_serializer_includes_next_status_and_history(self):
+        """GET detail -> next_status and status_history in response."""
+        from core.models import UserProfile
+
+        client = APIClient()
+        user = User.objects.create_user(
+            username="read_serializer_test", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        client.force_authenticate(user=user)
+
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DRAFT,
+        )
+        PurchaseOrderDetailFactory(
+            purchase_order=po, product_variant=self.product_variant
+        )
+
+        response = client.get(f"/purchase-order/{po.id}/", format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("next_status", response.data)
+        self.assertIn("status_history", response.data)
+        self.assertIsInstance(response.data["status_history"], list)
+        self.assertEqual(response.data["next_status"], PurchaseOrder.POStatus.ORDERED)

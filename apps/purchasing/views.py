@@ -122,7 +122,7 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
         try:
             validated_data = serializer.validated_data
             services = purchasing_service.PurchaseOrderService()
-            services.update_purchase_order(instance, validated_data)
+            services.update_purchase_order(instance, validated_data, changed_by=request.user)
 
             return Response(status=status.HTTP_200_OK)
 
@@ -136,7 +136,7 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
         new_status = request.data.get("status")
         try:
             service = PurchaseOrderService()
-            po = service.update_purchase_order(po, {"status": new_status})
+            po = service.update_purchase_order(po, {"status": new_status}, changed_by=request.user)
             return Response(PurchaseOrderReadSerializer(po).data, status=status.HTTP_200_OK)
         except ValidationError as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
