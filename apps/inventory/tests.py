@@ -271,6 +271,47 @@ class InventoryAPITest(APITestCase):
         self.client.post("/product/", payload, format="json")
         assert Product.objects.count() == 0
 
+    def test_create_product_returns_id_and_variant_ids(self):
+        """POST /product/ returns {id, name, variants: [{id, name, sku_variant_code}]}"""
+        payload = {
+            "company_id": str(self.company.id),
+            "category_id": str(self.category.id),
+            "name": "Test Product Quick",
+            "description": "Test Product Quick (created via PO - update description later)",
+            "variants": [{
+                "name": "Blue / M",
+                "sku_variant_code": "TSH-001-BLU-M",
+                "base_price": 50000,
+                "marketplace_listings": [],
+            }],
+        }
+        response = self.client.post("/product/", payload, format="json")
+        self.assertEqual(response.status_code, 201)
+        self.assertIn("id", response.data)
+        self.assertEqual(len(response.data["variants"]), 1)
+        self.assertEqual(response.data["variants"][0]["sku_variant_code"], "TSH-001-BLU-M")
+        self.assertEqual(response.data["variants"][0]["name"], "Blue / M")
+
+    def test_create_product_sets_sku_variant_code_in_db(self):
+        """sku_variant_code from request is saved to the ProductVariant record."""
+        payload = {
+            "company_id": str(self.company.id),
+            "category_id": str(self.category.id),
+            "name": "SKU Test Product",
+            "description": "SKU Test Product (created via PO - update description later)",
+            "variants": [{
+                "name": "Red / L",
+                "sku_variant_code": "SKU-001-RED-L",
+                "base_price": 75000,
+                "marketplace_listings": [],
+            }],
+        }
+        response = self.client.post("/product/", payload, format="json")
+        self.assertEqual(response.status_code, 201)
+        variant_id = response.data["variants"][0]["id"]
+        variant = ProductVariant.objects.get(id=variant_id)
+        self.assertEqual(variant.sku_variant_code, "SKU-001-RED-L")
+
 
 class InventoryServiceStockUpdateTest(TestCase):
     """Test cases for InventoryService.update_stock_on_po method"""

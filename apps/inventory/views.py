@@ -164,9 +164,12 @@ class ProductViewSet(viewsets.ModelViewSet):
         validated_data = serializer.validated_data
 
         services = product_service.ProductService()
-        services.create_product_with_variants(validated_data)
+        created = services.create_product_with_variants(validated_data)
 
-        return Response(status=status.HTTP_201_CREATED)
+        if is_many:
+            return Response(created, status=status.HTTP_201_CREATED)
+        else:
+            return Response(created[0] if created else {}, status=status.HTTP_201_CREATED)
 
     @action(
         detail=True,

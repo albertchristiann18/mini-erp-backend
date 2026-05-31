@@ -120,11 +120,14 @@ class VariantCreateSerializer(serializers.ModelSerializer):
         model = ProductVariant
         fields = [
             "name",
-            # "sku_variant_code",
+            "sku_variant_code",
             "variant_values",
             "base_price",
             "marketplace_listings",
         ]
+        extra_kwargs = {
+            "sku_variant_code": {"required": False, "allow_blank": True, "default": ""},
+        }
 
 
 class ProductCreateSerializer(serializers.ModelSerializer):
