@@ -22,7 +22,6 @@ Table structure confirmed by balance-chain analysis:
 
 import hashlib
 import json
-import os
 import re
 from pathlib import Path
 
