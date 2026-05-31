@@ -1295,7 +1295,9 @@ class PurchaseOrderServiceTest(TestCase):
         po = self.service.update_purchase_order(po, {})
 
         po.refresh_from_db()
-        expected_commission = int(round(Decimal("5") / Decimal("100") * Decimal("200") * Decimal("2200")))  # 5/100 * 200 * 2200 = 22000
+        expected_commission = int(
+            round(Decimal("5") / Decimal("100") * Decimal("200") * Decimal("2200"))
+        )  # 5/100 * 200 * 2200 = 22000
         self.assertEqual(po.commission_fee, expected_commission)
 
     def test_cost_ratio_cogs_formula(self):
@@ -2091,9 +2093,7 @@ class ForecastFieldsTest(TestCase):
             "commission_fee_rmb": "150.000",
         }
 
-        response = self.client.patch(
-            f"/purchase-order/{po.id}/", payload, format="json"
-        )
+        response = self.client.patch(f"/purchase-order/{po.id}/", payload, format="json")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         po.refresh_from_db()
@@ -2181,9 +2181,7 @@ class POListSerializerExpansionTest(TestCase):
             invoice_date=date(2026, 5, 15),
         )
 
-        response = self.client.get(
-            "/purchase-order/", {"date_from": "2026-05-10"}, format="json"
-        )
+        response = self.client.get("/purchase-order/", {"date_from": "2026-05-10"}, format="json")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         result_ids = [item["id"] for item in response.data["results"]]
@@ -2203,9 +2201,7 @@ class POListSerializerExpansionTest(TestCase):
             forwarder_name="Forwarder B",
         )
 
-        response = self.client.get(
-            "/purchase-order/", {"forwarder": "Forwarder A"}, format="json"
-        )
+        response = self.client.get("/purchase-order/", {"forwarder": "Forwarder A"}, format="json")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         result_ids = [item["id"] for item in response.data["results"]]
@@ -2226,6 +2222,7 @@ class CompanyScopedViewsTest(APITestCase):
             username="po_user_b", password="password", is_staff=True
         )
         from core.models import UserProfile
+
         UserProfile.objects.create(user=self.user_a, company=self.company_a, role="admin")
         UserProfile.objects.create(user=self.user_b, company=self.company_b, role="admin")
 
@@ -2290,9 +2287,7 @@ class CogsAllocationEdgeCaseTests(TestCase):
             self.product_variant,
             discounted_total_price_base=0,
         )
-        self.inventory_service.update_cogs_on_po(
-            po, PurchaseOrder.POStatus.DELIVERED, data
-        )
+        self.inventory_service.update_cogs_on_po(po, PurchaseOrder.POStatus.DELIVERED, data)
         cogs = ProductCogs.objects.get(
             product_variant=self.product_variant,
             warehouse=self.warehouse,
@@ -2323,9 +2318,7 @@ class CogsAllocationEdgeCaseTests(TestCase):
             commission_fee=0,
         )
         data = self._build_cogs_data(zero_dim_variant)
-        self.inventory_service.update_cogs_on_po(
-            po, PurchaseOrder.POStatus.DELIVERED, data
-        )
+        self.inventory_service.update_cogs_on_po(po, PurchaseOrder.POStatus.DELIVERED, data)
         cogs = ProductCogs.objects.get(
             product_variant=zero_dim_variant,
             warehouse=self.warehouse,
@@ -2350,9 +2343,7 @@ class CogsAllocationEdgeCaseTests(TestCase):
             total_item_amount=220000,
         )
         data = self._build_cogs_data(self.product_variant)
-        self.inventory_service.update_cogs_on_po(
-            po, PurchaseOrder.POStatus.DELIVERED, data
-        )
+        self.inventory_service.update_cogs_on_po(po, PurchaseOrder.POStatus.DELIVERED, data)
         cogs = ProductCogs.objects.get(
             product_variant=self.product_variant,
             warehouse=self.warehouse,
@@ -2524,8 +2515,12 @@ class PaginationOrderingSummaryTest(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["upcoming_count"], 2)
         expected_total_amount = (ordered_po.total_amount or 0) + (shipped_po.total_amount or 0)
-        expected_total_item_amount = (ordered_po.total_item_amount or 0) + (shipped_po.total_item_amount or 0)
-        expected_procure_amount = (ordered_po.procure_amount or 0) + (shipped_po.procure_amount or 0)
+        expected_total_item_amount = (ordered_po.total_item_amount or 0) + (
+            shipped_po.total_item_amount or 0
+        )
+        expected_procure_amount = (ordered_po.procure_amount or 0) + (
+            shipped_po.procure_amount or 0
+        )
         self.assertEqual(response.data["upcoming_total_amount"], expected_total_amount)
         self.assertEqual(response.data["upcoming_total_item_amount"], expected_total_item_amount)
         self.assertEqual(response.data["upcoming_procure_amount"], expected_procure_amount)
@@ -2582,9 +2577,7 @@ class PurchaseOrderStatusHistoryTest(TestCase):
         from core.models import UserProfile
 
         client = APIClient()
-        user = User.objects.create_user(
-            username="history_test", password="password", is_staff=True
-        )
+        user = User.objects.create_user(username="history_test", password="password", is_staff=True)
         UserProfile.objects.create(user=user, company=self.company, role="admin")
         client.force_authenticate(user=user)
 
@@ -2639,9 +2632,7 @@ class PurchaseOrderStatusHistoryTest(TestCase):
             company=self.company,
             status=PurchaseOrder.POStatus.DRAFT,
         )
-        PurchaseOrderDetailFactory(
-            purchase_order=po, product_variant=self.product_variant
-        )
+        PurchaseOrderDetailFactory(purchase_order=po, product_variant=self.product_variant)
 
         response = client.get(f"/purchase-order/{po.id}/", format="json")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -2831,9 +2822,7 @@ class EditableFieldsAndNoteTest(TestCase):
 
     def test_note_field_in_list_response(self):
         """Create PO with note='test note', assert note appears in list API response."""
-        po = PurchaseOrderFactory(
-            warehouse=self.warehouse, company=self.company, note="test note"
-        )
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company, note="test note")
         response = self.client.get("/purchase-order/", format="json")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         po_data = next(r for r in response.data["results"] if r["id"] == str(po.id))

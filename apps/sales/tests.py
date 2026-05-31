@@ -768,6 +768,7 @@ class CompanyScopedViewsTest(APITestCase):
             username="sales_user_b", password="password", is_staff=True
         )
         from core.models import UserProfile
+
         UserProfile.objects.create(user=self.user_a, company=self.company_a, role="admin")
         UserProfile.objects.create(user=self.user_b, company=self.company_b, role="admin")
 

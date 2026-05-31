@@ -177,22 +177,26 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
             return Response({"error": "status is required"}, status=status.HTTP_400_BAD_REQUEST)
 
         if not po.can_advance_to(target_status):
-            return Response({
-                "can_transition": False,
-                "target_status": target_status,
-                "missing_fields": [],
-                "error": f"Cannot transition from {po.status} to {target_status}.",
-            })
+            return Response(
+                {
+                    "can_transition": False,
+                    "target_status": target_status,
+                    "missing_fields": [],
+                    "error": f"Cannot transition from {po.status} to {target_status}.",
+                }
+            )
 
         service = PurchaseOrderService()
         missing = service.check_purchase_order_requirements(po, target_status)
         warnings = service.get_transition_warnings(po, target_status)
-        return Response({
-            "can_transition": len(missing) == 0,
-            "target_status": target_status,
-            "missing_fields": missing,
-            "warnings": warnings,
-        })
+        return Response(
+            {
+                "can_transition": len(missing) == 0,
+                "target_status": target_status,
+                "missing_fields": missing,
+                "warnings": warnings,
+            }
+        )
 
     @action(detail=False, methods=["get"], url_path="summary")
     def summary(self, request: Request) -> Response:
@@ -222,12 +226,14 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
             upcoming_procure_amount=Sum("procure_amount"),
         )
 
-        return Response({
-            "upcoming_count": agg["upcoming_count"] or 0,
-            "upcoming_total_amount": agg["upcoming_total_amount"] or 0,
-            "upcoming_total_item_amount": agg["upcoming_total_item_amount"] or 0,
-            "upcoming_procure_amount": agg["upcoming_procure_amount"] or 0,
-        })
+        return Response(
+            {
+                "upcoming_count": agg["upcoming_count"] or 0,
+                "upcoming_total_amount": agg["upcoming_total_amount"] or 0,
+                "upcoming_total_item_amount": agg["upcoming_total_item_amount"] or 0,
+                "upcoming_procure_amount": agg["upcoming_procure_amount"] or 0,
+            }
+        )
 
 
 class ReplenishmentView(APIView):

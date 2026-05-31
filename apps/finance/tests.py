@@ -499,6 +499,7 @@ class CompanyScopedViewsTest(APITestCase):
             username="fin_user_b", password="password", is_staff=True
         )
         from core.models import UserProfile
+
         UserProfile.objects.create(user=self.user_a, company=self.company_a, role="admin")
         UserProfile.objects.create(user=self.user_b, company=self.company_b, role="admin")
 
@@ -543,6 +544,7 @@ class CompanyScopedViewsTest(APITestCase):
     def test_report_uses_authenticated_company(self):
         self.client.force_authenticate(user=self.user_a)
         from datetime import date, timedelta
+
         today = date.today()
         start = today - timedelta(days=30)
         response = self.client.get(
@@ -626,6 +628,7 @@ class CashTransactionAPITest(APITestCase):
     def test_cash_transaction_summary_uses_authenticated_company(self):
         """Verify the summary action returns data for the logged-in company without requiring company_id."""
         from apps.finance.factories import ExpenseCategoryFactory, ExpenseFactory
+
         cat = ExpenseCategoryFactory(company=self.company)
         ExpenseFactory(
             company=self.company,
@@ -635,8 +638,6 @@ class CashTransactionAPITest(APITestCase):
         )
         start = date.today() - timedelta(days=7)
         end = date.today() + timedelta(days=1)
-        response = self.client.get(
-            f"/cash-transactions/summary/?start_date={start}&end_date={end}"
-        )
+        response = self.client.get(f"/cash-transactions/summary/?start_date={start}&end_date={end}")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertGreaterEqual(len(response.data), 0)

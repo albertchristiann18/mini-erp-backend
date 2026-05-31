@@ -7526,7 +7526,9 @@ DETAIL_RECORDS: list[dict] = [
 def import_purchase_orders() -> None:
     po_created = po_skipped = detail_created = detail_skipped = detail_no_sku = 0
 
-    sku_to_variant = {v.sku_variant_code: v for v in ProductVariant.objects.filter(company_id=COMPANY_ID)}
+    sku_to_variant = {
+        v.sku_variant_code: v for v in ProductVariant.objects.filter(company_id=COMPANY_ID)
+    }
     print(f"Loaded {len(sku_to_variant)} variants from DB")
 
     with transaction.atomic():
@@ -7571,7 +7573,10 @@ def import_purchase_orders() -> None:
                 detail_skipped += 1
 
     print(f"POs:     created={po_created}, skipped={po_skipped}")
-    print(f"Details: created={detail_created}, skipped={detail_skipped}, no_variant={detail_no_sku}")
+    print(
+        f"Details: created={detail_created}, skipped={detail_skipped}, no_variant={detail_no_sku}"
+    )
+
 
 if __name__ == "__main__":
     import_purchase_orders()

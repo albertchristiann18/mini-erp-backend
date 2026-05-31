@@ -39,29 +39,35 @@ SOURCE_FILE = (
 
 OUTPUT_FILE = Path(__file__).parent / "import_stock_movements.sql"
 
-COMPANY_ID   = "01JSORAKIDS0CMPNY0000001AB"
+COMPANY_ID = "01JSORAKIDS0CMPNY0000001AB"
 WAREHOUSE_ID = "01JSORAKIDS0WAREHSE000001A"
 
 # ---------------------------------------------------------------------------
 # ID helpers  (must match the other import scripts)
 # ---------------------------------------------------------------------------
 
+
 def make_id(seed: str) -> str:
     h = hashlib.md5(seed.encode()).hexdigest()[:20].upper()
     return "01JSORA" + h[:19]
 
+
 def variant_id(sku: str) -> str:
     return make_id("VAR-" + sku)
+
 
 def movement_id(sku: str, month_key: str, mtype: str) -> str:
     return make_id(f"SM-{sku}-{month_key}-{mtype}")
 
+
 def cogs_id(sku: str, month_key: str) -> str:
     return make_id(f"COGS-{sku}-{month_key}")
+
 
 # ---------------------------------------------------------------------------
 # Numeric parser  (handles  \-123,456  and  empty cells)
 # ---------------------------------------------------------------------------
+
 
 def parse_num(s: str) -> int:
     s = str(s).strip().replace(",", "").replace("\\-", "-").replace("\\", "")
@@ -72,6 +78,7 @@ def parse_num(s: str) -> int:
     except ValueError:
         return 0
 
+
 # ---------------------------------------------------------------------------
 # Table parser
 # Columns (0-based after SKU):
@@ -80,13 +87,13 @@ def parse_num(s: str) -> int:
 # ---------------------------------------------------------------------------
 
 SKU_PATTERN = re.compile(
-    r"\|\s*[^|]+\|\s*\d+\s*\|\s*[^|]+\|\s*"          # Desc | Size | Color |
-    r"((?:[A-Z]{2,4}-\d{3}-\d{3}-[A-Z]+))\s*\|"       # SKU
-    r"\s*([^|]*)\|\s*([^|]*)\|"                        # BegQTY | BegVal
-    r"\s*([^|]*)\|\s*([^|]*)\|"                        # InQTY  | InVal
-    r"\s*([^|]*)\|\s*([^|]*)\|"                        # OutQTY | OutVal
-    r"\s*([^|]*)\|\s*([^|]*)\|"                        # AdjQTY | AdjVal
-    r"\s*([^|]*)\|\s*([^|]*)\|",                       # AftQTY | AftVal
+    r"\|\s*[^|]+\|\s*\d+\s*\|\s*[^|]+\|\s*"  # Desc | Size | Color |
+    r"((?:[A-Z]{2,4}-\d{3}-\d{3}-[A-Z]+))\s*\|"  # SKU
+    r"\s*([^|]*)\|\s*([^|]*)\|"  # BegQTY | BegVal
+    r"\s*([^|]*)\|\s*([^|]*)\|"  # InQTY  | InVal
+    r"\s*([^|]*)\|\s*([^|]*)\|"  # OutQTY | OutVal
+    r"\s*([^|]*)\|\s*([^|]*)\|"  # AdjQTY | AdjVal
+    r"\s*([^|]*)\|\s*([^|]*)\|",  # AftQTY | AftVal
     re.MULTILINE,
 )
 
@@ -95,10 +102,11 @@ def parse_table(text: str) -> dict:
     """Return {sku: (bq,bv,iq,iv,oq,ov,aq,av,aftq,aftv)}"""
     rows: dict = {}
     for m in SKU_PATTERN.finditer(text):
-        sku  = m.group(1).strip()
+        sku = m.group(1).strip()
         vals = tuple(parse_num(m.group(i)) for i in range(2, 12))
         rows[sku] = vals
     return rows
+
 
 # ---------------------------------------------------------------------------
 # Monthly slice definitions  (start / end byte offsets in the raw content)
@@ -106,10 +114,10 @@ def parse_table(text: str) -> dict:
 #   2025-09 After(33) → 2025-10 Beg(33) → … → 2026-03 After(36)  ✓
 # ---------------------------------------------------------------------------
 MONTH_SLICES = [
-    ("2025-09", "2025-09-01",  65926,  82669),
-    ("2025-10", "2025-10-01",  82909,  99286),
-    ("2025-11", "2025-11-01",    394,  15990),
-    ("2025-12", "2025-12-01",  99517, 114759),
+    ("2025-09", "2025-09-01", 65926, 82669),
+    ("2025-10", "2025-10-01", 82909, 99286),
+    ("2025-11", "2025-11-01", 394, 15990),
+    ("2025-12", "2025-12-01", 99517, 114759),
     ("2026-01", "2026-01-01", 114759, 130744),
     ("2026-02", "2026-02-01", 130865, 147412),
     ("2026-03", "2026-03-01", 147533, 162000),
@@ -119,19 +127,23 @@ MONTH_SLICES = [
 # SQL helpers
 # ---------------------------------------------------------------------------
 
+
 def q(val) -> str:
     """Quote a string for SQL, or return NULL."""
     if val is None:
         return "NULL"
     return "'" + str(val).replace("'", "''") + "'"
 
+
 def ts(date_str: str) -> str:
     """Turn 'YYYY-MM-DD' into a timestamptz literal at midnight Jakarta (UTC+7)."""
     return f"'{date_str} 00:00:00+07'"
 
+
 # ---------------------------------------------------------------------------
 # Main generation
 # ---------------------------------------------------------------------------
+
 
 def generate() -> None:
     # Load source
@@ -164,8 +176,8 @@ def generate() -> None:
     # Build SQL lines
     # -----------------------------------------------------------------------
     movement_inserts: list[str] = []
-    cogs_inserts:     list[str] = []
-    seen_ids:         set[str]  = set()
+    cogs_inserts: list[str] = []
+    seen_ids: set[str] = set()
 
     def add_movement(mid, variant, mtype, qty, ref, note, bb, ba, cdate_str):
         if mid in seen_ids:
@@ -231,8 +243,8 @@ def generate() -> None:
             # -----------------------------------------------------------------
             if iq > 0:
                 mid = movement_id(sku, mk, "PUR")
-                bb  = bal_after_beg
-                ba  = bb + iq
+                bb = bal_after_beg
+                ba = bb + iq
                 add_movement(
                     mid=mid,
                     variant=vid,
@@ -265,13 +277,13 @@ def generate() -> None:
             # -----------------------------------------------------------------
             if oq > 0:
                 mid = movement_id(sku, mk, "OUT")
-                bb  = bal_after_in
-                ba  = bb - oq
+                bb = bal_after_in
+                ba = bb - oq
                 add_movement(
                     mid=mid,
                     variant=vid,
                     mtype="OUT",
-                    qty=-oq,          # negative quantity for outbound
+                    qty=-oq,  # negative quantity for outbound
                     ref=f"IMPORT-OUT-{month_label}",
                     note=f"Sales outbound import for {month_label}",
                     bb=bb,
@@ -287,8 +299,8 @@ def generate() -> None:
             # -----------------------------------------------------------------
             if aq != 0:
                 mid = movement_id(sku, mk, "ADJ")
-                bb  = bal_after_out
-                ba  = aftq   # After QTY is the authoritative final balance
+                bb = bal_after_out
+                ba = aftq  # After QTY is the authoritative final balance
                 add_movement(
                     mid=mid,
                     variant=vid,

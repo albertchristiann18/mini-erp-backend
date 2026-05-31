@@ -120,18 +120,65 @@ class PurchaseOrderService:
 
         if new_status == PurchaseOrder.POStatus.ORDERED:
             for field, label, section, message in [
-                ("exchange_rate",               "Exchange Rate",       "Financial Setup",   "Exchange rate is required when moving to ORDERED."),
-                ("purchase_order_invoice_file", "PO Invoice File",    "Attachments",       "PO invoice file is required when moving to ORDERED."),
-                ("invoice_number",              "Invoice Number",      "Logistics & Dates", "Invoice number is required when moving to ORDERED."),
-                ("invoice_date",                "Invoice Date",        "Logistics & Dates", "Invoice date is required when moving to ORDERED."),
-                ("commission_fee_pct",          "Commission %",        "Financial Setup",   "Commission % is required when moving to ORDERED."),
-                ("forwarder_name",              "Forwarder",           "General",           "Forwarder name is required when moving to ORDERED."),
-                ("supplier_name",               "Supplier",            "General",           "Supplier name is required when moving to ORDERED."),
-                ("shop_services",               "Jasa Belanja",        "General",           "Jasa belanja is required when moving to ORDERED."),
-                ("delivery_fee",               "Delivery Fee (RMB)",  "Financial Setup",   "Delivery fee is required when moving to ORDERED. Can be 0."),
+                (
+                    "exchange_rate",
+                    "Exchange Rate",
+                    "Financial Setup",
+                    "Exchange rate is required when moving to ORDERED.",
+                ),
+                (
+                    "purchase_order_invoice_file",
+                    "PO Invoice File",
+                    "Attachments",
+                    "PO invoice file is required when moving to ORDERED.",
+                ),
+                (
+                    "invoice_number",
+                    "Invoice Number",
+                    "Logistics & Dates",
+                    "Invoice number is required when moving to ORDERED.",
+                ),
+                (
+                    "invoice_date",
+                    "Invoice Date",
+                    "Logistics & Dates",
+                    "Invoice date is required when moving to ORDERED.",
+                ),
+                (
+                    "commission_fee_pct",
+                    "Commission %",
+                    "Financial Setup",
+                    "Commission % is required when moving to ORDERED.",
+                ),
+                (
+                    "forwarder_name",
+                    "Forwarder",
+                    "General",
+                    "Forwarder name is required when moving to ORDERED.",
+                ),
+                (
+                    "supplier_name",
+                    "Supplier",
+                    "General",
+                    "Supplier name is required when moving to ORDERED.",
+                ),
+                (
+                    "shop_services",
+                    "Jasa Belanja",
+                    "General",
+                    "Jasa belanja is required when moving to ORDERED.",
+                ),
+                (
+                    "delivery_fee",
+                    "Delivery Fee (RMB)",
+                    "Financial Setup",
+                    "Delivery fee is required when moving to ORDERED. Can be 0.",
+                ),
             ]:
                 if not _present(field):
-                    missing.append({"field": field, "label": label, "section": section, "message": message})
+                    missing.append(
+                        {"field": field, "label": label, "section": section, "message": message}
+                    )
 
             # Order details: need at least one existing or incoming
             has_incoming_details = bool(data.get("order_details"))
@@ -139,32 +186,58 @@ class PurchaseOrderService:
                 po.order_details.exists() if hasattr(po, "order_details") else False
             )
             if not has_incoming_details and not has_existing_details:
-                missing.append({
-                    "field": "order_details",
-                    "label": "Order Items",
-                    "section": "Order Items",
-                    "message": "At least one order item is required when moving to ORDERED.",
-                })
+                missing.append(
+                    {
+                        "field": "order_details",
+                        "label": "Order Items",
+                        "section": "Order Items",
+                        "message": "At least one order item is required when moving to ORDERED.",
+                    }
+                )
 
         elif new_status == PurchaseOrder.POStatus.SHIPPED:
             for field, label, section, message in [
-                ("delivery_order_number", "Delivery Order No.",  "Logistics & Dates", "Delivery order number is required when moving to SHIPPED."),
-                ("delivery_order_file",   "Delivery Order File", "Attachments",       "Delivery order file is required when moving to SHIPPED."),
-                ("shipping_fee_per_cbm",  "Shipping Fee / CBM",  "Financial Setup",   "Shipping fee per CBM is required when moving to SHIPPED."),
-                ("cbm",                   "CBM",                 "Logistics & Dates", "CBM is required when moving to SHIPPED."),
-                ("weight",                "Weight (kg)",         "Logistics & Dates", "Weight is required when moving to SHIPPED."),
+                (
+                    "delivery_order_number",
+                    "Delivery Order No.",
+                    "Logistics & Dates",
+                    "Delivery order number is required when moving to SHIPPED.",
+                ),
+                (
+                    "delivery_order_file",
+                    "Delivery Order File",
+                    "Attachments",
+                    "Delivery order file is required when moving to SHIPPED.",
+                ),
+                (
+                    "shipping_fee_per_cbm",
+                    "Shipping Fee / CBM",
+                    "Financial Setup",
+                    "Shipping fee per CBM is required when moving to SHIPPED.",
+                ),
+                ("cbm", "CBM", "Logistics & Dates", "CBM is required when moving to SHIPPED."),
+                (
+                    "weight",
+                    "Weight (kg)",
+                    "Logistics & Dates",
+                    "Weight is required when moving to SHIPPED.",
+                ),
             ]:
                 if not _present(field):
-                    missing.append({"field": field, "label": label, "section": section, "message": message})
+                    missing.append(
+                        {"field": field, "label": label, "section": section, "message": message}
+                    )
 
         elif new_status == PurchaseOrder.POStatus.DELIVERED:
             if not _present("delivery_order_invoice_file"):
-                missing.append({
-                    "field": "delivery_order_invoice_file",
-                    "label": "DO Invoice File",
-                    "section": "Attachments",
-                    "message": "Delivery order invoice file is required when moving to DELIVERED.",
-                })
+                missing.append(
+                    {
+                        "field": "delivery_order_invoice_file",
+                        "label": "DO Invoice File",
+                        "section": "Attachments",
+                        "message": "Delivery order invoice file is required when moving to DELIVERED.",
+                    }
+                )
 
         return missing
 
@@ -184,17 +257,21 @@ class PurchaseOrderService:
             for detail in po.order_details.select_related("product_variant").all():
                 received = detail.received_qty or 0
                 if received < detail.ordered_qty:
-                    partial_items.append({
-                        "name": detail.product_variant.name,
-                        "ordered_qty": detail.ordered_qty,
-                        "received_qty": received,
-                    })
+                    partial_items.append(
+                        {
+                            "name": detail.product_variant.name,
+                            "ordered_qty": detail.ordered_qty,
+                            "received_qty": received,
+                        }
+                    )
             if partial_items:
-                warnings.append({
-                    "type": "partial_receipt",
-                    "message": f"{len(partial_items)} item(s) have received qty less than ordered qty.",
-                    "items": partial_items,
-                })
+                warnings.append(
+                    {
+                        "type": "partial_receipt",
+                        "message": f"{len(partial_items)} item(s) have received qty less than ordered qty.",
+                        "items": partial_items,
+                    }
+                )
 
         return warnings
 
@@ -392,7 +469,9 @@ class PurchaseOrderService:
                 existing_detail_obj = existing_details_map.get(detail_id) if detail_id else None
                 discounted_total_price_base = 0
                 if existing_detail_obj:
-                    discounted_total_price_base = existing_detail_obj.discounted_total_price_base or 0
+                    discounted_total_price_base = (
+                        existing_detail_obj.discounted_total_price_base or 0
+                    )
 
                 inventory_data.append(
                     {
@@ -453,6 +532,7 @@ class PurchaseOrderService:
 
         if new_status and new_status != old_status:
             from apps.purchasing.models import PurchaseOrderStatusHistory
+
             PurchaseOrderStatusHistory.objects.create(
                 purchase_order=po,
                 company=po.company,
@@ -510,7 +590,9 @@ class PurchaseOrderService:
                 existing_detail_obj = existing_details_map.get(detail_id) if detail_id else None
                 discounted_total_price_base = 0
                 if existing_detail_obj:
-                    discounted_total_price_base = existing_detail_obj.discounted_total_price_base or 0
+                    discounted_total_price_base = (
+                        existing_detail_obj.discounted_total_price_base or 0
+                    )
 
                 inventory_data.append(
                     {
@@ -603,17 +685,29 @@ class PurchaseOrderService:
                     }
                     if po.exchange_rate:
                         exchange_rate = Decimal(str(po.exchange_rate))
-                        unit_price_foreign = Decimal(str(detail_data_copy.get("unit_price_foreign") or 0))
-                        disc_foreign = Decimal(str(detail_data_copy.get("discounted_unit_price_foreign") or 0))
+                        unit_price_foreign = Decimal(
+                            str(detail_data_copy.get("unit_price_foreign") or 0)
+                        )
+                        disc_foreign = Decimal(
+                            str(detail_data_copy.get("discounted_unit_price_foreign") or 0)
+                        )
                         if not disc_foreign:
                             disc_foreign = unit_price_foreign
                         ordered_qty = int(detail_data_copy.get("ordered_qty") or 0)
-                        detail_data_copy["unit_price_base"] = int(round(unit_price_foreign * exchange_rate))
+                        detail_data_copy["unit_price_base"] = int(
+                            round(unit_price_foreign * exchange_rate)
+                        )
                         detail_data_copy["discounted_unit_price_foreign"] = disc_foreign
-                        detail_data_copy["discounted_unit_price_base"] = int(round(disc_foreign * exchange_rate))
+                        detail_data_copy["discounted_unit_price_base"] = int(
+                            round(disc_foreign * exchange_rate)
+                        )
                         detail_data_copy["total_price_foreign"] = unit_price_foreign * ordered_qty
-                        detail_data_copy["discounted_total_price_foreign"] = disc_foreign * ordered_qty
-                        detail_data_copy["total_price_base"] = detail_data_copy["unit_price_base"] * ordered_qty
+                        detail_data_copy["discounted_total_price_foreign"] = (
+                            disc_foreign * ordered_qty
+                        )
+                        detail_data_copy["total_price_base"] = (
+                            detail_data_copy["unit_price_base"] * ordered_qty
+                        )
                         detail_data_copy["discounted_total_price_base"] = (
                             detail_data_copy["discounted_unit_price_base"] * ordered_qty
                         )
@@ -674,7 +768,9 @@ class PurchaseOrderService:
         shipping_fee_per_cbm = Decimal(str(po.shipping_fee_per_cbm or 0))
         cbm = Decimal(str(po.cbm or 0))
 
-        commission_fee = int(round(commission_fee_pct / Decimal("100") * total_item_rmb * exchange_rate))
+        commission_fee = int(
+            round(commission_fee_pct / Decimal("100") * total_item_rmb * exchange_rate)
+        )
         shipping_fee = PurchaseOrderService._calc_shipping_fee(shipping_fee_per_cbm, cbm)
         procure_amount = shipping_fee + commission_fee
         total_order_amount = total_item_amount + commission_fee

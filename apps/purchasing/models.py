@@ -39,7 +39,9 @@ class PurchaseOrder(DefaultModel):
     forecast_delivery_date = models.DateField(null=True, blank=True)
     forecast_cbm = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True)
     forecast_shipping_fee = models.BigIntegerField(null=True, blank=True)  # IDR
-    commission_fee_rmb = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True)  # RMB
+    commission_fee_rmb = models.DecimalField(
+        max_digits=10, decimal_places=3, null=True, blank=True
+    )  # RMB
     note = models.TextField(blank=True, null=True)
 
     warehouse = models.ForeignKey(
@@ -93,33 +95,54 @@ class PurchaseOrder(DefaultModel):
         POStatus.CANCELLED: [],
     }
 
-    _LOCKED_FROM_SHIPPED: frozenset[str] = frozenset({
-        "exchange_rate",
-        "purchase_order_invoice_file",
-        "invoice_number",
-        "commission_fee_pct",
-        "delivery_fee",
-    })
+    _LOCKED_FROM_SHIPPED: frozenset[str] = frozenset(
+        {
+            "exchange_rate",
+            "purchase_order_invoice_file",
+            "invoice_number",
+            "commission_fee_pct",
+            "delivery_fee",
+        }
+    )
 
-    _LOCKED_FROM_DELIVERED: frozenset[str] = _LOCKED_FROM_SHIPPED | frozenset({
-        "delivery_order_number",
-        "cbm",
-        "delivery_order_file",
-    })
+    _LOCKED_FROM_DELIVERED: frozenset[str] = _LOCKED_FROM_SHIPPED | frozenset(
+        {
+            "delivery_order_number",
+            "cbm",
+            "delivery_order_file",
+        }
+    )
 
     _ALL_EDITABLE_HEADER: list[str] = [
-        "supplier_name", "forwarder_name", "shop_services", "currency",
-        "exchange_rate", "commission_fee_pct", "delivery_fee", "commission_fee_rmb",
-        "invoice_number", "invoice_date", "delivery_order_number", "delivery_date",
-        "forecast_delivery_date", "cbm", "forecast_cbm", "weight",
-        "shipping_fee_per_cbm", "forecast_shipping_fee",
-        "purchase_order_invoice_file", "delivery_order_file",
-        "delivery_order_invoice_file", "packing_list_file",
+        "supplier_name",
+        "forwarder_name",
+        "shop_services",
+        "currency",
+        "exchange_rate",
+        "commission_fee_pct",
+        "delivery_fee",
+        "commission_fee_rmb",
+        "invoice_number",
+        "invoice_date",
+        "delivery_order_number",
+        "delivery_date",
+        "forecast_delivery_date",
+        "cbm",
+        "forecast_cbm",
+        "weight",
+        "shipping_fee_per_cbm",
+        "forecast_shipping_fee",
+        "purchase_order_invoice_file",
+        "delivery_order_file",
+        "delivery_order_invoice_file",
+        "packing_list_file",
         "note",
     ]
 
     _ALL_EDITABLE_ORDER_DETAIL: list[str] = [
-        "ordered_qty", "unit_price_foreign", "discounted_unit_price_foreign",
+        "ordered_qty",
+        "unit_price_foreign",
+        "discounted_unit_price_foreign",
     ]
 
     @classmethod
@@ -136,12 +159,16 @@ class PurchaseOrder(DefaultModel):
             }
         elif status == cls.POStatus.SHIPPED:
             return {
-                "header": [f for f in cls._ALL_EDITABLE_HEADER if f not in cls._LOCKED_FROM_SHIPPED],
+                "header": [
+                    f for f in cls._ALL_EDITABLE_HEADER if f not in cls._LOCKED_FROM_SHIPPED
+                ],
                 "order_detail": [],
             }
         elif status == cls.POStatus.DELIVERED:
             return {
-                "header": [f for f in cls._ALL_EDITABLE_HEADER if f not in cls._LOCKED_FROM_DELIVERED],
+                "header": [
+                    f for f in cls._ALL_EDITABLE_HEADER if f not in cls._LOCKED_FROM_DELIVERED
+                ],
                 "order_detail": ["received_qty", "remarks"],
             }
         else:  # COMPLETED, CANCELLED
@@ -162,10 +189,16 @@ class PurchaseOrder(DefaultModel):
 
     def cost_ratio_cogs(self) -> Decimal:
         if self.total_item_amount and self.total_item_amount > 0:
-            delivery_fee_idr = Decimal(str(self.delivery_fee or 0)) * Decimal(str(self.exchange_rate or 0))
+            delivery_fee_idr = Decimal(str(self.delivery_fee or 0)) * Decimal(
+                str(self.exchange_rate or 0)
+            )
             commission = Decimal(str(self.commission_fee or 0))
             shipping = Decimal(str(self.shipping_fee or 0))
-            val = (delivery_fee_idr + commission + shipping) / Decimal(str(self.total_item_amount)) * 100
+            val = (
+                (delivery_fee_idr + commission + shipping)
+                / Decimal(str(self.total_item_amount))
+                * 100
+            )
             return round_decimal(val)
         return Decimal("0.0")
 
@@ -229,8 +262,10 @@ class PurchaseOrderStatusHistory(DefaultModel):
     """Audit log of every status transition on a PurchaseOrder."""
 
     id = ULIDField(
-        primary_key=True, default=generate_ulid, editable=False,
-        db_column="purchase_order_status_history_id"
+        primary_key=True,
+        default=generate_ulid,
+        editable=False,
+        db_column="purchase_order_status_history_id",
     )
     purchase_order = models.ForeignKey(
         PurchaseOrder, on_delete=models.CASCADE, related_name="status_history"

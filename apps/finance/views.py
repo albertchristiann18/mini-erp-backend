@@ -214,9 +214,9 @@ class ExpenseViewSet(viewsets.ModelViewSet):
     def get_queryset(self) -> QuerySet[Expense]:
         if not self.request.user.is_authenticated:
             return Expense.objects.none()
-        qs = Expense.objects.filter(
-            company=self.request.user.profile.company
-        ).select_related("category")
+        qs = Expense.objects.filter(company=self.request.user.profile.company).select_related(
+            "category"
+        )
         category = self.request.query_params.get("category")
         start_date = self.request.query_params.get("start_date")
         end_date = self.request.query_params.get("end_date")

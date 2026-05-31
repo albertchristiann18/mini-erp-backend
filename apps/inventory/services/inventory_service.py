@@ -632,7 +632,9 @@ class InventoryService:
                         if received_qty > 0
                         else Decimal("0")
                     )
-                    cogs_amount = int(unit_price_idr + shipping_per_unit + delivery_per_unit + commission_per_unit)
+                    cogs_amount = int(
+                        unit_price_idr + shipping_per_unit + delivery_per_unit + commission_per_unit
+                    )
 
                     assert reference_number is not None
                     create_cogs_records.append(

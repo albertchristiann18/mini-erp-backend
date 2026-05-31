@@ -172,6 +172,7 @@ class PurchaseOrderListSerializer(serializers.ModelSerializer):
 
     def get_delivery_fee_idr(self, obj: PurchaseOrder) -> int:
         from decimal import Decimal
+
         delivery_fee = obj.delivery_fee or Decimal("0")
         exchange_rate = obj.exchange_rate or Decimal("0")
         return int(round(Decimal(str(delivery_fee)) * Decimal(str(exchange_rate))))
@@ -447,22 +448,32 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
                 locked_violations.append(field)
 
         if locked_violations:
-            raise serializers.ValidationError({
-                field: f"'{field}' cannot be edited when PO status is {current_status}."
-                for field in locked_violations
-            })
+            raise serializers.ValidationError(
+                {
+                    field: f"'{field}' cannot be edited when PO status is {current_status}."
+                    for field in locked_violations
+                }
+            )
 
         order_details = attrs.get("order_details", [])
         for detail_data in order_details:
             if not detail_data.get("id"):
                 continue  # new items bypass field-level edit lock
             for field in detail_data:
-                if field in ("id", "product_variant_id", "received_date", "received_qty", "remarks"):
+                if field in (
+                    "id",
+                    "product_variant_id",
+                    "received_date",
+                    "received_qty",
+                    "remarks",
+                ):
                     continue
                 if field not in editable_detail_set and detail_data.get(field) is not None:
-                    raise serializers.ValidationError({
-                        "order_details": f"'{field}' cannot be edited when PO status is {current_status}."
-                    })
+                    raise serializers.ValidationError(
+                        {
+                            "order_details": f"'{field}' cannot be edited when PO status is {current_status}."
+                        }
+                    )
 
         if new_status not in [
             PurchaseOrder.POStatus.SHIPPED,
@@ -503,7 +514,10 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
                                 }
                             )
 
-        if order_details and current_status not in [PurchaseOrder.POStatus.DRAFT, PurchaseOrder.POStatus.ORDERED]:
+        if order_details and current_status not in [
+            PurchaseOrder.POStatus.DRAFT,
+            PurchaseOrder.POStatus.ORDERED,
+        ]:
             new_details = [d for d in order_details if not d.get("id")]
             if new_details:
                 raise serializers.ValidationError(

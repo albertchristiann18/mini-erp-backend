@@ -23,8 +23,7 @@ import psycopg
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
-DB = dict(dbname="mini_erp", user="postgres", password="postgres",
-          host="localhost", port=5433)
+DB = dict(dbname="mini_erp", user="postgres", password="postgres", host="localhost", port=5433)
 
 CACHE_FILE = Path(
     "/Users/jtf01644/.claude/projects/"
@@ -34,33 +33,34 @@ CACHE_FILE = Path(
 )
 
 WIB = ZoneInfo("Asia/Jakarta")
-NS  = uuid.NAMESPACE_OID
+NS = uuid.NAMESPACE_OID
 
 # channel name (lowercase) → (ERP source_platform, marketplace display name)
 CHANNEL_MAP: dict[str, tuple[str, str]] = {
-    "shopee - mirako kids":     ("SHOPEE", "Shopee - Mirako Kids"),
-    "shopee - sora kids":       ("SHOPEE", "Shopee - Mirako Kids"),
-    "tiktok - mirakokids":      ("TIKTOK", "TikTok - MirakoKids"),
+    "shopee - mirako kids": ("SHOPEE", "Shopee - Mirako Kids"),
+    "shopee - sora kids": ("SHOPEE", "Shopee - Mirako Kids"),
+    "tiktok - mirakokids": ("TIKTOK", "TikTok - MirakoKids"),
     "tiktok shop - mirakokids": ("TIKTOK", "TikTok - MirakoKids"),
-    "tiktok shop":              ("TIKTOK", "TikTok - MirakoKids"),
+    "tiktok shop": ("TIKTOK", "TikTok - MirakoKids"),
 }
 
 STATUS_MAP: dict[str, str] = {
-    "completed":     "COMPLETED",
-    "delivered":     "DELIVERED",
-    "in_delivery":   "SHIPPING",
+    "completed": "COMPLETED",
+    "delivered": "DELIVERED",
+    "in_delivery": "SHIPPING",
     "cancellations": "CANCELLED",
-    "cancelled":     "CANCELLED",
-    "pending":       "PENDING",
-    "confirmed":     "CONFIRMED",
-    "process":       "CONFIRMED",
-    "returns":       "RETURNED",
-    "returned":      "RETURNED",
-    "refunded":      "RETURNED",
+    "cancelled": "CANCELLED",
+    "pending": "PENDING",
+    "confirmed": "CONFIRMED",
+    "process": "CONFIRMED",
+    "returns": "RETURNED",
+    "returned": "RETURNED",
+    "refunded": "RETURNED",
 }
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
 
 def uid(seed: str) -> str:
     return str(uuid.uuid5(NS, f"mirako-kids:{seed}"))
@@ -78,7 +78,7 @@ def parse_idr(raw: str | None) -> int:
     clean = re.sub(r"[^\d\-]", "", unescape_md(str(raw)).strip())
     try:
         v = int(clean) if clean and clean not in ("-", "") else 0
-        return max(0, v)   # ignore negative fees
+        return max(0, v)  # ignore negative fees
     except ValueError:
         return 0
 
@@ -119,6 +119,7 @@ def parse_province_city(address: str) -> tuple[str, str]:
 
 # ── Markdown table parsing ─────────────────────────────────────────────────────
 
+
 def split_md_row(line: str) -> list[str]:
     """
     Split a markdown table row on unescaped pipes.
@@ -127,7 +128,7 @@ def split_md_row(line: str) -> list[str]:
     # Replace escaped pipes temporarily
     placeholder = "\x00PIPE\x00"
     line = line.replace("\\|", placeholder)
-    cells = line.split("|")[1:-1]           # trim leading/trailing empty splits
+    cells = line.split("|")[1:-1]  # trim leading/trailing empty splits
     return [c.replace(placeholder, "|").strip() for c in cells]
 
 
@@ -149,7 +150,7 @@ def parse_markdown_section(section: str) -> list[dict]:
     headers = [normalise_header(h) for h in split_md_row(lines[0])]
 
     rows = []
-    for line in lines[2:]:          # lines[1] is the |:---:|:---:| alignment row
+    for line in lines[2:]:  # lines[1] is the |:---:|:---:| alignment row
         cells = split_md_row(line)
         if not any(cells):
             continue
@@ -167,9 +168,7 @@ def load_all_tabs(content: str) -> list[list[dict]]:
     Split the full fileContent into per-tab sections and parse each one.
     Returns a list of row-dict lists, one per tab.
     """
-    positions = [m.start() for m in re.finditer(
-        r"\| NO\. \|[^\n]+Tanggal Pesanan", content
-    )]
+    positions = [m.start() for m in re.finditer(r"\| NO\. \|[^\n]+Tanggal Pesanan", content)]
     if not positions:
         return []
 
@@ -186,6 +185,7 @@ def load_all_tabs(content: str) -> list[list[dict]]:
 
 # ── Order grouping ─────────────────────────────────────────────────────────────
 
+
 def group_rows_into_orders(rows: list[dict]) -> dict[str, dict]:
     orders: dict[str, dict] = {}
 
@@ -194,36 +194,36 @@ def group_rows_into_orders(rows: list[dict]) -> dict[str, dict]:
         if not parse_dt(row.get("Tanggal Pesanan Dibuat")):
             continue
 
-        pkg_num  = row.get("Nomor Paket", "").strip()
-        mkt_num  = row.get("Nomor Pesanan (di Marketplace)", "").strip()
+        pkg_num = row.get("Nomor Paket", "").strip()
+        mkt_num = row.get("Nomor Pesanan (di Marketplace)", "").strip()
         order_key = pkg_num or mkt_num
         if not order_key:
             continue
 
         if order_key not in orders:
-            channel    = row.get("Channel - Nama Toko", "").strip()
-            platform   = CHANNEL_MAP.get(channel.lower(), ("SHOPEE", ""))[0]
+            channel = row.get("Channel - Nama Toko", "").strip()
+            platform = CHANNEL_MAP.get(channel.lower(), ("SHOPEE", ""))[0]
             status_raw = row.get("Status Pesanan", "").strip().lower()
-            status     = STATUS_MAP.get(status_raw, "COMPLETED")
-            address    = row.get("Alamat Pembeli", "").strip()
+            status = STATUS_MAP.get(status_raw, "COMPLETED")
+            address = row.get("Alamat Pembeli", "").strip()
             province, city = parse_province_city(address)
 
             orders[order_key] = {
-                "package_number":           pkg_num,
-                "marketplace_order_id":     mkt_num or pkg_num,
+                "package_number": pkg_num,
+                "marketplace_order_id": mkt_num or pkg_num,
                 "marketplace_order_number": pkg_num or mkt_num,
-                "channel":                  channel,
-                "source_platform":          platform,
-                "status":                   status,
-                "order_date":               parse_dt(row.get("Tanggal Pesanan Dibuat")),
-                "customer_name":            row.get("Nama Pembeli", "").strip(),
-                "customer_phone":           row.get("Nomor Telepon Pembeli", "").strip(),
-                "shipping_address":         address,
-                "shipping_province":        province,
-                "shipping_city":            city,
-                "courier_name":             row.get("Kurir", "").strip(),
-                "tracking_number":          row.get("Nomor AWB/Resi", "").strip(),
-                "shipping_fee":             parse_idr(row.get("Biaya Pengiriman Final")),
+                "channel": channel,
+                "source_platform": platform,
+                "status": status,
+                "order_date": parse_dt(row.get("Tanggal Pesanan Dibuat")),
+                "customer_name": row.get("Nama Pembeli", "").strip(),
+                "customer_phone": row.get("Nomor Telepon Pembeli", "").strip(),
+                "shipping_address": address,
+                "shipping_province": province,
+                "shipping_city": city,
+                "courier_name": row.get("Kurir", "").strip(),
+                "tracking_number": row.get("Nomor AWB/Resi", "").strip(),
+                "shipping_fee": parse_idr(row.get("Biaya Pengiriman Final")),
                 "items": {},
             }
 
@@ -232,35 +232,36 @@ def group_rows_into_orders(rows: list[dict]) -> dict[str, dict]:
         if not sku or not re.match(r"^[A-Z]+-\d{3}-\d{2,3}-[A-Z]+$", sku):
             continue
 
-        unit_price  = parse_idr(row.get("Harga Satuan"))
-        paid_price  = parse_idr(row.get("Harga Dibayar")) or unit_price
-        item_qty    = max(parse_idr(row.get("Jumlah")), 1)
+        unit_price = parse_idr(row.get("Harga Satuan"))
+        paid_price = parse_idr(row.get("Harga Dibayar")) or unit_price
+        item_qty = max(parse_idr(row.get("Jumlah")), 1)
         service_fee = parse_idr(row.get("Biaya Layanan"))
-        discount    = max(0, unit_price - paid_price) * item_qty
-        line_total  = parse_idr(row.get("Subtotal Produk")) or (paid_price * item_qty)
+        discount = max(0, unit_price - paid_price) * item_qty
+        line_total = parse_idr(row.get("Subtotal Produk")) or (paid_price * item_qty)
 
         if sku in orders[order_key]["items"]:
             it = orders[order_key]["items"][sku]
-            it["quantity"]               += item_qty
-            it["discount_amount"]        += discount
-            it["service_fee"]            += service_fee
-            it["total_marketplace_fee"]  += service_fee
-            it["line_total"]             += line_total
+            it["quantity"] += item_qty
+            it["discount_amount"] += discount
+            it["service_fee"] += service_fee
+            it["total_marketplace_fee"] += service_fee
+            it["line_total"] += line_total
         else:
             orders[order_key]["items"][sku] = {
-                "sku":                   sku,
-                "quantity":              item_qty,
-                "selling_price":         unit_price,
-                "discount_amount":       discount,
-                "service_fee":           service_fee,
+                "sku": sku,
+                "quantity": item_qty,
+                "selling_price": unit_price,
+                "discount_amount": discount,
+                "service_fee": service_fee,
                 "total_marketplace_fee": service_fee,
-                "line_total":            line_total,
+                "line_total": line_total,
             }
 
     return orders
 
 
 # ── DB helpers ─────────────────────────────────────────────────────────────────
+
 
 def load_refs(cur: psycopg.Cursor) -> dict:
     cur.execute("SELECT company_id::text FROM core_company LIMIT 1")
@@ -285,10 +286,10 @@ def load_refs(cur: psycopg.Cursor) -> dict:
     variants: dict[str, str] = {r[1]: r[0] for r in cur.fetchall()}
 
     return {
-        "company_id":   company_id,
+        "company_id": company_id,
         "warehouse_id": warehouse_id,
         "marketplaces": marketplaces,
-        "variants":     variants,
+        "variants": variants,
         "unknown_skus": set(),
     }
 
@@ -311,13 +312,16 @@ def ensure_marketplace(
         return refs["marketplaces"][key]
     mp_id = uid(f"marketplace:{key}")
     if not dry_run:
-        cur.execute("""
+        cur.execute(
+            """
             INSERT INTO core_marketplace
                 (marketplace_id, name, url, status, connected_time,
                  is_active, shipping_config, cdate, udate)
             VALUES (%s::uuid, %s, NULL, 'active', NULL, TRUE, '{}'::jsonb, %s, %s)
             ON CONFLICT (marketplace_id) DO NOTHING
-        """, (mp_id, mp_name, now, now))
+        """,
+            (mp_id, mp_name, now, now),
+        )
     refs["marketplaces"][key] = mp_id
     print(f"  [+] Marketplace created: {mp_name}")
     return mp_id
@@ -333,7 +337,7 @@ def insert_orders(
     inserted = skipped_existing = skipped_no_items = 0
 
     for order_key, order in orders.items():
-        label        = order["package_number"] or order["marketplace_order_id"]
+        label = order["package_number"] or order["marketplace_order_id"]
         order_number = f"SO-{label}"
 
         cur.execute("SELECT 1 FROM sales_salesorder WHERE order_number = %s", (order_number,))
@@ -353,17 +357,18 @@ def insert_orders(
             skipped_no_items += 1
             continue
 
-        subtotal               = sum(i["line_total"]      for i in valid_items)
-        total_discount         = sum(i["discount_amount"] for i in valid_items)
-        total_marketplace_fee  = sum(i["service_fee"]     for i in valid_items)
-        net_revenue            = subtotal - total_discount - total_marketplace_fee
+        subtotal = sum(i["line_total"] for i in valid_items)
+        total_discount = sum(i["discount_amount"] for i in valid_items)
+        total_marketplace_fee = sum(i["service_fee"] for i in valid_items)
+        net_revenue = subtotal - total_discount - total_marketplace_fee
 
         marketplace_id = ensure_marketplace(cur, order["channel"], refs, now, dry_run)
-        so_id          = uid(f"so:{order_key}")
-        order_date     = order["order_date"] or now
+        so_id = uid(f"so:{order_key}")
+        order_date = order["order_date"] or now
 
         if not dry_run:
-            cur.execute("""
+            cur.execute(
+                """
                 INSERT INTO sales_salesorder (
                     sales_order_id, company_id, order_number,
                     marketplace_id, marketplace_order_id, marketplace_order_number,
@@ -387,22 +392,43 @@ def insert_orders(
                     %s, %s, %s,
                     %s, %s, %s, %s
                 ) ON CONFLICT (order_number) DO NOTHING
-            """, (
-                so_id, refs["company_id"], order_number,
-                marketplace_id, order["marketplace_order_id"], order["marketplace_order_number"],
-                order["status"], order["source_platform"], refs["warehouse_id"],
-                order["customer_name"], order["customer_phone"], order["shipping_address"],
-                order["shipping_province"], order["shipping_city"],
-                order["courier_name"], order["tracking_number"],
-                order["shipping_fee"], 0,
-                subtotal, total_discount, total_marketplace_fee,
-                0, net_revenue, 0,
-                order_date, "", now, now,
-            ))
+            """,
+                (
+                    so_id,
+                    refs["company_id"],
+                    order_number,
+                    marketplace_id,
+                    order["marketplace_order_id"],
+                    order["marketplace_order_number"],
+                    order["status"],
+                    order["source_platform"],
+                    refs["warehouse_id"],
+                    order["customer_name"],
+                    order["customer_phone"],
+                    order["shipping_address"],
+                    order["shipping_province"],
+                    order["shipping_city"],
+                    order["courier_name"],
+                    order["tracking_number"],
+                    order["shipping_fee"],
+                    0,
+                    subtotal,
+                    total_discount,
+                    total_marketplace_fee,
+                    0,
+                    net_revenue,
+                    0,
+                    order_date,
+                    "",
+                    now,
+                    now,
+                ),
+            )
 
             for item in valid_items:
                 item_id = uid(f"so-item:{order_key}:{item['sku']}")
-                cur.execute("""
+                cur.execute(
+                    """
                     INSERT INTO sales_salesorderitem (
                         sales_order_item_id, company_id, sales_order_id,
                         product_variant_id, quantity,
@@ -418,14 +444,25 @@ def insert_orders(
                         %s, %s,
                         %s, %s, %s
                     ) ON CONFLICT (sales_order_item_id) DO NOTHING
-                """, (
-                    item_id, refs["company_id"], so_id,
-                    item["product_variant_id"], item["quantity"],
-                    item["selling_price"], item["discount_amount"], 0,
-                    item["service_fee"], item["total_marketplace_fee"],
-                    0, 0,
-                    item["line_total"], now, now,
-                ))
+                """,
+                    (
+                        item_id,
+                        refs["company_id"],
+                        so_id,
+                        item["product_variant_id"],
+                        item["quantity"],
+                        item["selling_price"],
+                        item["discount_amount"],
+                        0,
+                        item["service_fee"],
+                        item["total_marketplace_fee"],
+                        0,
+                        0,
+                        item["line_total"],
+                        now,
+                        now,
+                    ),
+                )
 
         inserted += 1
 
@@ -434,14 +471,15 @@ def insert_orders(
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Import sales orders from Google Drive MCP cache into mini-erp DB"
     )
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Show counts without writing to DB")
-    parser.add_argument("--cache", type=Path, default=CACHE_FILE,
-                        help="Path to the MCP tool-result JSON cache file")
+    parser.add_argument("--dry-run", action="store_true", help="Show counts without writing to DB")
+    parser.add_argument(
+        "--cache", type=Path, default=CACHE_FILE, help="Path to the MCP tool-result JSON cache file"
+    )
     args = parser.parse_args()
 
     if not args.cache.exists():
@@ -462,15 +500,15 @@ def main() -> None:
         for r in rows:
             d = r.get("Tanggal Pesanan Dibuat", "").strip()
             if d:
-                first_date = d[:7]   # YYYY-MM
+                first_date = d[:7]  # YYYY-MM
                 break
-        print(f"  Tab {i+1:2d}: {len(rows):4d} rows   first date: {first_date}")
+        print(f"  Tab {i + 1:2d}: {len(rows):4d} rows   first date: {first_date}")
 
     now = datetime.now(timezone.utc)
 
     print("\nConnecting to database ...")
     conn = psycopg.connect(**DB)
-    cur  = conn.cursor()
+    cur = conn.cursor()
 
     try:
         refs = load_refs(cur)

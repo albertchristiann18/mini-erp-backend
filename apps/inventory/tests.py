@@ -980,7 +980,9 @@ class InventoryServiceCOGSUpdateTest(TestCase):
         shipping_per_unit = allocated_shipping / 10
         delivery_per_unit = allocated_delivery / 10
         commission_per_unit = allocated_commission / 10
-        expected_cogs = int(unit_price_idr + shipping_per_unit + delivery_per_unit + commission_per_unit)
+        expected_cogs = int(
+            unit_price_idr + shipping_per_unit + delivery_per_unit + commission_per_unit
+        )
 
         self.assertEqual(cogs.cogs_amount, expected_cogs)
         self.assertEqual(cogs.allocated_shipping_fee, allocated_shipping)
@@ -1429,7 +1431,9 @@ class InventoryServiceCOGSUpdateTest(TestCase):
         shipping_per_unit = Decimal(str(cogs.allocated_shipping_fee)) / Decimal("10")
         delivery_per_unit = Decimal(str(cogs.allocated_delivery_fee)) / Decimal("10")
         commission_per_unit = Decimal(str(cogs.allocated_commission_fee)) / Decimal("10")
-        expected_cogs = int(unit_price_idr + shipping_per_unit + delivery_per_unit + commission_per_unit)
+        expected_cogs = int(
+            unit_price_idr + shipping_per_unit + delivery_per_unit + commission_per_unit
+        )
 
         self.assertEqual(cogs.cogs_amount, expected_cogs)
 
@@ -2071,9 +2075,7 @@ class UpdateVariantPriceTest(APITestCase):
         from core.models import UserProfile
 
         UserProfile.objects.create(user=self.staff_user, company=self.company, role="admin")
-        UserProfile.objects.create(
-            user=self.non_staff_user, company=self.company, role="viewer"
-        )
+        UserProfile.objects.create(user=self.non_staff_user, company=self.company, role="viewer")
 
         self.category = CategoryFactory(company=self.company)
         self.product = ProductFactory(company=self.company, category=self.category, is_active=True)
