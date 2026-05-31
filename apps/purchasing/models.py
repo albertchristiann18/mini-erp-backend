@@ -155,7 +155,7 @@ class PurchaseOrder(DefaultModel):
         elif status == cls.POStatus.ORDERED:
             return {
                 "header": list(cls._ALL_EDITABLE_HEADER),
-                "order_detail": [],
+                "order_detail": ["ordered_qty"],
             }
         elif status == cls.POStatus.SHIPPED:
             return {

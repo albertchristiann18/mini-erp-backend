@@ -306,8 +306,8 @@ class PurchaseOrderAPITest(TestCase):
         self.assertEqual(cogs1.count(), 1)
         self.assertEqual(cogs1.first().cogs_amount, 33000)
 
-    def test_cannot_edit_ordered_qty_on_ordered_po(self):
-        """PATCH ordered_qty on ORDERED PO should return 400."""
+    def test_can_edit_ordered_qty_on_ordered_po(self):
+        """PATCH ordered_qty on ORDERED PO should return 200 — qty is now editable in ORDERED status."""
         po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
         detail = PurchaseOrderDetailFactory(
             purchase_order=po, product_variant=self.product_variant, ordered_qty=100
@@ -335,7 +335,9 @@ class PurchaseOrderAPITest(TestCase):
             {"order_details": [{"id": str(detail.id), "ordered_qty": 999}]},
             format="json",
         )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        detail.refresh_from_db()
+        self.assertEqual(detail.ordered_qty, 999)
 
     def test_cannot_edit_unit_price_on_ordered_po(self):
         """PATCH unit_price_foreign on ORDERED PO should return 400."""
@@ -2789,10 +2791,45 @@ class EditableFieldsAndNoteTest(TestCase):
         self.assertIn("exchange_rate", fields["header"])
         self.assertIn("ordered_qty", fields["order_detail"])
 
-    def test_ordered_po_editable_fields_has_empty_order_detail(self):
-        """ORDERED status should have empty order_detail list."""
+    def test_ordered_po_editable_fields_includes_ordered_qty(self):
+        """ORDERED status allows editing ordered_qty only (not price fields)."""
         fields = PurchaseOrder.get_editable_fields(PurchaseOrder.POStatus.ORDERED)
-        self.assertEqual(fields["order_detail"], [])
+        self.assertIn("ordered_qty", fields["order_detail"])
+        self.assertNotIn("unit_price_foreign", fields["order_detail"])
+        self.assertNotIn("discounted_unit_price_foreign", fields["order_detail"])
+
+    def test_ordered_po_can_update_ordered_qty(self):
+        """PATCH ordered_qty on an existing ORDERED PO detail should succeed and update the qty."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.ORDERED,
+            exchange_rate=Decimal("2250"),
+            commission_fee_pct=5,
+        )
+        detail = PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            ordered_qty=10,
+            unit_price_foreign=Decimal("25.000"),
+            discounted_unit_price_foreign=Decimal("22.000"),
+        )
+        # Recalculate PO totals to reflect the detail
+        PurchaseOrderService()._recalculate_po_totals(po)
+
+        response = self.client.patch(
+            f"/purchase-order/{po.id}/",
+            {
+                "order_details": [
+                    {"id": str(detail.id), "ordered_qty": 15}
+                ]
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        detail.refresh_from_db()
+        self.assertEqual(detail.ordered_qty, 15)
 
     def test_draft_po_editable_fields_has_order_detail_fields(self):
         """DRAFT status should have all editable order_detail fields."""
