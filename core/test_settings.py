@@ -11,3 +11,13 @@ REST_FRAMEWORK["DEFAULT_AUTHENTICATION_CLASSES"] = [  # type: ignore[name-define
 REST_FRAMEWORK["DEFAULT_PERMISSION_CLASSES"] = [  # type: ignore[name-defined]  # noqa: F405
     "rest_framework.permissions.AllowAny",
 ]
+
+# Use in-memory storage during tests — prevents S3 endpoint validation errors in CI
+STORAGES = {
+    "default": {
+        "BACKEND": "django.core.files.storage.InMemoryStorage",
+    },
+    "staticfiles": {
+        "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+    },
+}
