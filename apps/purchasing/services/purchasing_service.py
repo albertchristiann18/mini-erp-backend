@@ -622,6 +622,24 @@ class PurchaseOrderService:
         if new_details:
             PurchaseOrderDetail.objects.bulk_create(new_details, batch_size=100)
 
+    @staticmethod
+    def _calc_shipping_fee(shipping_fee_per_cbm: Decimal, cbm: Decimal) -> int:
+        """Tiered freight calculation.
+
+        < 0.1 CBM  : charge as if 0.1 CBM (minimum charge)
+        0.1–0.5 CBM: cbm × rate + 100,000 IDR surcharge
+        ≥ 0.5 CBM  : cbm × rate
+        """
+        if cbm <= 0 or shipping_fee_per_cbm <= 0:
+            return 0
+        if cbm < Decimal("0.1"):
+            fee = Decimal("0.1") * shipping_fee_per_cbm
+        elif cbm < Decimal("0.5"):
+            fee = cbm * shipping_fee_per_cbm + Decimal("100000")
+        else:
+            fee = cbm * shipping_fee_per_cbm
+        return int(round(fee))
+
     def _recalculate_po_totals(self, po: PurchaseOrder) -> None:
         """Recalculate PO totals based on order details and fee fields."""
         total_ordered_qty = 0
@@ -641,7 +659,7 @@ class PurchaseOrderService:
         cbm = Decimal(str(po.cbm or 0))
 
         commission_fee = int(round(commission_fee_pct / Decimal("100") * total_item_rmb * exchange_rate))
-        shipping_fee = int(round(shipping_fee_per_cbm * cbm))
+        shipping_fee = PurchaseOrderService._calc_shipping_fee(shipping_fee_per_cbm, cbm)
         procure_amount = shipping_fee + commission_fee
         total_order_amount = total_item_amount + commission_fee
         total_amount = total_item_amount + commission_fee + shipping_fee

@@ -10,6 +10,19 @@ from core.models import Company
 from core.utils import compress_pdf_file
 
 
+def _calc_shipping_fee(shipping_fee_per_cbm: Decimal, cbm: Decimal) -> int:
+    """Tiered freight: <0.1→min 0.1 CBM, 0.1–0.5→rate×cbm+100000, ≥0.5→rate×cbm."""
+    if cbm <= 0 or shipping_fee_per_cbm <= 0:
+        return 0
+    if cbm < Decimal("0.1"):
+        fee = Decimal("0.1") * shipping_fee_per_cbm
+    elif cbm < Decimal("0.5"):
+        fee = cbm * shipping_fee_per_cbm + Decimal("100000")
+    else:
+        fee = cbm * shipping_fee_per_cbm
+    return int(round(fee))
+
+
 class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
     """Serializer for Purchase Order Details"""
 
@@ -287,7 +300,7 @@ class PurchaseOrderCreateSerializer(serializers.ModelSerializer):
         for detail in order_details:
             total_item_rmb += Decimal(str(detail.get("discounted_total_price_foreign") or 0))
         commission_fee = int(round(commission_fee_pct / 100 * total_item_rmb * exchange_rate))
-        shipping_fee = int(round(shipping_fee_per_cbm * cbm)) if cbm else 0
+        shipping_fee = _calc_shipping_fee(shipping_fee_per_cbm, cbm) if cbm else 0
         procure_amount = shipping_fee + commission_fee
         total_order_amount = totals["total_item_amount"] + commission_fee
         total_amount = totals["total_item_amount"] + commission_fee + shipping_fee
@@ -612,7 +625,7 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
                 for detail in po.order_details.all():
                     total_item_rmb += Decimal(str(detail.discounted_total_price_foreign or 0))
         commission_fee = int(round(commission_fee_pct / 100 * total_item_rmb * exchange_rate))
-        shipping_fee = int(round(shipping_fee_per_cbm * cbm)) if cbm else 0
+        shipping_fee = _calc_shipping_fee(shipping_fee_per_cbm, cbm) if cbm else 0
         procure_amount = shipping_fee + commission_fee
         total_item_amount = existing_totals.get("total_item_amount", 0) if existing_totals else 0
         total_order_amount = total_item_amount + commission_fee

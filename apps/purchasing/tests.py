@@ -2682,3 +2682,40 @@ class EditableFieldsAndNoteTest(TestCase):
         warnings = response.data.get("warnings", [])
         self.assertEqual(len(warnings), 1)
         self.assertEqual(warnings[0]["type"], "partial_receipt")
+
+
+class FreightCalculationTest(TestCase):
+    """Tests for tiered freight (shipping_fee) formula."""
+
+    def setUp(self):
+        self.service = PurchaseOrderService()
+
+    def test_freight_minimum_cbm(self):
+        """cbm=0.05, rate=10_000_000 → 1_000_000 (0.1 × 10M)"""
+        result = PurchaseOrderService._calc_shipping_fee(Decimal("10000000"), Decimal("0.05"))
+        self.assertEqual(result, 1_000_000)
+
+    def test_freight_middle_tier(self):
+        """cbm=0.48, rate=10_000_000 → 4_900_000 (0.48×10M + 100_000)"""
+        result = PurchaseOrderService._calc_shipping_fee(Decimal("10000000"), Decimal("0.48"))
+        self.assertEqual(result, 4_900_000)
+
+    def test_freight_standard_tier(self):
+        """cbm=1.5, rate=3_000_000 → 4_500_000 (1.5×3M)"""
+        result = PurchaseOrderService._calc_shipping_fee(Decimal("3000000"), Decimal("1.5"))
+        self.assertEqual(result, 4_500_000)
+
+    def test_freight_exact_boundary_01(self):
+        """cbm=0.1, rate=5_000_000 → 600_000 (0.1×5M + 100_000, since 0.1 is NOT < 0.1)"""
+        result = PurchaseOrderService._calc_shipping_fee(Decimal("5000000"), Decimal("0.1"))
+        self.assertEqual(result, 600_000)
+
+    def test_freight_exact_boundary_05(self):
+        """cbm=0.5, rate=5_000_000 → 2_500_000 (0.5×5M, since 0.5 is NOT < 0.5)"""
+        result = PurchaseOrderService._calc_shipping_fee(Decimal("5000000"), Decimal("0.5"))
+        self.assertEqual(result, 2_500_000)
+
+    def test_freight_zero_cbm(self):
+        """cbm=0 → 0"""
+        result = PurchaseOrderService._calc_shipping_fee(Decimal("5000000"), Decimal("0"))
+        self.assertEqual(result, 0)
