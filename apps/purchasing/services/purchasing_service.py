@@ -237,7 +237,7 @@ class PurchaseOrderService:
 
         existing_details_map = {str(d.id): d for d in po.order_details.all()}
 
-        if old_status not in [PurchaseOrder.POStatus.DRAFT, PurchaseOrder.POStatus.ORDERED]:
+        if old_status not in [PurchaseOrder.POStatus.DRAFT]:
             price_fields = {
                 "unit_price_foreign",
                 "discounted_unit_price_foreign",
@@ -261,7 +261,7 @@ class PurchaseOrderService:
                                 ):
                                     raise ValidationError(
                                         {
-                                            "order_details": f"Cannot change {field} when status is {old_status}. Price fields can only be changed in DRAFT or ORDERED status."
+                                            "order_details": f"Cannot change {field} when status is {old_status}. Price fields can only be changed in DRAFT status."
                                         }
                                     )
 
@@ -596,11 +596,27 @@ class PurchaseOrderService:
 
                     update_details.append(detail)
             else:
-                if po.status == PurchaseOrder.POStatus.DRAFT:
+                if po.status in [PurchaseOrder.POStatus.DRAFT, PurchaseOrder.POStatus.ORDERED]:
                     product_variant_id = ulid_field.to_python(detail_data.get("product_variant_id"))
                     detail_data_copy = {
                         k: v for k, v in detail_data.items() if k != "product_variant_id"
                     }
+                    if po.exchange_rate:
+                        exchange_rate = Decimal(str(po.exchange_rate))
+                        unit_price_foreign = Decimal(str(detail_data_copy.get("unit_price_foreign") or 0))
+                        disc_foreign = Decimal(str(detail_data_copy.get("discounted_unit_price_foreign") or 0))
+                        if not disc_foreign:
+                            disc_foreign = unit_price_foreign
+                        ordered_qty = int(detail_data_copy.get("ordered_qty") or 0)
+                        detail_data_copy["unit_price_base"] = int(round(unit_price_foreign * exchange_rate))
+                        detail_data_copy["discounted_unit_price_foreign"] = disc_foreign
+                        detail_data_copy["discounted_unit_price_base"] = int(round(disc_foreign * exchange_rate))
+                        detail_data_copy["total_price_foreign"] = unit_price_foreign * ordered_qty
+                        detail_data_copy["discounted_total_price_foreign"] = disc_foreign * ordered_qty
+                        detail_data_copy["total_price_base"] = detail_data_copy["unit_price_base"] * ordered_qty
+                        detail_data_copy["discounted_total_price_base"] = (
+                            detail_data_copy["discounted_unit_price_base"] * ordered_qty
+                        )
                     detail = PurchaseOrderDetail(
                         purchase_order=po,
                         product_variant_id=product_variant_id,
@@ -609,7 +625,7 @@ class PurchaseOrderService:
                     )
                     new_details.append(detail)
 
-        if po.status == PurchaseOrder.POStatus.DRAFT:
+        if po.status in [PurchaseOrder.POStatus.DRAFT, PurchaseOrder.POStatus.ORDERED]:
             ids_to_keep = [d.id for d in update_details] + [d.id for d in new_details]
             po.order_details.exclude(id__in=ids_to_keep).delete()
 

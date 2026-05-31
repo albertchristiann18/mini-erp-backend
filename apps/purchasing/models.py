@@ -124,10 +124,15 @@ class PurchaseOrder(DefaultModel):
 
     @classmethod
     def get_editable_fields(cls, status: str) -> dict[str, list[str]]:
-        if status in (cls.POStatus.DRAFT, cls.POStatus.ORDERED):
+        if status == cls.POStatus.DRAFT:
             return {
                 "header": list(cls._ALL_EDITABLE_HEADER),
                 "order_detail": list(cls._ALL_EDITABLE_ORDER_DETAIL),
+            }
+        elif status == cls.POStatus.ORDERED:
+            return {
+                "header": list(cls._ALL_EDITABLE_HEADER),
+                "order_detail": [],
             }
         elif status == cls.POStatus.SHIPPED:
             return {

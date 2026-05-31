@@ -454,6 +454,8 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
 
         order_details = attrs.get("order_details", [])
         for detail_data in order_details:
+            if not detail_data.get("id"):
+                continue  # new items bypass field-level edit lock
             for field in detail_data:
                 if field in ("id", "product_variant_id", "received_date", "received_qty", "remarks"):
                     continue
@@ -501,16 +503,14 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
                                 }
                             )
 
-        if order_details and current_status not in [PurchaseOrder.POStatus.DRAFT]:
-            incoming_ids = {str(d.get("id")) for d in order_details if d.get("id")}
-            if incoming_ids:
-                new_details = [d for d in order_details if not d.get("id")]
-                if new_details:
-                    raise serializers.ValidationError(
-                        {
-                            "order_details": f"Cannot add new details when status is {current_status}. Only DRAFT status allows adding new details."
-                        }
-                    )
+        if order_details and current_status not in [PurchaseOrder.POStatus.DRAFT, PurchaseOrder.POStatus.ORDERED]:
+            new_details = [d for d in order_details if not d.get("id")]
+            if new_details:
+                raise serializers.ValidationError(
+                    {
+                        "order_details": f"Cannot add new details when status is {current_status}. Only DRAFT or ORDERED status allows adding new details."
+                    }
+                )
 
         if self.instance and new_status in [
             PurchaseOrder.POStatus.ORDERED,

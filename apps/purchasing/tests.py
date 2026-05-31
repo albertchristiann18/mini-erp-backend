@@ -306,88 +306,260 @@ class PurchaseOrderAPITest(TestCase):
         self.assertEqual(cogs1.count(), 1)
         self.assertEqual(cogs1.first().cogs_amount, 33000)
 
-        po2_payload = {
-            "warehouse_id": str(self.warehouse.id),
-            "company_id": str(self.company.id),
-            "supplier_name": "Supplier B",
-            "forwarder_name": "Forwarder B",
-            "shop_services": "Service B",
-            "commission_fee_pct": 10,
-            "delivery_fee": 100,
-            "currency": "RMB",
-            "exchange_rate": 2200,
-            "cbm": 1,
-            "weight": 10,
-            "shipping_fee": 1000,
-            "order_details": [
-                {
-                    "product_variant_id": str(self.product_variant.id),
-                    "ordered_qty": 50,
-                    "unit_price_foreign": 15,
-                }
-            ],
-        }
-
-        response = self.client.post("/purchase-order/", po2_payload, format="json")
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        po2 = PurchaseOrder.objects.last()
-        self.assertEqual(po2.status, PurchaseOrder.POStatus.DRAFT)
-        self.assertNotEqual(po1.id, po2.id)
-
+    def test_cannot_edit_ordered_qty_on_ordered_po(self):
+        """PATCH ordered_qty on ORDERED PO should return 400."""
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        detail = PurchaseOrderDetailFactory(
+            purchase_order=po, product_variant=self.product_variant, ordered_qty=100
+        )
+        service = PurchaseOrderService()
         with patch("apps.purchasing.serializers.compress_pdf_file"):
             service.update_purchase_order(
-                po2,
+                po,
                 {
                     "status": PurchaseOrder.POStatus.ORDERED,
-                    "purchase_order_invoice_file": "invoice2.pdf",
-                    "invoice_number": "INV-002",
-                    "invoice_date": date(2026, 2, 15),
+                    "purchase_order_invoice_file": "invoice.pdf",
+                    "invoice_number": "INV-001",
+                    "invoice_date": date(2026, 1, 15),
+                    "exchange_rate": 2200,
+                    "commission_fee_pct": 10,
+                    "forwarder_name": "Forwarder",
+                    "supplier_name": "Supplier",
+                    "shop_services": "Service",
+                    "delivery_fee": 100,
                 },
             )
+        po.refresh_from_db()
+        response = self.client.patch(
+            f"/purchase-order/{po.id}/",
+            {"order_details": [{"id": str(detail.id), "ordered_qty": 999}]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-        po2.refresh_from_db()
-        self.assertEqual(po2.invoice_date, date(2026, 2, 15))
-
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
-            service.update_purchase_order(po2, {"status": PurchaseOrder.POStatus.SHIPPED})
-
-        detail2 = po2.order_details.first()
+    def test_cannot_edit_unit_price_on_ordered_po(self):
+        """PATCH unit_price_foreign on ORDERED PO should return 400."""
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        detail = PurchaseOrderDetailFactory(
+            purchase_order=po, product_variant=self.product_variant, ordered_qty=100
+        )
+        service = PurchaseOrderService()
         with patch("apps.purchasing.serializers.compress_pdf_file"):
             service.update_purchase_order(
-                po2,
+                po,
                 {
-                    "status": PurchaseOrder.POStatus.DELIVERED,
-                    "delivery_date": date(2026, 2, 20),
-                    "delivery_order_number": "DO-002",
-                    "order_details": [
-                        {
-                            "id": str(detail2.id),
-                            "product_variant_id": str(self.product_variant.id),
-                            "ordered_qty": 50,
-                            "received_qty": 50,
-                            "received_date": "2026-02-20",
-                            "unit_price_foreign": 15,
-                            "discounted_unit_price_foreign": 15,
-                        }
-                    ],
+                    "status": PurchaseOrder.POStatus.ORDERED,
+                    "purchase_order_invoice_file": "invoice.pdf",
+                    "invoice_number": "INV-001",
+                    "invoice_date": date(2026, 1, 15),
+                    "exchange_rate": 2200,
+                    "commission_fee_pct": 10,
+                    "forwarder_name": "Forwarder",
+                    "supplier_name": "Supplier",
+                    "shop_services": "Service",
+                    "delivery_fee": 100,
                 },
             )
-
-        cogs_all = ProductCogs.objects.filter(
-            product_variant=self.product_variant,
-            warehouse=self.warehouse,
+        po.refresh_from_db()
+        response = self.client.patch(
+            f"/purchase-order/{po.id}/",
+            {"order_details": [{"id": str(detail.id), "unit_price_foreign": 9999}]},
+            format="json",
         )
-        self.assertEqual(cogs_all.count(), 2)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-        cogs_for_po1 = cogs_all.filter(reference_number=po1.purchase_order_number).first()
-        cogs_for_po2 = cogs_all.filter(reference_number=po2.purchase_order_number).first()
-        self.assertIsNotNone(cogs_for_po1)
-        self.assertIsNotNone(cogs_for_po2)
-        self.assertEqual(cogs_for_po1.cogs_amount, cogs_for_po2.cogs_amount)
-        self.assertEqual(cogs_for_po1.cogs_amount, 33000)
-        self.assertEqual(cogs_for_po2.cogs_amount, 33000)
-        self.assertEqual(cogs_for_po1.purchase_date, date(2026, 1, 15))
-        self.assertEqual(cogs_for_po2.purchase_date, date(2026, 2, 15))
+    def test_can_add_new_item_to_ordered_po(self):
+        """PATCH with new item on ORDERED PO should succeed and create the item."""
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        detail1 = PurchaseOrderDetailFactory(
+            purchase_order=po, product_variant=self.product_variant, ordered_qty=100
+        )
+        service = PurchaseOrderService()
+        with patch("apps.purchasing.serializers.compress_pdf_file"):
+            service.update_purchase_order(
+                po,
+                {
+                    "status": PurchaseOrder.POStatus.ORDERED,
+                    "purchase_order_invoice_file": "invoice.pdf",
+                    "invoice_number": "INV-001",
+                    "invoice_date": date(2026, 1, 15),
+                    "exchange_rate": 2200,
+                    "commission_fee_pct": 10,
+                    "forwarder_name": "Forwarder",
+                    "supplier_name": "Supplier",
+                    "shop_services": "Service",
+                    "delivery_fee": 100,
+                },
+            )
+        po.refresh_from_db()
+        product2 = ProductFactory(category=self.category, company=self.company)
+        product_variant2 = ProductVariantFactory(product=product2)
+        response = self.client.patch(
+            f"/purchase-order/{po.id}/",
+            {
+                "order_details": [
+                    {"id": str(detail1.id)},
+                    {
+                        "product_variant_id": str(product_variant2.id),
+                        "ordered_qty": 50,
+                        "unit_price_foreign": 100.0,
+                    },
+                ]
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        po.refresh_from_db()
+        self.assertEqual(po.order_details.count(), 2)
+
+    def test_can_remove_item_from_ordered_po(self):
+        """PATCH with fewer items on ORDERED PO removes omitted items."""
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        product2 = ProductFactory(category=self.category, company=self.company)
+        product_variant2 = ProductVariantFactory(product=product2)
+        detail1 = PurchaseOrderDetailFactory(
+            purchase_order=po, product_variant=self.product_variant, ordered_qty=50
+        )
+        PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=product_variant2,
+            ordered_qty=50,
+        )
+        service = PurchaseOrderService()
+        with patch("apps.purchasing.serializers.compress_pdf_file"):
+            service.update_purchase_order(
+                po,
+                {
+                    "status": PurchaseOrder.POStatus.ORDERED,
+                    "purchase_order_invoice_file": "invoice.pdf",
+                    "invoice_number": "INV-001",
+                    "invoice_date": date(2026, 1, 15),
+                    "exchange_rate": 2200,
+                    "commission_fee_pct": 10,
+                    "forwarder_name": "Forwarder",
+                    "supplier_name": "Supplier",
+                    "shop_services": "Service",
+                    "delivery_fee": 100,
+                },
+            )
+        po.refresh_from_db()
+        response = self.client.patch(
+            f"/purchase-order/{po.id}/",
+            {"order_details": [{"id": str(detail1.id)}]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        po.refresh_from_db()
+        self.assertEqual(po.order_details.count(), 1)
+
+    def test_new_item_added_to_ordered_po_has_prices_calculated(self):
+        """New item added to ORDERED PO gets prices calculated using exchange_rate."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            exchange_rate=2000,
+        )
+        detail1 = PurchaseOrderDetailFactory(
+            purchase_order=po, product_variant=self.product_variant, ordered_qty=5
+        )
+        service = PurchaseOrderService()
+        with patch("apps.purchasing.serializers.compress_pdf_file"):
+            service.update_purchase_order(
+                po,
+                {
+                    "status": PurchaseOrder.POStatus.ORDERED,
+                    "purchase_order_invoice_file": "invoice.pdf",
+                    "invoice_number": "INV-001",
+                    "invoice_date": date(2026, 1, 15),
+                    "exchange_rate": 2000,
+                    "commission_fee_pct": 10,
+                    "forwarder_name": "Forwarder",
+                    "supplier_name": "Supplier",
+                    "shop_services": "Service",
+                    "delivery_fee": 100,
+                },
+            )
+        po.refresh_from_db()
+        product2 = ProductFactory(category=self.category, company=self.company)
+        product_variant2 = ProductVariantFactory(product=product2)
+        response = self.client.patch(
+            f"/purchase-order/{po.id}/",
+            {
+                "order_details": [
+                    {"id": str(detail1.id)},
+                    {
+                        "product_variant_id": str(product_variant2.id),
+                        "ordered_qty": 5,
+                        "unit_price_foreign": 10.0,
+                    },
+                ]
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        po.refresh_from_db()
+        new_detail = po.order_details.exclude(id=detail1.id).first()
+        self.assertIsNotNone(new_detail)
+        self.assertEqual(new_detail.unit_price_base, 20000)  # 10.0 * 2000
+        self.assertEqual(new_detail.discounted_total_price_base, 100000)  # 20000 * 5
+
+    def test_shipped_po_cannot_add_items(self):
+        """PATCH with new item on SHIPPED PO should return 400."""
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        PurchaseOrderDetailFactory(
+            purchase_order=po, product_variant=self.product_variant, ordered_qty=100
+        )
+        service = PurchaseOrderService()
+        with patch("apps.purchasing.serializers.compress_pdf_file"):
+            service.update_purchase_order(
+                po,
+                {
+                    "status": PurchaseOrder.POStatus.ORDERED,
+                    "purchase_order_invoice_file": "invoice.pdf",
+                    "invoice_number": "INV-001",
+                    "invoice_date": date(2026, 1, 15),
+                    "exchange_rate": 2200,
+                    "commission_fee_pct": 10,
+                    "forwarder_name": "Forwarder",
+                    "supplier_name": "Supplier",
+                    "shop_services": "Service",
+                    "delivery_fee": 100,
+                },
+            )
+        po.refresh_from_db()
+        with patch("apps.purchasing.serializers.compress_pdf_file"):
+            service.update_purchase_order(
+                po,
+                {
+                    "status": PurchaseOrder.POStatus.SHIPPED,
+                    "purchase_order_invoice_file": "invoice.pdf",
+                    "invoice_number": "INV-001",
+                    "invoice_date": date(2026, 1, 15),
+                    "exchange_rate": 2200,
+                    "commission_fee_pct": 10,
+                    "forwarder_name": "Forwarder",
+                    "supplier_name": "Supplier",
+                    "shop_services": "Service",
+                    "delivery_fee": 100,
+                },
+            )
+        po.refresh_from_db()
+        product2 = ProductFactory(category=self.category, company=self.company)
+        product_variant2 = ProductVariantFactory(product=product2)
+        response = self.client.patch(
+            f"/purchase-order/{po.id}/",
+            {
+                "order_details": [
+                    {
+                        "product_variant_id": str(product_variant2.id),
+                        "ordered_qty": 50,
+                        "unit_price_foreign": 100,
+                    }
+                ]
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
 class PurchaseOrderServiceTest(TestCase):
@@ -1659,6 +1831,13 @@ class PurchaseOrderSerializerValidationTest(TestCase):
             cbm=Decimal("1"),
             weight=Decimal("10"),
         )
+        detail = PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            ordered_qty=100,
+            unit_price_foreign=Decimal("10"),
+        )
+        po.refresh_from_db()
 
         serializer = self._create_serializer(
             po,
@@ -1666,6 +1845,7 @@ class PurchaseOrderSerializerValidationTest(TestCase):
                 "status": PurchaseOrder.POStatus.SHIPPED,
                 "order_details": [
                     {
+                        "id": str(detail.id),
                         "product_variant_id": str(self.product_variant.id),
                         "received_qty": 50,
                     }
@@ -1684,6 +1864,13 @@ class PurchaseOrderSerializerValidationTest(TestCase):
             exchange_rate=2200,
             delivery_order_invoice_file="existing_file.pdf",
         )
+        detail = PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            ordered_qty=100,
+            unit_price_foreign=Decimal("10"),
+        )
+        po.refresh_from_db()
 
         serializer = self._create_serializer(
             po,
@@ -1691,6 +1878,7 @@ class PurchaseOrderSerializerValidationTest(TestCase):
                 "status": PurchaseOrder.POStatus.DELIVERED,
                 "order_details": [
                     {
+                        "id": str(detail.id),
                         "product_variant_id": str(self.product_variant.id),
                         "received_qty": 50,
                     }
@@ -1700,12 +1888,12 @@ class PurchaseOrderSerializerValidationTest(TestCase):
 
         self.assertTrue(serializer.is_valid(), serializer.errors)
 
-    def test_cannot_add_new_details_when_not_draft(self):
-        """Test that adding new details fails when status is not DRAFT"""
+    def test_cannot_add_new_details_when_shipped(self):
+        """Test that adding new details fails when status is SHIPPED"""
         po = PurchaseOrderFactory(
             warehouse=self.warehouse,
             company=self.company,
-            status=PurchaseOrder.POStatus.ORDERED,
+            status=PurchaseOrder.POStatus.SHIPPED,
             exchange_rate=2200,
         )
         detail = PurchaseOrderDetailFactory(
@@ -1727,12 +1915,9 @@ class PurchaseOrderSerializerValidationTest(TestCase):
                     {
                         "id": str(detail.id),
                         "product_variant_id": str(self.product_variant.id),
-                        "ordered_qty": 100,
                     },
                     {
                         "product_variant_id": str(product_variant2.id),
-                        "ordered_qty": 50,
-                        "unit_price_foreign": Decimal("10"),
                     },
                 ],
             },
@@ -2612,6 +2797,18 @@ class EditableFieldsAndNoteTest(TestCase):
         fields = PurchaseOrder.get_editable_fields(PurchaseOrder.POStatus.DRAFT)
         self.assertIn("exchange_rate", fields["header"])
         self.assertIn("ordered_qty", fields["order_detail"])
+
+    def test_ordered_po_editable_fields_has_empty_order_detail(self):
+        """ORDERED status should have empty order_detail list."""
+        fields = PurchaseOrder.get_editable_fields(PurchaseOrder.POStatus.ORDERED)
+        self.assertEqual(fields["order_detail"], [])
+
+    def test_draft_po_editable_fields_has_order_detail_fields(self):
+        """DRAFT status should have all editable order_detail fields."""
+        fields = PurchaseOrder.get_editable_fields(PurchaseOrder.POStatus.DRAFT)
+        expected = ["ordered_qty", "unit_price_foreign", "discounted_unit_price_foreign"]
+        for field in expected:
+            self.assertIn(field, fields["order_detail"])
 
     def test_get_editable_fields_shipped(self):
         """Assert exchange_rate NOT in SHIPPED; delivery_order_number IS in SHIPPED."""
