@@ -1,3 +1,6 @@
+import datetime as dt
+
+from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.utils import timezone
@@ -11,7 +14,7 @@ from apps.inventory.factories import (
     ProductVariantWarehouseFactory,
 )
 from apps.inventory.models import StockMovement
-from apps.sales.factories import SalesOrderFactory, SalesOrderItemFactory
+from apps.sales.factories import SalesOrderFactory, SalesOrderItemFactory, SalesReturnFactory
 from apps.sales.models import SalesOrder, SalesOrderCogsDetail, SalesOrderItem, SalesReturn
 from apps.sales.services.cogs_consumption import CogsConsumptionService
 from apps.sales.services.sales_service import SalesOrderService, SalesReturnService
@@ -20,6 +23,8 @@ from core.factories import CompanyFactory, WarehouseFactory
 
 class SalesOrderAPITest(APITestCase):
     def setUp(self):
+        from core.models import UserProfile
+
         self.client = APIClient()
         self.company = CompanyFactory()
         self.warehouse = WarehouseFactory(company=self.company)
@@ -40,6 +45,11 @@ class SalesOrderAPITest(APITestCase):
             remaining_qty=100,
             cogs_amount=50000,
         )
+        self.user = User.objects.create_user(
+            username="sales_api_user", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
 
     def test_create_sales_order(self):
         payload = {
@@ -743,3 +753,92 @@ class EdgeCaseSalesTests(TestCase):
         ar.refresh_from_db()
         # AR expected_amount should have been updated (decreased)
         self.assertNotEqual(ar.expected_amount, original_amount)
+
+
+class CompanyScopedViewsTest(APITestCase):
+    """Tests for company-scoped data isolation in sales views."""
+
+    def setUp(self):
+        self.company_a = CompanyFactory()
+        self.company_b = CompanyFactory()
+        self.user_a = User.objects.create_user(
+            username="sales_user_a", password="password", is_staff=True
+        )
+        self.user_b = User.objects.create_user(
+            username="sales_user_b", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+
+        UserProfile.objects.create(user=self.user_a, company=self.company_a, role="admin")
+        UserProfile.objects.create(user=self.user_b, company=self.company_b, role="admin")
+
+        self.warehouse_a = WarehouseFactory(company=self.company_a)
+        self.warehouse_b = WarehouseFactory(company=self.company_b)
+
+        self.so_a = SalesOrderFactory(warehouse=self.warehouse_a, company=self.company_a)
+        self.so_b = SalesOrderFactory(warehouse=self.warehouse_b, company=self.company_b)
+
+        self.ret_a = SalesReturnFactory(sales_order=self.so_a, company=self.company_a)
+        self.ret_b = SalesReturnFactory(sales_order=self.so_b, company=self.company_b)
+
+    def test_sales_order_list_scoped_by_company(self):
+        self.client.force_authenticate(user=self.user_a)
+        response = self.client.get("/sales-orders/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [so["id"] for so in response.data["results"]]
+        self.assertIn(str(self.so_a.id), ids)
+        self.assertNotIn(str(self.so_b.id), ids)
+
+    def test_sales_return_list_scoped_by_company(self):
+        self.client.force_authenticate(user=self.user_a)
+        response = self.client.get("/sales-returns/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [r["id"] for r in response.data["results"]]
+        self.assertIn(str(self.ret_a.id), ids)
+        self.assertNotIn(str(self.ret_b.id), ids)
+
+    def test_create_return_rejects_cross_company_sales_order(self):
+        self.client.force_authenticate(user=self.user_a)
+        payload = {
+            "sales_order_id": str(self.so_b.id),
+            "reason": "Test cross-company",
+            "items": [{"sales_order_item_id": "fake-item-id", "quantity": 1}],
+        }
+        response = self.client.post("/sales-returns/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class SalesOrderDateFilterTest(APITestCase):
+    def setUp(self):
+        from core.models import UserProfile
+
+        self.client = APIClient()
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        user = User.objects.create_user(username="staff", password="password", is_staff=True)
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        self.client.force_authenticate(user=user)
+        self.early_order = SalesOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            order_date=timezone.datetime(2026, 1, 1, tzinfo=dt.timezone.utc),
+        )
+        self.late_order = SalesOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            order_date=timezone.datetime(2026, 6, 1, tzinfo=dt.timezone.utc),
+        )
+
+    def test_date_from_filter(self):
+        response = self.client.get("/sales-orders/?date_from=2026-03-01", format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [so["id"] for so in response.data["results"]]
+        self.assertNotIn(str(self.early_order.id), ids)
+        self.assertIn(str(self.late_order.id), ids)
+
+    def test_date_to_filter(self):
+        response = self.client.get("/sales-orders/?date_to=2026-03-01", format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [so["id"] for so in response.data["results"]]
+        self.assertIn(str(self.early_order.id), ids)
+        self.assertNotIn(str(self.late_order.id), ids)

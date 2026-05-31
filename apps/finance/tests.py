@@ -1,5 +1,6 @@
 from datetime import date, timedelta
 
+from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.utils import timezone
@@ -9,11 +10,12 @@ from rest_framework.test import APIClient, APITestCase
 from apps.finance.factories import (
     AccountsPayableFactory,
     AccountsReceivableFactory,
+    CashTransactionFactory,
     ExpenseCategoryFactory,
     ExpenseFactory,
     PaymentRecordFactory,
 )
-from apps.finance.models import AccountsPayable, AccountsReceivable, PaymentRecord
+from apps.finance.models import AccountsPayable, AccountsReceivable, CashTransaction, PaymentRecord
 from apps.finance.services.accounts_payable_service import AccountsPayableService
 from apps.finance.services.report_service import ReportService
 from apps.finance.services.stock_report_service import StockReportService
@@ -28,6 +30,7 @@ from apps.purchasing.factories import PurchaseOrderFactory
 from apps.sales.factories import SalesOrderFactory, SalesOrderItemFactory
 from apps.sales.models import SalesOrder, SalesOrderCogsDetail
 from core.factories import WarehouseFactory
+from core.models import UserProfile
 
 # ---- Service Tests ----
 
@@ -308,8 +311,15 @@ class StockReportServiceTest(TestCase):
 
 class AccountsPayableAPITest(APITestCase):
     def setUp(self):
+        from core.models import UserProfile
+
         self.client = APIClient()
         self.company = CompanyFactory()
+        self.user = User.objects.create_user(
+            username="ap_api_user", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
 
     def test_list_accounts_payable(self):
         AccountsPayableFactory(company=self.company)
@@ -370,8 +380,15 @@ class AccountsPayableAPITest(APITestCase):
 
 class AccountsReceivableAPITest(APITestCase):
     def setUp(self):
+        from core.models import UserProfile
+
         self.client = APIClient()
         self.company = CompanyFactory()
+        self.user = User.objects.create_user(
+            username="ar_api_user", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
 
     def test_list_accounts_receivable(self):
         AccountsReceivableFactory(company=self.company)
@@ -467,3 +484,160 @@ class EdgeCaseFinanceTests(TestCase):
                     "expense_date": date.today(),
                 }
             )
+
+
+class CompanyScopedViewsTest(APITestCase):
+    """Tests for company-scoped data isolation in finance views."""
+
+    def setUp(self):
+        self.company_a = CompanyFactory()
+        self.company_b = CompanyFactory()
+        self.user_a = User.objects.create_user(
+            username="fin_user_a", password="password", is_staff=True
+        )
+        self.user_b = User.objects.create_user(
+            username="fin_user_b", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+
+        UserProfile.objects.create(user=self.user_a, company=self.company_a, role="admin")
+        UserProfile.objects.create(user=self.user_b, company=self.company_b, role="admin")
+
+        self.ap_a = AccountsPayableFactory(company=self.company_a)
+        self.ap_b = AccountsPayableFactory(company=self.company_b)
+
+        self.ar_a = AccountsReceivableFactory(company=self.company_a)
+        self.ar_b = AccountsReceivableFactory(company=self.company_b)
+
+        cat_a = ExpenseCategoryFactory(company=self.company_a)
+        cat_b = ExpenseCategoryFactory(company=self.company_b)
+
+        self.expense_cat_a = cat_a
+        self.expense_cat_b = cat_b
+        self.expense_a = ExpenseFactory(company=self.company_a, category=cat_a)
+        self.expense_b = ExpenseFactory(company=self.company_b, category=cat_b)
+
+    def test_accounts_payable_list_scoped_by_company(self):
+        self.client.force_authenticate(user=self.user_a)
+        response = self.client.get("/accounts-payable/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [ap["id"] for ap in response.data["results"]]
+        self.assertIn(str(self.ap_a.id), ids)
+        self.assertNotIn(str(self.ap_b.id), ids)
+
+    def test_accounts_receivable_list_scoped_by_company(self):
+        self.client.force_authenticate(user=self.user_a)
+        response = self.client.get("/accounts-receivable/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [ar["id"] for ar in response.data["results"]]
+        self.assertIn(str(self.ar_a.id), ids)
+        self.assertNotIn(str(self.ar_b.id), ids)
+
+    def test_expense_list_scoped_by_company(self):
+        self.client.force_authenticate(user=self.user_a)
+        response = self.client.get("/expenses/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [e["id"] for e in response.data["results"]]
+        self.assertIn(str(self.expense_a.id), ids)
+        self.assertNotIn(str(self.expense_b.id), ids)
+
+    def test_report_uses_authenticated_company(self):
+        self.client.force_authenticate(user=self.user_a)
+        from datetime import date, timedelta
+
+        today = date.today()
+        start = today - timedelta(days=30)
+        response = self.client.get(
+            f"/reports/income-statement/?start_date={start}&end_date={today}"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+
+class CashTransactionAPITest(APITestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.company = CompanyFactory()
+        user = User.objects.create_user(username="cash-tx-test", password="password", is_staff=True)
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        self.client.force_authenticate(user=user)
+
+    def test_create_inflow(self):
+        payload = {
+            "transaction_date": str(date.today()),
+            "description": "Equity injection",
+            "amount": 5000000,
+            "transaction_type": "INFLOW",
+            "category": "EQUITY_INJECTION",
+        }
+        response = self.client.post("/cash-transactions/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["amount"], 5000000)
+        self.assertEqual(response.data["transaction_type"], "INFLOW")
+
+    def test_list_cash_transactions(self):
+        CashTransactionFactory(company=self.company)
+        CashTransactionFactory(company=self.company)
+        CashTransactionFactory(company=self.company)
+        response = self.client.get("/cash-transactions/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertGreaterEqual(len(response.data["results"]), 3)
+
+    def test_filter_by_transaction_type(self):
+        CashTransactionFactory(
+            company=self.company, transaction_type=CashTransaction.TransactionType.INFLOW
+        )
+        CashTransactionFactory(
+            company=self.company, transaction_type=CashTransaction.TransactionType.OUTFLOW
+        )
+        response = self.client.get("/cash-transactions/?transaction_type=INFLOW")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        for item in response.data["results"]:
+            self.assertEqual(item["transaction_type"], "INFLOW")
+
+    def test_filter_by_date_from(self):
+        CashTransactionFactory(
+            company=self.company,
+            transaction_date=date.today() - timedelta(days=5),
+        )
+        CashTransactionFactory(
+            company=self.company,
+            transaction_date=date.today(),
+        )
+        response = self.client.get(
+            f"/cash-transactions/?date_from={date.today() - timedelta(days=2)}"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        for item in response.data["results"]:
+            self.assertGreaterEqual(
+                date.fromisoformat(item["transaction_date"]),
+                date.today() - timedelta(days=2),
+            )
+
+    def test_amount_always_positive(self):
+        payload = {
+            "transaction_date": str(date.today()),
+            "description": "Positive amount test",
+            "amount": 1000,
+            "transaction_type": "OUTFLOW",
+            "category": "OTHER_EXPENSE",
+        }
+        response = self.client.post("/cash-transactions/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["amount"], 1000)
+
+    def test_cash_transaction_summary_uses_authenticated_company(self):
+        """Verify the summary action returns data for the logged-in company without requiring company_id."""
+        from apps.finance.factories import ExpenseCategoryFactory, ExpenseFactory
+
+        cat = ExpenseCategoryFactory(company=self.company)
+        ExpenseFactory(
+            company=self.company,
+            category=cat,
+            amount=100000,
+            expense_date=date.today(),
+        )
+        start = date.today() - timedelta(days=7)
+        end = date.today() + timedelta(days=1)
+        response = self.client.get(f"/cash-transactions/summary/?start_date={start}&end_date={end}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertGreaterEqual(len(response.data), 0)

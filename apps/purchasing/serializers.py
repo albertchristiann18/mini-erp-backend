@@ -1,13 +1,26 @@
 from decimal import Decimal
-from typing import Any, Dict
+from typing import Any
 
 from rest_framework import serializers
 
 from apps.inventory.models import ProductVariant, Warehouse
-from apps.purchasing.models import PurchaseOrder, PurchaseOrderDetail
+from apps.purchasing.models import PurchaseOrder, PurchaseOrderDetail, PurchaseOrderStatusHistory
 from apps.purchasing.services.purchasing_service import PurchaseOrderService
 from core.models import Company
 from core.utils import compress_pdf_file
+
+
+def _calc_shipping_fee(shipping_fee_per_cbm: Decimal, cbm: Decimal) -> int:
+    """Tiered freight: <0.1→min 0.1 CBM, 0.1–0.5→rate×cbm+100000, ≥0.5→rate×cbm."""
+    if cbm <= 0 or shipping_fee_per_cbm <= 0:
+        return 0
+    if cbm < Decimal("0.1"):
+        fee = Decimal("0.1") * shipping_fee_per_cbm
+    elif cbm < Decimal("0.5"):
+        fee = cbm * shipping_fee_per_cbm + Decimal("100000")
+    else:
+        fee = cbm * shipping_fee_per_cbm
+    return int(round(fee))
 
 
 class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
@@ -39,17 +52,17 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["updated_qty"]
 
-    def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
         return self._calculate_prices(attrs)
 
-    def create(self, validated_data: Dict[str, Any]) -> PurchaseOrderDetail:
+    def create(self, validated_data: dict[str, Any]) -> PurchaseOrderDetail:
         validated_data = self._calculate_prices(validated_data)
         product_variant_id = validated_data.pop("product_variant_id")
         product_variant = ProductVariant.objects.get(id=product_variant_id)
         validated_data["product_variant"] = product_variant
         return super().create(validated_data)  # type: ignore
 
-    def _calculate_prices(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
+    def _calculate_prices(self, attrs: dict[str, Any]) -> dict[str, Any]:
         """Calculate all price fields based on input values.
 
         Input fields (user provides):
@@ -115,6 +128,9 @@ class PurchaseOrderListSerializer(serializers.ModelSerializer):
 
     warehouse_name = serializers.CharField(source="warehouse.name", read_only=True)
     company_name = serializers.CharField(source="company.name", read_only=True)
+    cost_ratio_cogs = serializers.SerializerMethodField()
+    shipping_per_qty = serializers.SerializerMethodField()
+    delivery_fee_idr = serializers.SerializerMethodField()
 
     class Meta:
         model = PurchaseOrder
@@ -125,12 +141,41 @@ class PurchaseOrderListSerializer(serializers.ModelSerializer):
             "warehouse_name",
             "company_name",
             "supplier_name",
+            "invoice_number",
+            "invoice_date",
+            "delivery_date",
+            "forecast_delivery_date",
+            "forwarder_name",
+            "exchange_rate",
+            "cbm",
+            "forecast_cbm",
+            "shipping_fee",
+            "procure_amount",
+            "total_item_amount",
+            "commission_fee",
             "total_ordered_qty",
             "total_amount",
+            "cost_ratio_cogs",
+            "shipping_per_qty",
+            "delivery_fee_idr",
             "cdate",
             "udate",
+            "note",
         ]
         read_only_fields = ["id", "cdate", "udate"]
+
+    def get_cost_ratio_cogs(self, obj: PurchaseOrder) -> float:
+        return float(obj.cost_ratio_cogs())
+
+    def get_shipping_per_qty(self, obj: PurchaseOrder) -> int:
+        return obj.get_shipping_per_qty()
+
+    def get_delivery_fee_idr(self, obj: PurchaseOrder) -> int:
+        from decimal import Decimal
+
+        delivery_fee = obj.delivery_fee or Decimal("0")
+        exchange_rate = obj.exchange_rate or Decimal("0")
+        return int(round(Decimal(str(delivery_fee)) * Decimal(str(exchange_rate))))
 
 
 class PurchaseOrderCreateSerializer(serializers.ModelSerializer):
@@ -169,6 +214,7 @@ class PurchaseOrderCreateSerializer(serializers.ModelSerializer):
             "delivery_order_file",
             "delivery_order_invoice_file",
             "packing_list_file",
+            "note",
         ]
         extra_kwargs = {
             "purchase_order_number": {"required": False},
@@ -176,6 +222,7 @@ class PurchaseOrderCreateSerializer(serializers.ModelSerializer):
             "delivery_order_file": {"required": False},
             "delivery_order_invoice_file": {"required": False},
             "packing_list_file": {"required": False},
+            "note": {"required": False},
         }
         read_only_fields = [
             "purchase_order_number",
@@ -194,28 +241,6 @@ class PurchaseOrderCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"status": "Purchase Order must be created with DRAFT status"}
             )
-
-        forwarder_name = attrs.get("forwarder_name")
-        if not forwarder_name:
-            raise serializers.ValidationError({"forwarder_name": "Forwarder name is required."})
-
-        shop_services = attrs.get("shop_services")
-        if not shop_services:
-            raise serializers.ValidationError({"shop_services": "Shop services is required."})
-
-        commission_fee_pct = attrs.get("commission_fee_pct")
-        if commission_fee_pct is None:
-            raise serializers.ValidationError(
-                {"commission_fee_pct": "Commission fee percentage is required."}
-            )
-
-        delivery_fee = attrs.get("delivery_fee")
-        if delivery_fee is None:
-            raise serializers.ValidationError({"delivery_fee": "Delivery fee is required."})
-
-        currency = attrs.get("currency")
-        if not currency:
-            raise serializers.ValidationError({"currency": "Currency is required."})
 
         return attrs
 
@@ -247,12 +272,14 @@ class PurchaseOrderCreateSerializer(serializers.ModelSerializer):
 
         exchange_rate = Decimal(str(attrs.get("exchange_rate") or 0))
         commission_fee_pct = Decimal(str(attrs.get("commission_fee_pct") or 0))
-        delivery_fee = Decimal(str(attrs.get("delivery_fee") or 0))
         shipping_fee_per_cbm = Decimal(str(attrs.get("shipping_fee_per_cbm") or 0))
         cbm = Decimal(str(attrs.get("cbm") or 0))
 
-        commission_fee = int(round(commission_fee_pct * delivery_fee * exchange_rate))
-        shipping_fee = int(round(shipping_fee_per_cbm * cbm)) if cbm else 0
+        total_item_rmb = Decimal("0")
+        for detail in order_details:
+            total_item_rmb += Decimal(str(detail.get("discounted_total_price_foreign") or 0))
+        commission_fee = int(round(commission_fee_pct / 100 * total_item_rmb * exchange_rate))
+        shipping_fee = _calc_shipping_fee(shipping_fee_per_cbm, cbm) if cbm else 0
         procure_amount = shipping_fee + commission_fee
         total_order_amount = totals["total_item_amount"] + commission_fee
         total_amount = totals["total_item_amount"] + commission_fee + shipping_fee
@@ -335,13 +362,19 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
             "total_amount",
             "procure_amount",
             "invoice_number",
+            "invoice_date",
             "delivery_date",
+            "forecast_delivery_date",
+            "forecast_cbm",
+            "forecast_shipping_fee",
+            "commission_fee_rmb",
             "delivery_order_number",
             "order_details",
             "purchase_order_invoice_file",
             "delivery_order_file",
             "delivery_order_invoice_file",
             "packing_list_file",
+            "note",
         ]
         extra_kwargs = {
             "purchase_order_number": {"required": False},
@@ -349,6 +382,7 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
             "delivery_order_file": {"required": False},
             "delivery_order_invoice_file": {"required": False},
             "packing_list_file": {"required": False},
+            "note": {"required": False},
         }
         read_only_fields = [
             "total_ordered_qty",
@@ -369,7 +403,7 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
         new_status = attrs.get("status")
 
         if new_status is not None and new_status != current_status:
-            allowed = PurchaseOrderService.STATUS_TRANSITIONS.get(current_status, [])
+            allowed = PurchaseOrder.STATUS_TRANSITIONS.get(current_status, [])
             if new_status not in allowed:
                 raise serializers.ValidationError(
                     {
@@ -378,146 +412,14 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
                     }
                 )
 
-            if (
-                new_status == PurchaseOrder.POStatus.ORDERED
-                and current_status == PurchaseOrder.POStatus.DRAFT
-            ):
-                current_exchange_rate = self.instance.exchange_rate
-                new_exchange_rate = attrs.get("exchange_rate")
-                if current_exchange_rate is None and new_exchange_rate is None:
-                    raise serializers.ValidationError(
-                        {
-                            "exchange_rate": "Exchange rate is required when moving to ORDERED status. Please set exchange_rate on the Purchase Order."
-                        }
-                    )
-
-                current_invoice_file = self.instance.purchase_order_invoice_file
-                new_invoice_file = attrs.get("purchase_order_invoice_file")
-                if not current_invoice_file and new_invoice_file is None:
-                    raise serializers.ValidationError(
-                        {
-                            "purchase_order_invoice_file": "Invoice file is required when moving to ORDERED status."
-                        }
-                    )
-
-                current_invoice_number = self.instance.invoice_number
-                new_invoice_number = attrs.get("invoice_number")
-                if not current_invoice_number and not new_invoice_number:
-                    raise serializers.ValidationError(
-                        {
-                            "invoice_number": "Invoice number is required when moving to ORDERED status."
-                        }
-                    )
-
-                current_invoice_date = self.instance.invoice_date
-                new_invoice_date = attrs.get("invoice_date")
-                if not current_invoice_date and not new_invoice_date:
-                    raise serializers.ValidationError(
-                        {"invoice_date": "Invoice date is required when moving to ORDERED status."}
-                    )
-
-                current_commission_fee_pct = self.instance.commission_fee_pct
-                new_commission_fee_pct = attrs.get("commission_fee_pct")
-                if current_commission_fee_pct is None and new_commission_fee_pct is None:
-                    raise serializers.ValidationError(
-                        {
-                            "commission_fee_pct": "Commission fee percentage is required when moving to ORDERED status."
-                        }
-                    )
-
-                current_forwarder_name = self.instance.forwarder_name
-                new_forwarder_name = attrs.get("forwarder_name")
-                if not current_forwarder_name and not new_forwarder_name:
-                    raise serializers.ValidationError(
-                        {
-                            "forwarder_name": "Forwarder name is required when moving to ORDERED status."
-                        }
-                    )
-
-                current_supplier_name = self.instance.supplier_name
-                new_supplier_name = attrs.get("supplier_name")
-                if not current_supplier_name and not new_supplier_name:
-                    raise serializers.ValidationError(
-                        {
-                            "supplier_name": "Supplier name is required when moving to ORDERED status."
-                        }
-                    )
-
-                current_shop_services = self.instance.shop_services
-                new_shop_services = attrs.get("shop_services")
-                if not current_shop_services and not new_shop_services:
-                    raise serializers.ValidationError(
-                        {
-                            "shop_services": "Shop services is required when moving to ORDERED status."
-                        }
-                    )
-
-                current_delivery_fee = self.instance.delivery_fee
-                new_delivery_fee = attrs.get("delivery_fee")
-                if current_delivery_fee is None and new_delivery_fee is None:
-                    raise serializers.ValidationError(
-                        {
-                            "delivery_fee": "Delivery fee is required when moving to ORDERED status. Can be set to 0."
-                        }
-                    )
-
-            elif (
-                new_status == PurchaseOrder.POStatus.SHIPPED
-                and current_status == PurchaseOrder.POStatus.ORDERED
-            ):
-                current_do_number = self.instance.delivery_order_number
-                new_do_number = attrs.get("delivery_order_number")
-                if not current_do_number and not new_do_number:
-                    raise serializers.ValidationError(
-                        {
-                            "delivery_order_number": "Delivery order number is required when moving to SHIPPED status."
-                        }
-                    )
-
-                current_do_file = self.instance.delivery_order_file
-                new_do_file = attrs.get("delivery_order_file")
-                if not current_do_file and new_do_file is None:
-                    raise serializers.ValidationError(
-                        {
-                            "delivery_order_file": "Delivery order file is required when moving to SHIPPED status."
-                        }
-                    )
-
-                current_shipping_fee_per_cbm = self.instance.shipping_fee_per_cbm
-                new_shipping_fee_per_cbm = attrs.get("shipping_fee_per_cbm")
-                if not current_shipping_fee_per_cbm and new_shipping_fee_per_cbm is None:
-                    raise serializers.ValidationError(
-                        {
-                            "shipping_fee_per_cbm": "Shipping fee per CBM is required when moving to SHIPPED status."
-                        }
-                    )
-
-                current_cbm = self.instance.cbm
-                new_cbm = attrs.get("cbm")
-                if not current_cbm and new_cbm is None:
-                    raise serializers.ValidationError(
-                        {"cbm": "CBM is required when moving to SHIPPED status."}
-                    )
-
-                current_weight = self.instance.weight
-                new_weight = attrs.get("weight")
-                if not current_weight and new_weight is None:
-                    raise serializers.ValidationError(
-                        {"weight": "Weight is required when moving to SHIPPED status."}
-                    )
-
-            elif (
-                new_status == PurchaseOrder.POStatus.DELIVERED
-                and current_status == PurchaseOrder.POStatus.SHIPPED
-            ):
-                current_do_invoice = self.instance.delivery_order_invoice_file
-                new_do_invoice = attrs.get("delivery_order_invoice_file")
-                if not current_do_invoice and new_do_invoice is None:
-                    raise serializers.ValidationError(
-                        {
-                            "delivery_order_invoice_file": "Delivery order invoice file is required when moving to DELIVERED status."
-                        }
-                    )
+            service = PurchaseOrderService()
+            missing = service.check_purchase_order_requirements(
+                self.instance, new_status, incoming_data=attrs
+            )
+            if missing:
+                raise serializers.ValidationError(
+                    {item["field"]: item["message"] for item in missing}
+                )
 
         if current_status != PurchaseOrder.POStatus.DRAFT:
             new_exchange_rate = attrs.get("exchange_rate")
@@ -527,6 +429,51 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
                         "exchange_rate": f"Cannot change exchange_rate when status is {current_status}. Exchange rate can only be changed in DRAFT status."
                     }
                 )
+
+        # Enforce status-based field locks
+        editable = PurchaseOrder.get_editable_fields(current_status)
+        editable_header_set = set(editable["header"])
+        editable_detail_set = set(editable["order_detail"])
+        # During a status transition, also allow target status editable fields
+        if new_status and new_status != current_status:
+            target_editable = PurchaseOrder.get_editable_fields(new_status)
+            editable_header_set |= set(target_editable["header"])
+            editable_detail_set |= set(target_editable["order_detail"])
+
+        locked_violations = []
+        for field, value in attrs.items():
+            if field in ("status", "order_details", "warehouse_id", "_purchase_order"):
+                continue
+            if value is not None and field not in editable_header_set:
+                locked_violations.append(field)
+
+        if locked_violations:
+            raise serializers.ValidationError(
+                {
+                    field: f"'{field}' cannot be edited when PO status is {current_status}."
+                    for field in locked_violations
+                }
+            )
+
+        order_details = attrs.get("order_details", [])
+        for detail_data in order_details:
+            if not detail_data.get("id"):
+                continue  # new items bypass field-level edit lock
+            for field in detail_data:
+                if field in (
+                    "id",
+                    "product_variant_id",
+                    "received_date",
+                    "received_qty",
+                    "remarks",
+                ):
+                    continue
+                if field not in editable_detail_set and detail_data.get(field) is not None:
+                    raise serializers.ValidationError(
+                        {
+                            "order_details": f"'{field}' cannot be edited when PO status is {current_status}."
+                        }
+                    )
 
         if new_status not in [
             PurchaseOrder.POStatus.SHIPPED,
@@ -567,16 +514,17 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
                                 }
                             )
 
-        if order_details and current_status not in [PurchaseOrder.POStatus.DRAFT]:
-            incoming_ids = {str(d.get("id")) for d in order_details if d.get("id")}
-            if incoming_ids:
-                new_details = [d for d in order_details if not d.get("id")]
-                if new_details:
-                    raise serializers.ValidationError(
-                        {
-                            "order_details": f"Cannot add new details when status is {current_status}. Only DRAFT status allows adding new details."
-                        }
-                    )
+        if order_details and current_status not in [
+            PurchaseOrder.POStatus.DRAFT,
+            PurchaseOrder.POStatus.ORDERED,
+        ]:
+            new_details = [d for d in order_details if not d.get("id")]
+            if new_details:
+                raise serializers.ValidationError(
+                    {
+                        "order_details": f"Cannot add new details when status is {current_status}. Only DRAFT or ORDERED status allows adding new details."
+                    }
+                )
 
         if self.instance and new_status in [
             PurchaseOrder.POStatus.ORDERED,
@@ -655,12 +603,21 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
         """Calculate PO totals based on order details and fee fields."""
         exchange_rate = Decimal(str(attrs.get("exchange_rate") or 0))
         commission_fee_pct = Decimal(str(attrs.get("commission_fee_pct") or 0))
-        delivery_fee = Decimal(str(attrs.get("delivery_fee") or 0))
         shipping_fee_per_cbm = Decimal(str(attrs.get("shipping_fee_per_cbm") or 0))
         cbm = Decimal(str(attrs.get("cbm") or 0))
 
-        commission_fee = int(round(commission_fee_pct * delivery_fee * exchange_rate))
-        shipping_fee = int(round(shipping_fee_per_cbm * cbm)) if cbm else 0
+        order_details = attrs.get("order_details") or []
+        total_item_rmb = Decimal("0")
+        if order_details:
+            for detail in order_details:
+                total_item_rmb += Decimal(str(detail.get("discounted_total_price_foreign") or 0))
+        else:
+            po = getattr(self, "instance", None)
+            if po:
+                for detail in po.order_details.all():
+                    total_item_rmb += Decimal(str(detail.discounted_total_price_foreign or 0))
+        commission_fee = int(round(commission_fee_pct / 100 * total_item_rmb * exchange_rate))
+        shipping_fee = _calc_shipping_fee(shipping_fee_per_cbm, cbm) if cbm else 0
         procure_amount = shipping_fee + commission_fee
         total_item_amount = existing_totals.get("total_item_amount", 0) if existing_totals else 0
         total_order_amount = total_item_amount + commission_fee
@@ -688,17 +645,39 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
         return ret
 
 
+class PurchaseOrderStatusHistorySerializer(serializers.ModelSerializer):
+    changed_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PurchaseOrderStatusHistory
+        fields = ["id", "from_status", "to_status", "changed_by_name", "note", "cdate"]
+
+    def get_changed_by_name(self, obj: PurchaseOrderStatusHistory) -> str | None:
+        if obj.changed_by:
+            return obj.changed_by.get_full_name() or obj.changed_by.username
+        return None
+
+
 class PurchaseOrderReadSerializer(serializers.ModelSerializer):
     """Serializer for reading Purchase Orders with all details"""
 
     order_details = PurchaseOrderDetailSerializer(many=True, read_only=True)
     warehouse_name = serializers.CharField(source="warehouse.name", read_only=True)
     company_name = serializers.CharField(source="company.name", read_only=True)
+    cost_ratio_cogs = serializers.SerializerMethodField()
+    shipping_per_qty = serializers.SerializerMethodField()
+    status_history = PurchaseOrderStatusHistorySerializer(many=True, read_only=True)
+    next_status = serializers.SerializerMethodField()
+    editable_fields = serializers.SerializerMethodField()
 
     class Meta:
         model = PurchaseOrder
         fields = [
             "id",
+            "cost_ratio_cogs",
+            "shipping_per_qty",
+            "status_history",
+            "next_status",
             "purchase_order_number",
             "status",
             "warehouse_name",
@@ -725,12 +704,30 @@ class PurchaseOrderReadSerializer(serializers.ModelSerializer):
             "invoice_date",
             "delivery_order_number",
             "delivery_date",
+            "forecast_delivery_date",
+            "forecast_cbm",
+            "forecast_shipping_fee",
+            "commission_fee_rmb",
             "order_details",
             "purchase_order_invoice_file",
             "delivery_order_file",
             "delivery_order_invoice_file",
             "packing_list_file",
+            "note",
+            "editable_fields",
             "cdate",
             "udate",
         ]
         read_only_fields = ["id", "cdate", "udate"]
+
+    def get_cost_ratio_cogs(self, obj: PurchaseOrder) -> float:
+        return float(obj.cost_ratio_cogs())
+
+    def get_shipping_per_qty(self, obj: PurchaseOrder) -> int:
+        return obj.get_shipping_per_qty()
+
+    def get_next_status(self, obj: PurchaseOrder) -> str | None:
+        return obj.get_next_status()
+
+    def get_editable_fields(self, obj: PurchaseOrder) -> dict[str, list[str]]:
+        return PurchaseOrder.get_editable_fields(obj.status)

@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime
 from decimal import Decimal
-from typing import Dict, List
+from typing import TYPE_CHECKING
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
@@ -13,6 +13,9 @@ from apps.inventory.services.inventory_service import InventoryService
 from apps.purchasing.models import PurchaseOrder, PurchaseOrderDetail
 from core.models import Company
 
+if TYPE_CHECKING:
+    from django.contrib.auth.models import User
+
 logger = logging.getLogger(__name__)
 
 
@@ -21,16 +24,6 @@ class PurchaseOrderService:
     Service for Purchase Order operations.
     Handles creation, updates, and inventory-related logic.
     """
-
-    STATUS_TRANSITIONS: Dict[str, List[str]] = {
-        PurchaseOrder.POStatus.DRAFT: [PurchaseOrder.POStatus.ORDERED],
-        PurchaseOrder.POStatus.ORDERED: [
-            PurchaseOrder.POStatus.SHIPPED,
-        ],
-        PurchaseOrder.POStatus.SHIPPED: [PurchaseOrder.POStatus.DELIVERED],
-        PurchaseOrder.POStatus.DELIVERED: [PurchaseOrder.POStatus.COMPLETED],
-        PurchaseOrder.POStatus.COMPLETED: [],
-    }
 
     def _trigger_shopee_sync_batch(self, variant_ids: list[str], company_id: str) -> None:
         from apps.omnichannel.vendor.shopee.stock_sync import ShopeeStockSyncService
@@ -88,8 +81,204 @@ class PurchaseOrderService:
 
         return po
 
+    def check_purchase_order_requirements(
+        self,
+        po: "PurchaseOrder",
+        new_status: str,
+        incoming_data: dict | None = None,
+    ) -> list[dict[str, str]]:
+        """
+        Returns all unmet field requirements for a PO status transition.
+        Does NOT raise — returns empty list if all requirements are met.
+
+        incoming_data: fields being submitted in the current request (update path).
+                       Pass None when only checking the PO's existing state (advance_status path).
+
+        Returns list of {"field", "label", "section", "message"}.
+        """
+        data = incoming_data or {}
+        missing: list[dict[str, str]] = []
+
+        zero_valid_fields = {"exchange_rate", "commission_fee_pct", "delivery_fee"}
+
+        def _present(field: str) -> bool:
+            """True if the field has a usable value in incoming_data or on the PO."""
+            incoming_val = data.get(field)
+            if incoming_val is not None:
+                # File fields: treat empty string as absent
+                if field in (
+                    "purchase_order_invoice_file",
+                    "delivery_order_file",
+                    "delivery_order_invoice_file",
+                ):
+                    return bool(incoming_val)
+                return True
+            po_val = getattr(po, field, None)
+            if field in zero_valid_fields:
+                return po_val is not None
+            return bool(po_val)
+
+        if new_status == PurchaseOrder.POStatus.ORDERED:
+            for field, label, section, message in [
+                (
+                    "exchange_rate",
+                    "Exchange Rate",
+                    "Financial Setup",
+                    "Exchange rate is required when moving to ORDERED.",
+                ),
+                (
+                    "purchase_order_invoice_file",
+                    "PO Invoice File",
+                    "Attachments",
+                    "PO invoice file is required when moving to ORDERED.",
+                ),
+                (
+                    "invoice_number",
+                    "Invoice Number",
+                    "Logistics & Dates",
+                    "Invoice number is required when moving to ORDERED.",
+                ),
+                (
+                    "invoice_date",
+                    "Invoice Date",
+                    "Logistics & Dates",
+                    "Invoice date is required when moving to ORDERED.",
+                ),
+                (
+                    "commission_fee_pct",
+                    "Commission %",
+                    "Financial Setup",
+                    "Commission % is required when moving to ORDERED.",
+                ),
+                (
+                    "forwarder_name",
+                    "Forwarder",
+                    "General",
+                    "Forwarder name is required when moving to ORDERED.",
+                ),
+                (
+                    "supplier_name",
+                    "Supplier",
+                    "General",
+                    "Supplier name is required when moving to ORDERED.",
+                ),
+                (
+                    "shop_services",
+                    "Jasa Belanja",
+                    "General",
+                    "Jasa belanja is required when moving to ORDERED.",
+                ),
+                (
+                    "delivery_fee",
+                    "Delivery Fee (RMB)",
+                    "Financial Setup",
+                    "Delivery fee is required when moving to ORDERED. Can be 0.",
+                ),
+            ]:
+                if not _present(field):
+                    missing.append(
+                        {"field": field, "label": label, "section": section, "message": message}
+                    )
+
+            # Order details: need at least one existing or incoming
+            has_incoming_details = bool(data.get("order_details"))
+            has_existing_details = (
+                po.order_details.exists() if hasattr(po, "order_details") else False
+            )
+            if not has_incoming_details and not has_existing_details:
+                missing.append(
+                    {
+                        "field": "order_details",
+                        "label": "Order Items",
+                        "section": "Order Items",
+                        "message": "At least one order item is required when moving to ORDERED.",
+                    }
+                )
+
+        elif new_status == PurchaseOrder.POStatus.SHIPPED:
+            for field, label, section, message in [
+                (
+                    "delivery_order_number",
+                    "Delivery Order No.",
+                    "Logistics & Dates",
+                    "Delivery order number is required when moving to SHIPPED.",
+                ),
+                (
+                    "delivery_order_file",
+                    "Delivery Order File",
+                    "Attachments",
+                    "Delivery order file is required when moving to SHIPPED.",
+                ),
+                (
+                    "shipping_fee_per_cbm",
+                    "Shipping Fee / CBM",
+                    "Financial Setup",
+                    "Shipping fee per CBM is required when moving to SHIPPED.",
+                ),
+                ("cbm", "CBM", "Logistics & Dates", "CBM is required when moving to SHIPPED."),
+                (
+                    "weight",
+                    "Weight (kg)",
+                    "Logistics & Dates",
+                    "Weight is required when moving to SHIPPED.",
+                ),
+            ]:
+                if not _present(field):
+                    missing.append(
+                        {"field": field, "label": label, "section": section, "message": message}
+                    )
+
+        elif new_status == PurchaseOrder.POStatus.DELIVERED:
+            if not _present("delivery_order_invoice_file"):
+                missing.append(
+                    {
+                        "field": "delivery_order_invoice_file",
+                        "label": "DO Invoice File",
+                        "section": "Attachments",
+                        "message": "Delivery order invoice file is required when moving to DELIVERED.",
+                    }
+                )
+
+        return missing
+
+    def get_transition_warnings(
+        self,
+        po: "PurchaseOrder",
+        new_status: str,
+    ) -> list[dict[str, object]]:
+        """
+        Returns soft warnings for a status transition.
+        Warnings do not block the transition — they ask the user to confirm.
+        """
+        warnings: list[dict[str, object]] = []
+
+        if new_status == PurchaseOrder.POStatus.COMPLETED:
+            partial_items = []
+            for detail in po.order_details.select_related("product_variant").all():
+                received = detail.received_qty or 0
+                if received < detail.ordered_qty:
+                    partial_items.append(
+                        {
+                            "name": detail.product_variant.name,
+                            "ordered_qty": detail.ordered_qty,
+                            "received_qty": received,
+                        }
+                    )
+            if partial_items:
+                warnings.append(
+                    {
+                        "type": "partial_receipt",
+                        "message": f"{len(partial_items)} item(s) have received qty less than ordered qty.",
+                        "items": partial_items,
+                    }
+                )
+
+        return warnings
+
     @transaction.atomic
-    def update_purchase_order(self, po: PurchaseOrder, data: dict) -> PurchaseOrder:
+    def update_purchase_order(
+        self, po: PurchaseOrder, data: dict, changed_by: "User | None" = None
+    ) -> PurchaseOrder:
         """Update a Purchase Order and its details.
 
         Validations are handled by PurchaseOrderUpdateSerializer before this method is called.
@@ -100,7 +289,7 @@ class PurchaseOrderService:
 
         # Enforce status transitions
         if new_status and new_status != old_status:
-            allowed = self.STATUS_TRANSITIONS.get(old_status, [])
+            allowed = PurchaseOrder.STATUS_TRANSITIONS.get(old_status, [])
             if new_status not in allowed and new_status != PurchaseOrder.POStatus.CANCELLED:
                 raise ValidationError(
                     {
@@ -125,7 +314,7 @@ class PurchaseOrderService:
 
         existing_details_map = {str(d.id): d for d in po.order_details.all()}
 
-        if old_status not in [PurchaseOrder.POStatus.DRAFT, PurchaseOrder.POStatus.ORDERED]:
+        if old_status not in [PurchaseOrder.POStatus.DRAFT]:
             price_fields = {
                 "unit_price_foreign",
                 "discounted_unit_price_foreign",
@@ -149,7 +338,7 @@ class PurchaseOrderService:
                                 ):
                                     raise ValidationError(
                                         {
-                                            "order_details": f"Cannot change {field} when status is {old_status}. Price fields can only be changed in DRAFT or ORDERED status."
+                                            "order_details": f"Cannot change {field} when status is {old_status}. Price fields can only be changed in DRAFT status."
                                         }
                                     )
 
@@ -257,6 +446,7 @@ class PurchaseOrderService:
 
         elif new_status == PurchaseOrder.POStatus.DELIVERED:
             for item in order_details:
+                detail_id = item.get("id")
                 receive_date_str = item.get("received_date")
                 received_qty = item.get("received_qty", 0)
                 ordered_qty = item.get("ordered_qty", 0)
@@ -276,6 +466,13 @@ class PurchaseOrderService:
                 if qty_is_zero:
                     continue
 
+                existing_detail_obj = existing_details_map.get(detail_id) if detail_id else None
+                discounted_total_price_base = 0
+                if existing_detail_obj:
+                    discounted_total_price_base = (
+                        existing_detail_obj.discounted_total_price_base or 0
+                    )
+
                 inventory_data.append(
                     {
                         "product_variant_id": product_variant_id,
@@ -285,6 +482,7 @@ class PurchaseOrderService:
                         "unit_price_base": item.get("unit_price_base"),
                         "unit_price_foreign": item.get("unit_price_foreign"),
                         "discounted_unit_price_foreign": item.get("discounted_unit_price_foreign"),
+                        "discounted_total_price_base": discounted_total_price_base,
                         "exchange_rate": po.exchange_rate,
                         "note": f"Stock movement for PO {po.purchase_order_number} inbound",
                     }
@@ -332,9 +530,20 @@ class PurchaseOrderService:
                     if existing_detail := existing_details_map.get(detail_id):
                         original_received_qtys[detail_id] = existing_detail.received_qty or 0
 
+        if new_status and new_status != old_status:
+            from apps.purchasing.models import PurchaseOrderStatusHistory
+
+            PurchaseOrderStatusHistory.objects.create(
+                purchase_order=po,
+                company=po.company,
+                from_status=old_status,
+                to_status=new_status,
+                changed_by=changed_by,
+            )
+
         updated_fields = ["udate"]
         for attr, value in data.items():
-            if attr != "id":
+            if attr not in ("id", "_purchase_order"):
                 updated_fields.append(attr)
                 setattr(po, attr, value)
         po.save(update_fields=updated_fields)
@@ -377,6 +586,14 @@ class PurchaseOrderService:
                 else:
                     continue
 
+                detail_id = item.get("id")
+                existing_detail_obj = existing_details_map.get(detail_id) if detail_id else None
+                discounted_total_price_base = 0
+                if existing_detail_obj:
+                    discounted_total_price_base = (
+                        existing_detail_obj.discounted_total_price_base or 0
+                    )
+
                 inventory_data.append(
                     {
                         "product_variant_id": product_variant_id,
@@ -386,6 +603,7 @@ class PurchaseOrderService:
                         "unit_price_base": item.get("unit_price_base"),
                         "unit_price_foreign": item.get("unit_price_foreign"),
                         "discounted_unit_price_foreign": item.get("discounted_unit_price_foreign"),
+                        "discounted_total_price_base": discounted_total_price_base,
                         "exchange_rate": po.exchange_rate,
                         "note": f"Stock movement for PO {po.purchase_order_number} inbound",
                     }
@@ -460,11 +678,39 @@ class PurchaseOrderService:
 
                     update_details.append(detail)
             else:
-                if po.status == PurchaseOrder.POStatus.DRAFT:
+                if po.status in [PurchaseOrder.POStatus.DRAFT, PurchaseOrder.POStatus.ORDERED]:
                     product_variant_id = ulid_field.to_python(detail_data.get("product_variant_id"))
                     detail_data_copy = {
                         k: v for k, v in detail_data.items() if k != "product_variant_id"
                     }
+                    if po.exchange_rate:
+                        exchange_rate = Decimal(str(po.exchange_rate))
+                        unit_price_foreign = Decimal(
+                            str(detail_data_copy.get("unit_price_foreign") or 0)
+                        )
+                        disc_foreign = Decimal(
+                            str(detail_data_copy.get("discounted_unit_price_foreign") or 0)
+                        )
+                        if not disc_foreign:
+                            disc_foreign = unit_price_foreign
+                        ordered_qty = int(detail_data_copy.get("ordered_qty") or 0)
+                        detail_data_copy["unit_price_base"] = int(
+                            round(unit_price_foreign * exchange_rate)
+                        )
+                        detail_data_copy["discounted_unit_price_foreign"] = disc_foreign
+                        detail_data_copy["discounted_unit_price_base"] = int(
+                            round(disc_foreign * exchange_rate)
+                        )
+                        detail_data_copy["total_price_foreign"] = unit_price_foreign * ordered_qty
+                        detail_data_copy["discounted_total_price_foreign"] = (
+                            disc_foreign * ordered_qty
+                        )
+                        detail_data_copy["total_price_base"] = (
+                            detail_data_copy["unit_price_base"] * ordered_qty
+                        )
+                        detail_data_copy["discounted_total_price_base"] = (
+                            detail_data_copy["discounted_unit_price_base"] * ordered_qty
+                        )
                     detail = PurchaseOrderDetail(
                         purchase_order=po,
                         product_variant_id=product_variant_id,
@@ -473,7 +719,7 @@ class PurchaseOrderService:
                     )
                     new_details.append(detail)
 
-        if po.status == PurchaseOrder.POStatus.DRAFT:
+        if po.status in [PurchaseOrder.POStatus.DRAFT, PurchaseOrder.POStatus.ORDERED]:
             ids_to_keep = [d.id for d in update_details] + [d.id for d in new_details]
             po.order_details.exclude(id__in=ids_to_keep).delete()
 
@@ -486,25 +732,46 @@ class PurchaseOrderService:
         if new_details:
             PurchaseOrderDetail.objects.bulk_create(new_details, batch_size=100)
 
+    @staticmethod
+    def _calc_shipping_fee(shipping_fee_per_cbm: Decimal, cbm: Decimal) -> int:
+        """Tiered freight calculation.
+
+        < 0.1 CBM  : charge as if 0.1 CBM (minimum charge)
+        0.1–0.5 CBM: cbm × rate + 100,000 IDR surcharge
+        ≥ 0.5 CBM  : cbm × rate
+        """
+        if cbm <= 0 or shipping_fee_per_cbm <= 0:
+            return 0
+        if cbm < Decimal("0.1"):
+            fee = Decimal("0.1") * shipping_fee_per_cbm
+        elif cbm < Decimal("0.5"):
+            fee = cbm * shipping_fee_per_cbm + Decimal("100000")
+        else:
+            fee = cbm * shipping_fee_per_cbm
+        return int(round(fee))
+
     def _recalculate_po_totals(self, po: PurchaseOrder) -> None:
         """Recalculate PO totals based on order details and fee fields."""
         total_ordered_qty = 0
         total_received_qty = 0
         total_item_amount = 0
+        total_item_rmb = Decimal("0")
 
         for detail in po.order_details.all():
             total_ordered_qty += detail.ordered_qty or 0
             total_received_qty += detail.received_qty or 0
             total_item_amount += detail.discounted_total_price_base or 0
+            total_item_rmb += Decimal(str(detail.discounted_total_price_foreign or 0))
 
         exchange_rate = Decimal(str(po.exchange_rate or 0))
         commission_fee_pct = Decimal(str(po.commission_fee_pct or 0))
-        delivery_fee = Decimal(str(po.delivery_fee or 0))
         shipping_fee_per_cbm = Decimal(str(po.shipping_fee_per_cbm or 0))
         cbm = Decimal(str(po.cbm or 0))
 
-        commission_fee = int(round(commission_fee_pct * delivery_fee * exchange_rate))
-        shipping_fee = int(round(shipping_fee_per_cbm * cbm))
+        commission_fee = int(
+            round(commission_fee_pct / Decimal("100") * total_item_rmb * exchange_rate)
+        )
+        shipping_fee = PurchaseOrderService._calc_shipping_fee(shipping_fee_per_cbm, cbm)
         procure_amount = shipping_fee + commission_fee
         total_order_amount = total_item_amount + commission_fee
         total_amount = total_item_amount + commission_fee + shipping_fee

@@ -203,6 +203,9 @@ class ProductCogs(DefaultModel):
     allocated_delivery_fee = models.BigIntegerField(
         default=0, help_text="Delivery fee allocated per unit (IDR)"
     )
+    allocated_commission_fee = models.BigIntegerField(
+        default=0, help_text="Commission fee allocated per item total (IDR)"
+    )
 
     original_qty = models.IntegerField(
         default=0,

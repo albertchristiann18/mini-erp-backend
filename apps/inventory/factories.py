@@ -9,6 +9,7 @@ from apps.inventory.models import (
     ProductVariant,
     ProductVariantMarketplace,
     ProductVariantWarehouse,
+    StockMovement,
 )
 from core.factories import CompanyFactory, MarketplaceFactory, WarehouseFactory
 
@@ -93,3 +94,19 @@ class ProductVariantMarketplaceFactory(factory.django.DjangoModelFactory):
     is_active = True
     shopee_item_id = None
     shopee_model_id = None
+
+
+class StockMovementFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = StockMovement
+
+    company = factory.SubFactory(CompanyFactory)  # type: ignore[no-untyped-call]
+    product_variant = factory.SubFactory(ProductVariantFactory)  # type: ignore[no-untyped-call]
+    warehouse = factory.SubFactory(WarehouseFactory)  # type: ignore[no-untyped-call]
+    movement_type = StockMovement.MovementType.INBOUND
+    field_change = ""
+    quantity = 10
+    balance_before = 0
+    balance_after = 10
+    reference_number = ""
+    note = ""

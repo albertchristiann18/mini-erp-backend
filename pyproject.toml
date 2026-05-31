@@ -29,6 +29,7 @@ dependencies = [
     "sqlparse>=0.5.3",
     "uvicorn>=0.38.0",
     "requests>=2.33.1",
+    "openpyxl>=3.1.0",
 ]
 
 [tool.ruff]

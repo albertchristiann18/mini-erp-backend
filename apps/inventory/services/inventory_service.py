@@ -105,6 +105,65 @@ class InventoryService:
             )
         self._trigger_shopee_sync(str(variant.id), str(company_id))
 
+    def get_avg_sales_per_day(
+        self,
+        variant_ids: list[str],
+        days: int,
+    ) -> list[dict]:
+        from datetime import timedelta
+
+        from django.db.models import Sum
+        from django.utils import timezone
+
+        from apps.inventory.models import ProductVariant
+        from apps.sales.models import SalesOrder, SalesOrderItem
+
+        date_from = timezone.now().date() - timedelta(days=days)
+
+        valid_statuses = [
+            SalesOrder.OrderStatus.CONFIRMED,
+            SalesOrder.OrderStatus.SHIPPING,
+            SalesOrder.OrderStatus.DELIVERED,
+            SalesOrder.OrderStatus.COMPLETED,
+        ]
+
+        items = (
+            SalesOrderItem.objects.filter(
+                product_variant_id__in=variant_ids,
+                sales_order__status__in=valid_statuses,
+                sales_order__order_date__date__gte=date_from,
+            )
+            .values("product_variant_id")
+            .annotate(total_qty=Sum("quantity"))
+        )
+        qty_map: dict[str, int] = {
+            str(item["product_variant_id"]): item["total_qty"] for item in items
+        }
+
+        variants = ProductVariant.objects.filter(id__in=variant_ids).values(
+            "id", "sku_variant_code", "name"
+        )
+
+        result = []
+        for variant in variants:
+            vid = str(variant["id"])
+            total_qty = qty_map.get(vid, 0)
+            avg = round(total_qty / days, 3) if days > 0 else 0.0
+            result.append(
+                {
+                    "variant_id": vid,
+                    "sku_variant_code": variant["sku_variant_code"],
+                    "variant_name": variant["name"],
+                    "avg_sales_per_day": avg,
+                    "total_qty_sold": total_qty,
+                    "days": days,
+                }
+            )
+
+        id_order = {vid: i for i, vid in enumerate(variant_ids)}
+        result.sort(key=lambda r: id_order.get(str(r["variant_id"]), 9999))
+        return result
+
     def _trigger_shopee_sync(self, variant_id: str, company_id: str) -> None:
         from apps.omnichannel.vendor.shopee.stock_sync import ShopeeStockSyncService
         from core.models import MarketplaceConnection
@@ -460,6 +519,7 @@ class InventoryService:
                     "exchange_rate",
                     "allocated_shipping_fee",
                     "allocated_delivery_fee",
+                    "allocated_commission_fee",
                     "cogs_amount",
                 )
                 .filter(
@@ -472,8 +532,8 @@ class InventoryService:
         shipping_fee = getattr(po, "shipping_fee", 0) or 0
         delivery_fee = Decimal(str(getattr(po, "delivery_fee", 0) or 0))
         exchange_rate = Decimal(str(getattr(po, "exchange_rate", 1) or 1))
-        total_cbm = Decimal(str(getattr(po, "cbm", 0) or 0))
 
+        # Step 1: compute CBM per item (for shipping allocation)
         item_volumes: dict = {}
         total_volume = Decimal("0")
         for item in data:
@@ -483,24 +543,37 @@ class InventoryService:
                 width = Decimal(str(pv.product.width or 0))
                 height = Decimal(str(pv.product.height or 0))
                 ordered_qty = Decimal(str(item.get("ordered_qty", 0) or 0))
-                item_volume = length * width * height / Decimal("1000000")
+                cbm_per_unit = length * width * height / Decimal("1000000")
                 item_volumes[str(item.get("product_variant_id"))] = {
-                    "volume": item_volume,
+                    "cbm": cbm_per_unit,
                     "qty": ordered_qty,
-                    "total_volume": item_volume * ordered_qty,
+                    "total_cbm": cbm_per_unit * ordered_qty,
+                    "item_value_idr": Decimal(str(item.get("discounted_total_price_base", 0) or 0)),
                 }
-                total_volume += item_volume * ordered_qty
+                total_volume += cbm_per_unit * ordered_qty
 
-        if total_volume > 0 and total_cbm > 0:
-            total_delivery_fee_idr = delivery_fee * exchange_rate
-            for item_id, item_data in item_volumes.items():
-                volume_ratio = item_data["total_volume"] / total_volume
-                item_data["shipping_share"] = int(round(shipping_fee * volume_ratio))
-                item_data["delivery_share"] = int(round(total_delivery_fee_idr * volume_ratio))
-        else:
-            for item_id in item_volumes:
-                item_volumes[item_id]["shipping_share"] = 0
-                item_volumes[item_id]["delivery_share"] = 0
+        # Step 2: compute value totals (for delivery + commission allocation)
+        total_item_amount_idr = Decimal(str(getattr(po, "total_item_amount", 0) or 0))
+        commission_fee_total = Decimal(str(getattr(po, "commission_fee", 0) or 0))
+        total_delivery_fee_idr = delivery_fee * exchange_rate
+
+        # Step 3: allocate each fee per item
+        for item_id, item_data in item_volumes.items():
+            # Shipping: CBM-proportional
+            if total_volume > 0:
+                cbm_ratio = item_data["total_cbm"] / total_volume
+                item_data["shipping_share"] = int(round(shipping_fee * cbm_ratio))
+            else:
+                item_data["shipping_share"] = 0
+
+            # Delivery fee and commission: value-proportional
+            if total_item_amount_idr > 0:
+                value_ratio = item_data["item_value_idr"] / total_item_amount_idr
+                item_data["delivery_share"] = int(round(total_delivery_fee_idr * value_ratio))
+                item_data["commission_share"] = int(round(commission_fee_total * value_ratio))
+            else:
+                item_data["delivery_share"] = 0
+                item_data["commission_share"] = 0
 
         create_cogs_records: list[ProductCogs] = []
         update_cogs_records: list[ProductCogs] = []
@@ -527,10 +600,12 @@ class InventoryService:
 
                     allocated_shipping = 0
                     allocated_delivery = 0
+                    allocated_commission = 0
                     if str(product_variant_id) in item_volumes:
                         vol_data = item_volumes[str(product_variant_id)]
                         allocated_shipping = vol_data.get("shipping_share", 0)
                         allocated_delivery = vol_data.get("delivery_share", 0)
+                        allocated_commission = vol_data.get("commission_share", 0)
 
                     unit_price_idr = Decimal("0")
                     if unit_price_foreign and item_exchange_rate and item_exchange_rate != 1:
@@ -552,7 +627,14 @@ class InventoryService:
                         if received_qty > 0
                         else Decimal("0")
                     )
-                    cogs_amount = int(unit_price_idr + shipping_per_unit + delivery_per_unit)
+                    commission_per_unit = (
+                        Decimal(str(allocated_commission)) / Decimal(str(received_qty))
+                        if received_qty > 0
+                        else Decimal("0")
+                    )
+                    cogs_amount = int(
+                        unit_price_idr + shipping_per_unit + delivery_per_unit + commission_per_unit
+                    )
 
                     assert reference_number is not None
                     create_cogs_records.append(
@@ -567,6 +649,7 @@ class InventoryService:
                             cogs_amount=cogs_amount,
                             allocated_shipping_fee=allocated_shipping,
                             allocated_delivery_fee=allocated_delivery,
+                            allocated_commission_fee=allocated_commission,
                             original_qty=received_qty,
                             remaining_qty=received_qty,
                         )
@@ -596,8 +679,14 @@ class InventoryService:
                         if received_qty > 0
                         else Decimal("0")
                     )
+                    commission_per_unit = (
+                        Decimal(str(existing_cogs.allocated_commission_fee))
+                        / Decimal(str(received_qty))
+                        if received_qty > 0
+                        else Decimal("0")
+                    )
                     existing_cogs.cogs_amount = int(
-                        unit_price_idr + shipping_per_unit + delivery_per_unit
+                        unit_price_idr + shipping_per_unit + delivery_per_unit + commission_per_unit
                     )
                     update_cogs_records.append(existing_cogs)
 
@@ -607,6 +696,6 @@ class InventoryService:
         if update_cogs_records:
             ProductCogs.objects.bulk_update(
                 update_cogs_records,
-                fields=["original_qty", "remaining_qty", "cogs_amount"],
+                fields=["original_qty", "remaining_qty", "cogs_amount", "allocated_commission_fee"],
                 batch_size=100,
             )

@@ -10,10 +10,17 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.serializers import Serializer
 
-from apps.finance.models import AccountsPayable, AccountsReceivable, Expense, ExpenseCategory
+from apps.finance.models import (
+    AccountsPayable,
+    AccountsReceivable,
+    CashTransaction,
+    Expense,
+    ExpenseCategory,
+)
 from apps.finance.serializers import (
     AccountsPayableSerializer,
     AccountsReceivableSerializer,
+    CashTransactionSerializer,
     ExpenseCategorySerializer,
     ExpenseListSerializer,
     ExpenseSerializer,
@@ -29,10 +36,16 @@ from core.permissions import IsStaffOrReadOnly
 
 
 class AccountsPayableViewSet(viewsets.ModelViewSet):
-    queryset = AccountsPayable.objects.all().select_related("purchase_order")
     serializer_class = AccountsPayableSerializer
     http_method_names = ["get", "patch", "post"]
     permission_classes = [IsStaffOrReadOnly]
+
+    def get_queryset(self) -> QuerySet:
+        if not self.request.user.is_authenticated:
+            return AccountsPayable.objects.none()
+        return AccountsPayable.objects.filter(
+            company=self.request.user.profile.company
+        ).select_related("purchase_order")
 
     @action(detail=True, methods=["post"], url_path="record-payment")
     def record_payment(self, request: Request, pk: str | None = None) -> Response:
@@ -53,10 +66,16 @@ class AccountsPayableViewSet(viewsets.ModelViewSet):
 
 
 class AccountsReceivableViewSet(viewsets.ModelViewSet):
-    queryset = AccountsReceivable.objects.all().select_related("sales_order")
     serializer_class = AccountsReceivableSerializer
     http_method_names = ["get", "patch", "post"]
     permission_classes = [IsStaffOrReadOnly]
+
+    def get_queryset(self) -> QuerySet:
+        if not self.request.user.is_authenticated:
+            return AccountsReceivable.objects.none()
+        return AccountsReceivable.objects.filter(
+            company=self.request.user.profile.company
+        ).select_related("sales_order")
 
     @action(detail=True, methods=["post"])
     def settle(self, request: Request, pk: str | None = None) -> Response:
@@ -83,13 +102,13 @@ class ReportViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=["get"], url_path="income-statement")
     def income_statement(self, request: Request) -> Response:
-        """GET /reports/income-statement/?company_id=&start_date=&end_date="""
-        company_id = request.query_params.get("company_id", "")
+        """GET /reports/income-statement/?start_date=&end_date="""
+        company_id = str(request.user.profile.company.id)
         start_date = request.query_params.get("start_date")
         end_date = request.query_params.get("end_date")
-        if not start_date or not end_date or not company_id:
+        if not start_date or not end_date:
             return Response(
-                {"error": "company_id, start_date and end_date are required."},
+                {"error": "start_date and end_date are required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         data = ReportService().income_statement(
@@ -99,12 +118,12 @@ class ReportViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=["get"], url_path="balance-sheet")
     def balance_sheet(self, request: Request) -> Response:
-        """GET /reports/balance-sheet/?company_id=&as_of_date="""
-        company_id = request.query_params.get("company_id", "")
+        """GET /reports/balance-sheet/?as_of_date="""
+        company_id = str(request.user.profile.company.id)
         as_of_date = request.query_params.get("as_of_date")
-        if not as_of_date or not company_id:
+        if not as_of_date:
             return Response(
-                {"error": "company_id and as_of_date are required."},
+                {"error": "as_of_date is required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         data = ReportService().balance_sheet(company_id, date.fromisoformat(as_of_date))
@@ -112,13 +131,13 @@ class ReportViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=["get"], url_path="cash-flow")
     def cash_flow(self, request: Request) -> Response:
-        """GET /reports/cash-flow/?company_id=&start_date=&end_date="""
-        company_id = request.query_params.get("company_id", "")
+        """GET /reports/cash-flow/?start_date=&end_date="""
+        company_id = str(request.user.profile.company.id)
         start_date = request.query_params.get("start_date")
         end_date = request.query_params.get("end_date")
-        if not start_date or not end_date or not company_id:
+        if not start_date or not end_date:
             return Response(
-                {"error": "company_id, start_date and end_date are required."},
+                {"error": "start_date and end_date are required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         data = ReportService().cash_flow_statement(
@@ -128,25 +147,20 @@ class ReportViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=["get"])
     def dashboard(self, request: Request) -> Response:
-        """GET /reports/dashboard/?company_id="""
-        company_id = request.query_params.get("company_id", "")
-        if not company_id:
-            return Response(
-                {"error": "company_id is required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        """GET /reports/dashboard/"""
+        company_id = str(request.user.profile.company.id)
         data = ReportService().dashboard_kpis(company_id)
         return Response(data)
 
     @action(detail=False, methods=["get"], url_path="stock-movement")
     def stock_movement(self, request: Request) -> Response:
-        """GET /reports/stock-movement/?company_id=&start_date=&end_date=&warehouse_id=&variant_id="""
-        company_id = request.query_params.get("company_id", "")
+        """GET /reports/stock-movement/?start_date=&end_date=&warehouse_id=&variant_id="""
+        company_id = str(request.user.profile.company.id)
         start_date = request.query_params.get("start_date")
         end_date = request.query_params.get("end_date")
-        if not start_date or not end_date or not company_id:
+        if not start_date or not end_date:
             return Response(
-                {"error": "company_id, start_date and end_date are required."},
+                {"error": "start_date and end_date are required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         data = StockReportService().stock_movement_report(
@@ -160,13 +174,13 @@ class ReportViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=["get"])
     def cogs(self, request: Request) -> Response:
-        """GET /reports/cogs/?company_id=&start_date=&end_date=&sales_order_id="""
-        company_id = request.query_params.get("company_id", "")
+        """GET /reports/cogs/?start_date=&end_date=&sales_order_id="""
+        company_id = str(request.user.profile.company.id)
         start_date = request.query_params.get("start_date")
         end_date = request.query_params.get("end_date")
-        if not start_date or not end_date or not company_id:
+        if not start_date or not end_date:
             return Response(
-                {"error": "company_id, start_date and end_date are required."},
+                {"error": "start_date and end_date are required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         data = StockReportService().cogs_report(
@@ -186,7 +200,7 @@ class ExpenseCategoryViewSet(viewsets.ModelViewSet):
 
 
 class ExpenseViewSet(viewsets.ModelViewSet):
-    queryset = Expense.objects.select_related("category").all()
+    queryset = Expense.objects.none()
     http_method_names = ["get", "post", "patch", "delete"]
     permission_classes = [IsStaffOrReadOnly]
 
@@ -198,7 +212,11 @@ class ExpenseViewSet(viewsets.ModelViewSet):
         return ExpenseSerializer
 
     def get_queryset(self) -> QuerySet[Expense]:
-        qs = super().get_queryset()
+        if not self.request.user.is_authenticated:
+            return Expense.objects.none()
+        qs = Expense.objects.filter(company=self.request.user.profile.company).select_related(
+            "category"
+        )
         category = self.request.query_params.get("category")
         start_date = self.request.query_params.get("start_date")
         end_date = self.request.query_params.get("end_date")
@@ -234,20 +252,49 @@ class ExpenseViewSet(viewsets.ModelViewSet):
         service.delete_expense(instance)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
+
+class CashTransactionViewSet(viewsets.ModelViewSet):
+    """CRUD for CashTransaction. Supports filtering by transaction_type, category, date range."""
+
+    serializer_class = CashTransactionSerializer
+    permission_classes = [IsStaffOrReadOnly]
+    http_method_names = ["get", "post", "patch", "delete"]
+
+    def get_queryset(self) -> QuerySet:
+        if not self.request.user.is_authenticated:
+            return CashTransaction.objects.none()
+        qs = CashTransaction.objects.filter(company=self.request.user.profile.company)
+        tx_type = self.request.query_params.get("transaction_type")
+        category = self.request.query_params.get("category")
+        date_from = self.request.query_params.get("date_from")
+        date_to = self.request.query_params.get("date_to")
+        if tx_type:
+            qs = qs.filter(transaction_type=tx_type)
+        if category:
+            qs = qs.filter(category=category)
+        if date_from:
+            qs = qs.filter(transaction_date__gte=date_from)
+        if date_to:
+            qs = qs.filter(transaction_date__lte=date_to)
+        return qs
+
+    def perform_create(self, serializer: CashTransactionSerializer) -> None:
+        serializer.save(company=self.request.user.profile.company)
+
     @action(detail=False, methods=["get"])
     def summary(self, request: Request) -> Response:
         """Returns expense summary grouped by category for a date range.
-        Query params: start_date, end_date, company_id"""
+        Query params: start_date, end_date"""
         start_date = request.query_params.get("start_date")
         end_date = request.query_params.get("end_date")
-        company_id = request.query_params.get("company_id")
 
-        if not all([start_date, end_date, company_id]):
+        if not all([start_date, end_date]):
             return Response(
-                {"error": "start_date, end_date, and company_id are required."},
+                {"error": "start_date and end_date are required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        company_id = str(request.user.profile.company.id)
         service = ExpenseService()
         summary = service.get_expense_summary_by_category(company_id, start_date, end_date)
         serializer = ExpenseSummarySerializer(summary, many=True)

@@ -8,6 +8,7 @@ from apps.inventory.models import (
     ProductPhoto,
     ProductVariant,
     ProductVariantMarketplace,
+    StockMovement,
     Warehouse,
 )
 from core.models import Company, Marketplace
@@ -195,3 +196,35 @@ class ProductVariantStockSerializer(serializers.ModelSerializer):
 
         result = obj.warehouse_stocks.aggregate(total=Sum("physical_qty"))
         return result["total"] or 0
+
+
+class StockMovementSerializer(serializers.ModelSerializer):
+    id = serializers.UUIDField(read_only=True)
+    company = serializers.UUIDField(source="company.id", read_only=True)
+    product_variant = serializers.UUIDField(source="product_variant.id", read_only=True)
+    product_variant_name = serializers.CharField(source="product_variant.name", read_only=True)
+    warehouse = serializers.UUIDField(source="warehouse.id", read_only=True)
+    warehouse_name = serializers.CharField(source="warehouse.name", read_only=True)
+    movement_type = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StockMovement
+        fields = [
+            "id",
+            "company",
+            "product_variant",
+            "product_variant_name",
+            "warehouse",
+            "warehouse_name",
+            "movement_type",
+            "quantity",
+            "reference_number",
+            "note",
+            "balance_before",
+            "balance_after",
+            "cdate",
+        ]
+        read_only_fields = fields
+
+    def get_movement_type(self, obj: StockMovement) -> str:
+        return StockMovement.MovementType(obj.movement_type).name

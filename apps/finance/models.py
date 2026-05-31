@@ -135,3 +135,48 @@ class Expense(DefaultModel):
 
     def __str__(self) -> str:
         return f"{self.expense_number} - {self.description}"
+
+
+class CashTransaction(DefaultModel):
+    """
+    Tracks cash movements not covered by SalesOrder or Expense:
+    equity injections, founder loans, bank interest, supplier refunds,
+    marketplace bulk settlement withdrawals.
+    """
+
+    class TransactionType(models.TextChoices):
+        INFLOW = "INFLOW", "Inflow"
+        OUTFLOW = "OUTFLOW", "Outflow"
+
+    class TransactionCategory(models.TextChoices):
+        SALES_SETTLEMENT = "SALES_SETTLEMENT", "Sales Settlement (Marketplace Withdrawal)"
+        EQUITY_INJECTION = "EQUITY_INJECTION", "Equity Injection"
+        FOUNDER_LOAN = "FOUNDER_LOAN", "Founder Loan"
+        BANK_INTEREST = "BANK_INTEREST", "Bank Interest"
+        SUPPLIER_REFUND = "SUPPLIER_REFUND", "Supplier Refund"
+        OTHER_INCOME = "OTHER_INCOME", "Other Income"
+        OTHER_EXPENSE = "OTHER_EXPENSE", "Other Expense / Miscellaneous"
+
+    id = ULIDField(
+        primary_key=True,
+        default=generate_ulid,
+        editable=False,
+        db_column="cash_transaction_id",
+    )
+    transaction_date = models.DateField()
+    description = models.TextField()
+    amount = models.BigIntegerField()  # IDR, always positive
+    transaction_type = models.CharField(max_length=10, choices=TransactionType.choices)
+    category = models.CharField(max_length=30, choices=TransactionCategory.choices)
+    reference_number = models.CharField(max_length=255, blank=True, default="")
+    note = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ["-transaction_date", "-cdate"]
+        indexes = [
+            models.Index(fields=["transaction_date"]),
+            models.Index(fields=["transaction_type", "category"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.transaction_type} {self.category} {self.amount} on {self.transaction_date}"

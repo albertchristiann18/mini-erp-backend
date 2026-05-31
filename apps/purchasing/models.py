@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.conf import settings
 from django.db import models
 from django_ulid.models import ULIDField
 
@@ -35,6 +36,13 @@ class PurchaseOrder(DefaultModel):
     invoice_date = models.DateField(null=True, blank=True)
     delivery_order_number = models.CharField(max_length=100, blank=True, null=True)
     delivery_date = models.DateField(null=True, blank=True)  # latest delivery date
+    forecast_delivery_date = models.DateField(null=True, blank=True)
+    forecast_cbm = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True)
+    forecast_shipping_fee = models.BigIntegerField(null=True, blank=True)  # IDR
+    commission_fee_rmb = models.DecimalField(
+        max_digits=10, decimal_places=3, null=True, blank=True
+    )  # RMB
+    note = models.TextField(blank=True, null=True)
 
     warehouse = models.ForeignKey(
         Warehouse, on_delete=models.CASCADE
@@ -78,6 +86,101 @@ class PurchaseOrder(DefaultModel):
     def __str__(self) -> str:
         return self.purchase_order_number
 
+    STATUS_TRANSITIONS: dict[str, list[str]] = {
+        POStatus.DRAFT: [POStatus.ORDERED],
+        POStatus.ORDERED: [POStatus.SHIPPED],
+        POStatus.SHIPPED: [POStatus.DELIVERED],
+        POStatus.DELIVERED: [POStatus.COMPLETED],
+        POStatus.COMPLETED: [],
+        POStatus.CANCELLED: [],
+    }
+
+    _LOCKED_FROM_SHIPPED: frozenset[str] = frozenset(
+        {
+            "exchange_rate",
+            "purchase_order_invoice_file",
+            "invoice_number",
+            "commission_fee_pct",
+            "delivery_fee",
+        }
+    )
+
+    _LOCKED_FROM_DELIVERED: frozenset[str] = _LOCKED_FROM_SHIPPED | frozenset(
+        {
+            "delivery_order_number",
+            "cbm",
+            "delivery_order_file",
+        }
+    )
+
+    _ALL_EDITABLE_HEADER: list[str] = [
+        "supplier_name",
+        "forwarder_name",
+        "shop_services",
+        "currency",
+        "exchange_rate",
+        "commission_fee_pct",
+        "delivery_fee",
+        "commission_fee_rmb",
+        "invoice_number",
+        "invoice_date",
+        "delivery_order_number",
+        "delivery_date",
+        "forecast_delivery_date",
+        "cbm",
+        "forecast_cbm",
+        "weight",
+        "shipping_fee_per_cbm",
+        "forecast_shipping_fee",
+        "purchase_order_invoice_file",
+        "delivery_order_file",
+        "delivery_order_invoice_file",
+        "packing_list_file",
+        "note",
+    ]
+
+    _ALL_EDITABLE_ORDER_DETAIL: list[str] = [
+        "ordered_qty",
+        "unit_price_foreign",
+        "discounted_unit_price_foreign",
+    ]
+
+    @classmethod
+    def get_editable_fields(cls, status: str) -> dict[str, list[str]]:
+        if status == cls.POStatus.DRAFT:
+            return {
+                "header": list(cls._ALL_EDITABLE_HEADER),
+                "order_detail": list(cls._ALL_EDITABLE_ORDER_DETAIL),
+            }
+        elif status == cls.POStatus.ORDERED:
+            return {
+                "header": list(cls._ALL_EDITABLE_HEADER),
+                "order_detail": [],
+            }
+        elif status == cls.POStatus.SHIPPED:
+            return {
+                "header": [
+                    f for f in cls._ALL_EDITABLE_HEADER if f not in cls._LOCKED_FROM_SHIPPED
+                ],
+                "order_detail": [],
+            }
+        elif status == cls.POStatus.DELIVERED:
+            return {
+                "header": [
+                    f for f in cls._ALL_EDITABLE_HEADER if f not in cls._LOCKED_FROM_DELIVERED
+                ],
+                "order_detail": ["received_qty", "remarks"],
+            }
+        else:  # COMPLETED, CANCELLED
+            return {"header": ["note"], "order_detail": []}
+
+    def get_next_status(self) -> str | None:
+        transitions = self.STATUS_TRANSITIONS.get(self.status, [])
+        return transitions[0] if transitions else None
+
+    def can_advance_to(self, new_status: str) -> bool:
+        return new_status in self.STATUS_TRANSITIONS.get(self.status, [])
+
     def get_shipping_per_qty(self) -> int:
         if not self.shipping_fee:
             return 0
@@ -85,10 +188,18 @@ class PurchaseOrder(DefaultModel):
         return int(round(self.shipping_fee / self.total_ordered_qty))
 
     def cost_ratio_cogs(self) -> Decimal:
-        if self.procure_amount and self.total_item_amount and self.shipping_fee:
-            val = (self.procure_amount + self.shipping_fee) / self.total_item_amount * 100.0
+        if self.total_item_amount and self.total_item_amount > 0:
+            delivery_fee_idr = Decimal(str(self.delivery_fee or 0)) * Decimal(
+                str(self.exchange_rate or 0)
+            )
+            commission = Decimal(str(self.commission_fee or 0))
+            shipping = Decimal(str(self.shipping_fee or 0))
+            val = (
+                (delivery_fee_idr + commission + shipping)
+                / Decimal(str(self.total_item_amount))
+                * 100
+            )
             return round_decimal(val)
-
         return Decimal("0.0")
 
 
@@ -145,3 +256,29 @@ class PurchaseOrderDetail(DefaultModel):
         return (
             f"{self.purchase_order.purchase_order_number} - {self.product_variant.sku_variant_code}"
         )
+
+
+class PurchaseOrderStatusHistory(DefaultModel):
+    """Audit log of every status transition on a PurchaseOrder."""
+
+    id = ULIDField(
+        primary_key=True,
+        default=generate_ulid,
+        editable=False,
+        db_column="purchase_order_status_history_id",
+    )
+    purchase_order = models.ForeignKey(
+        PurchaseOrder, on_delete=models.CASCADE, related_name="status_history"
+    )
+    from_status = models.CharField(max_length=50)
+    to_status = models.CharField(max_length=50)
+    changed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True
+    )
+    note = models.TextField(blank=True, null=True)
+
+    class Meta:
+        ordering = ["-cdate"]
+
+    def __str__(self) -> str:
+        return f"{self.purchase_order.purchase_order_number}: {self.from_status} → {self.to_status}"

@@ -1,8 +1,18 @@
 # apps/inventory/tests/test_api.py
 from decimal import Decimal
+from unittest.mock import patch
 
+from django.contrib.auth.models import User
+from django.db import connection
 from django.test import TestCase
-from rest_framework.test import APITestCase
+from django.test.utils import CaptureQueriesContext
+from django.urls import reverse
+from django.utils import timezone
+from rest_framework import status
+from rest_framework.permissions import IsAuthenticated as IsAuthenticatedPermission
+from rest_framework.test import APIClient, APITestCase
+
+_real_auth_has_permission = IsAuthenticatedPermission.has_permission
 
 from apps.inventory.factories import (
     CategoryFactory,
@@ -10,18 +20,24 @@ from apps.inventory.factories import (
     ProductFactory,
     ProductVariantFactory,
     ProductVariantWarehouseFactory,
+    StockMovementFactory,
 )
 from apps.inventory.models import (
     Product,
     ProductCogs,
+    ProductPhoto,
     ProductVariant,
     ProductVariantMarketplace,
     ProductVariantWarehouse,
+    StockMovement,
 )
 from apps.inventory.services.inventory_service import InventoryService
 from apps.purchasing.factories import PurchaseOrderFactory
 from apps.purchasing.models import PurchaseOrder
 from core.factories import CompanyFactory, MarketplaceFactory, WarehouseFactory
+from core.permissions import IsStaffOrReadOnly as StaffPerm
+
+_real_staff_perm = StaffPerm.has_permission
 
 
 class InventoryAPITest(APITestCase):
@@ -905,7 +921,7 @@ class InventoryServiceCOGSUpdateTest(TestCase):
         self.assertEqual(ProductCogs.objects.count(), 0)
 
     def test_update_cogs_on_po_with_allocated_shipping_and_delivery_fees_single_item(self):
-        """Test COGS includes allocated shipping and delivery fees per unit for single item."""
+        """Test COGS includes allocated shipping, delivery, and commission fees for single item."""
         product = self.product_variant.product
         product.length = 10
         product.width = 10
@@ -925,6 +941,8 @@ class InventoryServiceCOGSUpdateTest(TestCase):
             cbm=cbm,
             shipping_fee=shipping_fee,
             delivery_fee=Decimal("100.5"),
+            commission_fee=22000,
+            total_item_amount=220000,
         )
 
         data = [
@@ -934,6 +952,7 @@ class InventoryServiceCOGSUpdateTest(TestCase):
                 "received_qty": 10,
                 "updated_qty": 0,
                 "unit_price_foreign": Decimal("10"),
+                "discounted_total_price_base": 220000,
             }
         ]
 
@@ -954,15 +973,21 @@ class InventoryServiceCOGSUpdateTest(TestCase):
         self.assertEqual(cogs.remaining_qty, 10)
 
         unit_price_idr = 10 * 2200
-        allocated_shipping = 1000
-        allocated_delivery = int(100.5 * 2200)
-        total_allocated = allocated_shipping + allocated_delivery
-        shipping_per_unit = total_allocated / 10
-        expected_cogs = unit_price_idr + shipping_per_unit
+        # Single item: all fees allocated to this item
+        allocated_shipping = shipping_fee  # 1000
+        allocated_delivery = int(Decimal("100.5") * 2200)  # 221100
+        allocated_commission = 22000
+        shipping_per_unit = allocated_shipping / 10
+        delivery_per_unit = allocated_delivery / 10
+        commission_per_unit = allocated_commission / 10
+        expected_cogs = int(
+            unit_price_idr + shipping_per_unit + delivery_per_unit + commission_per_unit
+        )
 
         self.assertEqual(cogs.cogs_amount, expected_cogs)
         self.assertEqual(cogs.allocated_shipping_fee, allocated_shipping)
         self.assertEqual(cogs.allocated_delivery_fee, allocated_delivery)
+        self.assertEqual(cogs.allocated_commission_fee, allocated_commission)
 
     def test_update_cogs_on_po_with_allocated_fees_multiple_items_same_volume(self):
         """Test COGS with multiple items sharing shipping fees equally when same LxWxH."""
@@ -1177,6 +1202,627 @@ class InventoryServiceCOGSUpdateTest(TestCase):
         self.assertEqual(cogs.original_qty, 30)
         self.assertEqual(cogs.remaining_qty, 30)
 
+    def test_cogs_cbm_proportional_shipping(self):
+        """2 items with different CBM: shipping allocated proportionally by CBM, delivery+commission by value."""
+        product1 = self.product_variant.product
+        product1.length = 10
+        product1.width = 10
+        product1.height = 10
+        product1.save()
+
+        product2 = ProductFactory(
+            category=self.category, company=self.company, length=20, width=20, height=20
+        )
+        product_variant2 = ProductVariantFactory(product=product2)
+        ProductVariantWarehouseFactory(
+            product_variant=product_variant2, warehouse=self.warehouse, company=self.company
+        )
+
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.SHIPPED,
+            exchange_rate=2200,
+            shipping_fee=10000,
+            shipping_fee_per_cbm=100000,
+            cbm=Decimal("0.09"),
+            delivery_fee=Decimal("50"),
+            commission_fee=22000,
+            total_item_amount=660000,
+        )
+
+        data = [
+            {
+                "product_variant_id": str(self.product_variant.id),
+                "ordered_qty": 10,
+                "received_qty": 10,
+                "updated_qty": 0,
+                "unit_price_foreign": Decimal("10"),
+                "discounted_total_price_base": 220000,
+            },
+            {
+                "product_variant_id": str(product_variant2.id),
+                "ordered_qty": 10,
+                "received_qty": 10,
+                "updated_qty": 0,
+                "unit_price_foreign": Decimal("20"),
+                "discounted_total_price_base": 440000,
+            },
+        ]
+
+        self.service.update_cogs_on_po(
+            po=po,
+            new_status=PurchaseOrder.POStatus.DELIVERED,
+            data=data,
+        )
+
+        cogs1 = ProductCogs.objects.filter(
+            product_variant=self.product_variant,
+            warehouse=self.warehouse,
+            reference_number=po.purchase_order_number,
+        ).first()
+        cogs2 = ProductCogs.objects.filter(
+            product_variant=product_variant2,
+            warehouse=self.warehouse,
+            reference_number=po.purchase_order_number,
+        ).first()
+
+        self.assertIsNotNone(cogs1)
+        self.assertIsNotNone(cogs2)
+
+        # CBM: item1 = 10*10*10/1e6 * 10 = 0.01, item2 = 20*20*20/1e6 * 10 = 0.08, total = 0.09
+        cbm1 = Decimal("10") * Decimal("10") * Decimal("10") / Decimal("1000000") * Decimal("10")
+        cbm2 = Decimal("20") * Decimal("20") * Decimal("20") / Decimal("1000000") * Decimal("10")
+        total_cbm = cbm1 + cbm2
+
+        # Shipping: CBM-proportional
+        expected_shipping1 = int(round(10000 * cbm1 / total_cbm))
+        expected_shipping2 = int(round(10000 * cbm2 / total_cbm))
+        self.assertEqual(cogs1.allocated_shipping_fee, expected_shipping1)
+        self.assertEqual(cogs2.allocated_shipping_fee, expected_shipping2)
+
+        # Delivery: value-proportional
+        total_delivery_idr = Decimal("50") * 2200
+        value_ratio1 = Decimal("220000") / Decimal("660000")
+        value_ratio2 = Decimal("440000") / Decimal("660000")
+        expected_delivery1 = int(round(total_delivery_idr * value_ratio1))
+        expected_delivery2 = int(round(total_delivery_idr * value_ratio2))
+        self.assertEqual(cogs1.allocated_delivery_fee, expected_delivery1)
+        self.assertEqual(cogs2.allocated_delivery_fee, expected_delivery2)
+
+        # Commission: value-proportional
+        expected_commission1 = int(round(Decimal("22000") * value_ratio1))
+        expected_commission2 = int(round(Decimal("22000") * value_ratio2))
+        self.assertEqual(cogs1.allocated_commission_fee, expected_commission1)
+        self.assertEqual(cogs2.allocated_commission_fee, expected_commission2)
+
+    def test_cogs_value_proportional_delivery_and_commission(self):
+        """2 items with different values: delivery_fee and commission allocated proportionally by item value."""
+        product1 = self.product_variant.product
+        product1.length = 10
+        product1.width = 10
+        product1.height = 10
+        product1.save()
+
+        product2 = ProductFactory(
+            category=self.category, company=self.company, length=10, width=10, height=10
+        )
+        product_variant2 = ProductVariantFactory(product=product2)
+        ProductVariantWarehouseFactory(
+            product_variant=product_variant2, warehouse=self.warehouse, company=self.company
+        )
+
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.SHIPPED,
+            exchange_rate=2200,
+            shipping_fee=5000,
+            shipping_fee_per_cbm=100000,
+            cbm=Decimal("0.02"),
+            delivery_fee=Decimal("100"),
+            commission_fee=33000,
+            total_item_amount=660000,
+        )
+
+        data = [
+            {
+                "product_variant_id": str(self.product_variant.id),
+                "ordered_qty": 10,
+                "received_qty": 10,
+                "updated_qty": 0,
+                "unit_price_foreign": Decimal("10"),
+                "discounted_total_price_base": 220000,
+            },
+            {
+                "product_variant_id": str(product_variant2.id),
+                "ordered_qty": 10,
+                "received_qty": 10,
+                "updated_qty": 0,
+                "unit_price_foreign": Decimal("20"),
+                "discounted_total_price_base": 440000,
+            },
+        ]
+
+        self.service.update_cogs_on_po(
+            po=po,
+            new_status=PurchaseOrder.POStatus.DELIVERED,
+            data=data,
+        )
+
+        cogs1 = ProductCogs.objects.filter(
+            product_variant=self.product_variant,
+            warehouse=self.warehouse,
+            reference_number=po.purchase_order_number,
+        ).first()
+        cogs2 = ProductCogs.objects.filter(
+            product_variant=product_variant2,
+            warehouse=self.warehouse,
+            reference_number=po.purchase_order_number,
+        ).first()
+
+        self.assertIsNotNone(cogs1)
+        self.assertIsNotNone(cogs2)
+
+        # Same CBM, so shipping is split equally
+        self.assertEqual(cogs1.allocated_shipping_fee, 2500)
+        self.assertEqual(cogs2.allocated_shipping_fee, 2500)
+
+        # Delivery fee: value-proportional
+        total_delivery_idr = Decimal("100") * 2200
+        expected_delivery1 = int(round(total_delivery_idr * Decimal("220000") / Decimal("660000")))
+        expected_delivery2 = int(round(total_delivery_idr * Decimal("440000") / Decimal("660000")))
+        self.assertEqual(cogs1.allocated_delivery_fee, expected_delivery1)
+        self.assertEqual(cogs2.allocated_delivery_fee, expected_delivery2)
+
+        # Commission: value-proportional
+        expected_commission1 = int(round(Decimal("33000") * Decimal("220000") / Decimal("660000")))
+        expected_commission2 = int(round(Decimal("33000") * Decimal("440000") / Decimal("660000")))
+        self.assertEqual(cogs1.allocated_commission_fee, expected_commission1)
+        self.assertEqual(cogs2.allocated_commission_fee, expected_commission2)
+
+    def test_cogs_amount_includes_commission(self):
+        """cogs_amount = unit_price_idr + shipping_per_unit + delivery_per_unit + commission_per_unit."""
+        product = self.product_variant.product
+        product.length = 10
+        product.width = 10
+        product.height = 10
+        product.save()
+
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.SHIPPED,
+            exchange_rate=2200,
+            shipping_fee=1000,
+            shipping_fee_per_cbm=100000,
+            cbm=Decimal("0.01"),
+            delivery_fee=Decimal("50"),
+            commission_fee=22000,
+            total_item_amount=220000,
+        )
+
+        data = [
+            {
+                "product_variant_id": str(self.product_variant.id),
+                "ordered_qty": 10,
+                "received_qty": 10,
+                "updated_qty": 0,
+                "unit_price_foreign": Decimal("10"),
+                "discounted_total_price_base": 220000,
+            },
+        ]
+
+        self.service.update_cogs_on_po(
+            po=po,
+            new_status=PurchaseOrder.POStatus.DELIVERED,
+            data=data,
+        )
+
+        cogs = ProductCogs.objects.filter(
+            product_variant=self.product_variant,
+            warehouse=self.warehouse,
+            reference_number=po.purchase_order_number,
+        ).first()
+
+        self.assertIsNotNone(cogs)
+
+        unit_price_idr = Decimal("10") * 2200  # 22000
+        shipping_per_unit = Decimal(str(cogs.allocated_shipping_fee)) / Decimal("10")
+        delivery_per_unit = Decimal(str(cogs.allocated_delivery_fee)) / Decimal("10")
+        commission_per_unit = Decimal(str(cogs.allocated_commission_fee)) / Decimal("10")
+        expected_cogs = int(
+            unit_price_idr + shipping_per_unit + delivery_per_unit + commission_per_unit
+        )
+
+        self.assertEqual(cogs.cogs_amount, expected_cogs)
+
+
+class CompanyScopedViewsTest(APITestCase):
+    """Tests for company-scoped data isolation in inventory views."""
+
+    def setUp(self):
+        self.company_a = CompanyFactory()
+        self.company_b = CompanyFactory()
+        self.user_a = User.objects.create_user(
+            username="user_a", password="password", is_staff=True
+        )
+        self.user_b = User.objects.create_user(
+            username="user_b", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+
+        UserProfile.objects.create(user=self.user_a, company=self.company_a, role="admin")
+        UserProfile.objects.create(user=self.user_b, company=self.company_b, role="admin")
+
+        self.warehouse_a = WarehouseFactory(company=self.company_a, is_active=True)
+        self.warehouse_b = WarehouseFactory(company=self.company_b, is_active=True)
+
+        self.category_a = CategoryFactory(company=self.company_a)
+        self.category_b = CategoryFactory(company=self.company_b)
+
+        self.product_a = ProductFactory(
+            company=self.company_a, category=self.category_a, is_active=True
+        )
+        self.product_b = ProductFactory(
+            company=self.company_b, category=self.category_b, is_active=True
+        )
+
+        self.variant_a = ProductVariantFactory(
+            product=self.product_a, company=self.company_a, is_active=True
+        )
+        self.variant_b = ProductVariantFactory(
+            product=self.product_b, company=self.company_b, is_active=True
+        )
+
+    def test_warehouse_list_scoped_by_company(self):
+        self.client.force_authenticate(user=self.user_a)
+        response = self.client.get("/warehouse/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [w["id"] for w in response.data["results"]]
+        self.assertIn(str(self.warehouse_a.id), ids)
+        self.assertNotIn(str(self.warehouse_b.id), ids)
+
+    def test_product_list_scoped_by_company(self):
+        self.client.force_authenticate(user=self.user_a)
+        response = self.client.get("/product/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [p["id"] for p in response.data["results"]]
+        self.assertIn(str(self.product_a.id), ids)
+        self.assertNotIn(str(self.product_b.id), ids)
+
+    def test_variant_stock_list_scoped_by_company(self):
+        self.client.force_authenticate(user=self.user_a)
+        response = self.client.get("/product-variants/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [v["id"] for v in response.data["results"]]
+        self.assertIn(str(self.variant_a.id), ids)
+        self.assertNotIn(str(self.variant_b.id), ids)
+
+
+class AvgSalesViewTest(APITestCase):
+    """Tests for GET /avg-sales/ endpoint"""
+
+    def setUp(self):
+        self.client = APIClient()
+        user = User.objects.create_user(username="staff", password="password", is_staff=True)
+        self.client.force_authenticate(user=user)
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+
+    def test_missing_variant_ids_returns_400(self):
+        response = self.client.get("/avg-sales/?days=30")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("error", response.data)
+
+    def test_invalid_days_returns_400(self):
+        response = self.client.get("/avg-sales/?days=14&variant_ids=abc")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("error", response.data)
+
+    def test_valid_request_no_sales(self):
+        variant = ProductVariantFactory(company=self.company)
+        response = self.client.get(f"/avg-sales/?days=30&variant_ids={variant.id}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["results"][0]["avg_sales_per_day"], 0.0)
+        self.assertEqual(response.data["results"][0]["total_qty_sold"], 0)
+
+    def test_valid_request_with_sales(self):
+        from apps.sales.factories import SalesOrderFactory, SalesOrderItemFactory
+        from apps.sales.models import SalesOrder
+
+        variant = ProductVariantFactory(company=self.company)
+        so = SalesOrderFactory(
+            company=self.company,
+            warehouse=self.warehouse,
+            status=SalesOrder.OrderStatus.COMPLETED,
+            order_date=timezone.now(),
+        )
+        SalesOrderItemFactory(
+            sales_order=so,
+            product_variant=variant,
+            quantity=30,
+        )
+        response = self.client.get(f"/avg-sales/?days=30&variant_ids={variant.id}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["results"][0]["avg_sales_per_day"], 1.0)
+        self.assertEqual(response.data["results"][0]["total_qty_sold"], 30)
+
+    def test_cancelled_orders_excluded(self):
+        from apps.sales.factories import SalesOrderFactory, SalesOrderItemFactory
+        from apps.sales.models import SalesOrder
+
+        variant = ProductVariantFactory(company=self.company)
+        so = SalesOrderFactory(
+            company=self.company,
+            warehouse=self.warehouse,
+            status=SalesOrder.OrderStatus.CANCELLED,
+            order_date=timezone.now(),
+        )
+        SalesOrderItemFactory(
+            sales_order=so,
+            product_variant=variant,
+            quantity=30,
+        )
+        response = self.client.get(f"/avg-sales/?days=30&variant_ids={variant.id}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["results"][0]["avg_sales_per_day"], 0.0)
+
+    def test_7_day_window(self):
+        from apps.sales.factories import SalesOrderFactory, SalesOrderItemFactory
+        from apps.sales.models import SalesOrder
+
+        variant = ProductVariantFactory(company=self.company)
+        so = SalesOrderFactory(
+            company=self.company,
+            warehouse=self.warehouse,
+            status=SalesOrder.OrderStatus.COMPLETED,
+            order_date=timezone.now(),
+        )
+        SalesOrderItemFactory(
+            sales_order=so,
+            product_variant=variant,
+            quantity=7,
+        )
+        response = self.client.get(f"/avg-sales/?days=7&variant_ids={variant.id}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["results"][0]["avg_sales_per_day"], 1.0)
+
+
+class InventorySummaryAPITest(APITestCase):
+    """Tests for GET /api/inventory/inventory-summary/ endpoint"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.company = CompanyFactory()
+        self.other_company = CompanyFactory()
+        self.user = User.objects.create_user(
+            username="inventory_user", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+        self.warehouse = WarehouseFactory(company=self.company, is_active=True)
+        self.other_warehouse = WarehouseFactory(company=self.other_company, is_active=True)
+
+    def test_returns_products_scoped_to_company(self):
+        """Company A sees only its own products."""
+        category_a = CategoryFactory(company=self.company)
+        product_a = ProductFactory(company=self.company, category=category_a, is_active=True)
+        variant_a1 = ProductVariantFactory(
+            product=product_a,
+            company=self.company,
+            is_active=True,
+            current_cogs=50000,
+            base_price=100000,
+            variant_values={"1": "Navy"},
+        )
+        variant_a2 = ProductVariantFactory(
+            product=product_a,
+            company=self.company,
+            is_active=True,
+            current_cogs=60000,
+            base_price=120000,
+            variant_values={"1": "Red"},
+        )
+        ProductVariantWarehouseFactory(
+            product_variant=variant_a1,
+            warehouse=self.warehouse,
+            company=self.company,
+            physical_qty=10,
+        )
+        ProductVariantWarehouseFactory(
+            product_variant=variant_a2,
+            warehouse=self.warehouse,
+            company=self.company,
+            physical_qty=5,
+        )
+
+        category_b = CategoryFactory(company=self.other_company)
+        product_b = ProductFactory(company=self.other_company, category=category_b, is_active=True)
+        variant_b = ProductVariantFactory(
+            product=product_b,
+            company=self.other_company,
+            is_active=True,
+            variant_values={"1": "Blue"},
+        )
+        ProductVariantWarehouseFactory(
+            product_variant=variant_b,
+            warehouse=self.other_warehouse,
+            company=self.other_company,
+            physical_qty=3,
+        )
+
+        response = self.client.get("/inventory-summary/")
+        self.assertEqual(response.status_code, 200)
+
+        product_ids = [p["product_id"] for p in response.data["products"]]
+        self.assertIn(str(product_a.id), product_ids)
+        self.assertNotIn(str(product_b.id), product_ids)
+
+        self.assertIn("warehouses", response.data)
+        self.assertIn("products", response.data)
+        self.assertIn("summary", response.data)
+
+    def test_variant_includes_warehouse_stocks(self):
+        """Variant response includes warehouse_stocks dict and total_qty."""
+        category = CategoryFactory(company=self.company)
+        product = ProductFactory(company=self.company, category=category, is_active=True)
+        variant = ProductVariantFactory(
+            product=product,
+            company=self.company,
+            is_active=True,
+            current_cogs=50000,
+            base_price=100000,
+        )
+        warehouse2 = WarehouseFactory(company=self.company, is_active=True)
+
+        ProductVariantWarehouseFactory(
+            product_variant=variant,
+            warehouse=self.warehouse,
+            company=self.company,
+            physical_qty=7,
+        )
+        ProductVariantWarehouseFactory(
+            product_variant=variant,
+            warehouse=warehouse2,
+            company=self.company,
+            physical_qty=3,
+        )
+
+        response = self.client.get("/inventory-summary/")
+        self.assertEqual(response.status_code, 200)
+
+        variant_data = response.data["products"][0]["variants"][0]
+        self.assertEqual(variant_data["total_qty"], 10)
+        self.assertIn(str(self.warehouse.id), variant_data["warehouse_stocks"])
+        self.assertIn(str(warehouse2.id), variant_data["warehouse_stocks"])
+        self.assertEqual(variant_data["warehouse_stocks"][str(self.warehouse.id)], 7)
+        self.assertEqual(variant_data["warehouse_stocks"][str(warehouse2.id)], 3)
+
+    def test_summary_totals(self):
+        """Summary totals are computed correctly from current_cogs * total_qty."""
+        category = CategoryFactory(company=self.company)
+        product = ProductFactory(company=self.company, category=category, is_active=True)
+        variant = ProductVariantFactory(
+            product=product,
+            company=self.company,
+            is_active=True,
+            current_cogs=100000,
+            base_price=200000,
+        )
+        ProductVariantWarehouseFactory(
+            product_variant=variant,
+            warehouse=self.warehouse,
+            company=self.company,
+            physical_qty=5,
+        )
+
+        response = self.client.get("/inventory-summary/")
+        self.assertEqual(response.status_code, 200)
+
+        summary = response.data["summary"]
+        self.assertEqual(summary["total_cogs_stock"], 500000)
+        self.assertEqual(summary["total_selling_price"], 1000000)
+
+    def test_unauthenticated_returns_403(self):
+        """Unauthenticated request returns 403."""
+        with patch.object(IsAuthenticatedPermission, "has_permission", _real_auth_has_permission):
+            client = APIClient()
+            response = client.get("/inventory-summary/")
+            self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_photo_url_is_none_when_no_photo(self):
+        """Product without photo returns null photo_url."""
+        category = CategoryFactory(company=self.company)
+        product = ProductFactory(
+            company=self.company,
+            category=category,
+            is_active=True,
+            product_photo=None,
+        )
+        ProductVariantFactory(
+            product=product,
+            company=self.company,
+            is_active=True,
+            current_cogs=10000,
+            base_price=20000,
+        )
+
+        response = self.client.get("/inventory-summary/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.data["products"][0]["photo_url"])
+
+    def test_photo_url_uses_primary_photo_from_gallery(self):
+        """Photo URL comes from the primary ProductPhoto gallery, not legacy product_photo."""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        category = CategoryFactory(company=self.company)
+        product = ProductFactory(
+            company=self.company,
+            category=category,
+            is_active=True,
+            product_photo=None,
+        )
+        ProductVariantFactory(
+            product=product,
+            company=self.company,
+            is_active=True,
+            current_cogs=10000,
+            base_price=20000,
+        )
+        ProductPhoto.objects.create(
+            product=product,
+            company=self.company,
+            image=SimpleUploadedFile("primary_test.jpg", b"x"),
+            is_primary=True,
+            order=0,
+        )
+
+        response = self.client.get("/inventory-summary/")
+        self.assertEqual(response.status_code, 200)
+        photo_url = response.data["products"][0]["photo_url"]
+        self.assertIsNotNone(photo_url)
+        self.assertIn("primary_test.jpg", photo_url)
+
+    def test_no_n1_queries(self):
+        """Number of queries is bounded (no N+1)."""
+        category = CategoryFactory(company=self.company)
+        warehouse2 = WarehouseFactory(company=self.company, is_active=True)
+        products = ProductFactory.create_batch(
+            3, company=self.company, category=category, is_active=True
+        )
+        value_keys = ["1", "2"]
+        for p_idx, product in enumerate(products):
+            for v_idx in range(2):
+                variant = ProductVariantFactory(
+                    product=product,
+                    company=self.company,
+                    is_active=True,
+                    current_cogs=10000,
+                    base_price=20000,
+                    variant_values={value_keys[v_idx]: f"VAL{p_idx}{v_idx}"},
+                )
+                ProductVariantWarehouseFactory(
+                    product_variant=variant,
+                    warehouse=self.warehouse,
+                    company=self.company,
+                    physical_qty=5,
+                )
+                ProductVariantWarehouseFactory(
+                    product_variant=variant,
+                    warehouse=warehouse2,
+                    company=self.company,
+                    physical_qty=5,
+                )
+
+        with CaptureQueriesContext(connection) as ctx:
+            response = self.client.get("/inventory-summary/")
+            self.assertEqual(response.status_code, 200)
+            self.assertLessEqual(len(ctx), 8)
+
 
 class EdgeCaseInventoryTests(TestCase):
     """Tests for edge case fixes in inventory."""
@@ -1274,3 +1920,242 @@ class EdgeCaseInventoryTests(TestCase):
                 data=data,
             )
         self.assertIn("already sold", str(ctx.exception))
+
+
+class StockMovementAPITest(APITestCase):
+    def setUp(self):
+        from core.models import UserProfile
+
+        self.user = User.objects.create_user(
+            username="stockuser", password="password", is_staff=True
+        )
+        self.client.force_authenticate(user=self.user)
+        self.company = CompanyFactory()
+        UserProfile.objects.create(user=self.user, company=self.company)
+        self.warehouse_a = WarehouseFactory(company=self.company)
+        self.warehouse_b = WarehouseFactory(company=self.company)
+        self.variant = ProductVariantFactory(company=self.company)
+
+    def test_list_stock_movements(self):
+        StockMovementFactory.create_batch(
+            3,
+            company=self.company,
+            product_variant=self.variant,
+            warehouse=self.warehouse_a,
+        )
+        response = self.client.get("/stock-movements/")
+        self.assertEqual(response.status_code, 200)
+        self.assertGreaterEqual(len(response.data["results"]), 3)
+
+    def test_movement_type_returned_as_full_name(self):
+        StockMovementFactory(
+            company=self.company,
+            product_variant=self.variant,
+            warehouse=self.warehouse_a,
+            movement_type=StockMovement.MovementType.INBOUND,
+        )
+        response = self.client.get("/stock-movements/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["results"][0]["movement_type"], "INBOUND")
+
+    def test_filter_by_warehouse(self):
+        StockMovementFactory(
+            company=self.company,
+            product_variant=self.variant,
+            warehouse=self.warehouse_a,
+        )
+        StockMovementFactory(
+            company=self.company,
+            product_variant=self.variant,
+            warehouse=self.warehouse_b,
+        )
+        response = self.client.get(f"/stock-movements/?warehouse={self.warehouse_a.id}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data["results"]), 1)
+
+    def test_filter_by_cdate_after(self):
+        StockMovementFactory(
+            company=self.company,
+            product_variant=self.variant,
+            warehouse=self.warehouse_a,
+        )
+        from datetime import timedelta
+
+        tomorrow = (timezone.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        response = self.client.get(f"/stock-movements/?cdate_after={tomorrow}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data["results"]), 0)
+
+    def test_unauthenticated_denied(self):
+        with patch.object(IsAuthenticatedPermission, "has_permission", _real_auth_has_permission):
+            client = APIClient()
+            response = client.get(reverse("stock-movement-list"))
+            self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_filter_by_product_variant(self):
+        other_variant = ProductVariantFactory(company=self.company)
+        StockMovementFactory(
+            company=self.company,
+            product_variant=self.variant,
+            warehouse=self.warehouse_a,
+        )
+        StockMovementFactory(
+            company=self.company,
+            product_variant=other_variant,
+            warehouse=self.warehouse_a,
+        )
+        response = self.client.get(
+            reverse("stock-movement-list"),
+            {"product_variant": self.variant.id},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        results = response.data["results"]
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["product_variant"], str(self.variant.id))
+
+    def test_filter_by_movement_type(self):
+        StockMovementFactory(
+            company=self.company,
+            product_variant=self.variant,
+            warehouse=self.warehouse_a,
+            movement_type=StockMovement.MovementType.PURCHASE,
+        )
+        StockMovementFactory(
+            company=self.company,
+            product_variant=self.variant,
+            warehouse=self.warehouse_a,
+            movement_type=StockMovement.MovementType.INBOUND,
+        )
+
+        # Filter by full name lookup
+        response = self.client.get(
+            reverse("stock-movement-list"),
+            {"movement_type": "PURCHASE"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["results"]), 1)
+
+        # Filter by short code directly
+        response = self.client.get(
+            reverse("stock-movement-list"),
+            {"movement_type": "PUR"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["results"]), 1)
+
+    def test_filter_by_cdate_before(self):
+        StockMovementFactory(
+            company=self.company,
+            product_variant=self.variant,
+            warehouse=self.warehouse_a,
+        )
+        from datetime import timedelta
+
+        tomorrow = (timezone.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        response = self.client.get(
+            reverse("stock-movement-list"),
+            {"cdate_before": tomorrow},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertGreaterEqual(len(response.data["results"]), 1)
+
+
+class UpdateVariantPriceTest(APITestCase):
+    """Tests for PATCH /product/{id}/update_variant_price/{variant_id}/"""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.other_company = CompanyFactory()
+        self.staff_user = User.objects.create_user(
+            username="staff", password="password", is_staff=True
+        )
+        self.non_staff_user = User.objects.create_user(
+            username="nonstaff", password="password", is_staff=False
+        )
+        from core.models import UserProfile
+
+        UserProfile.objects.create(user=self.staff_user, company=self.company, role="admin")
+        UserProfile.objects.create(user=self.non_staff_user, company=self.company, role="viewer")
+
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(company=self.company, category=self.category, is_active=True)
+        self.variant = ProductVariantFactory(
+            product=self.product, company=self.company, is_active=True, base_price=100000
+        )
+
+        self.other_category = CategoryFactory(company=self.other_company)
+        self.other_product = ProductFactory(
+            company=self.other_company, category=self.other_category, is_active=True
+        )
+        self.other_variant = ProductVariantFactory(
+            product=self.other_product, company=self.other_company, is_active=True, base_price=50000
+        )
+
+    def _url(self, product, variant):
+        return f"/product/{product.id}/update_variant_price/{variant.id}/"
+
+    def test_update_variant_price_success(self):
+        """Staff user can update base_price on a variant belonging to their company's product."""
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.patch(
+            self._url(self.product, self.variant),
+            {"base_price": 150000},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["base_price"], 150000)
+        self.assertEqual(response.data["id"], str(self.variant.id))
+        self.variant.refresh_from_db()
+        self.assertEqual(self.variant.base_price, 150000)
+
+    def test_update_variant_price_wrong_company(self):
+        """Variant belongs to different company product — expect 404."""
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.patch(
+            self._url(self.other_product, self.other_variant),
+            {"base_price": 150000},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_update_variant_price_missing_field(self):
+        """Body without base_price — expect 400."""
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.patch(
+            self._url(self.product, self.variant),
+            {},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_update_variant_price_negative(self):
+        """Body with negative base_price — expect 400."""
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.patch(
+            self._url(self.product, self.variant),
+            {"base_price": -1},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_update_variant_price_non_staff(self):
+        """Non-staff user — expect 403."""
+        with patch.object(StaffPerm, "has_permission", _real_staff_perm):
+            self.client.force_authenticate(user=self.non_staff_user)
+            response = self.client.patch(
+                self._url(self.product, self.variant),
+                {"base_price": 150000},
+                format="json",
+            )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_update_variant_price_cross_variant_isolation(self):
+        """Staff user (company A) tries to update a variant from other_company's product
+        using their own product ID in the URL — expect 404."""
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.patch(
+            self._url(self.product, self.other_variant),
+            {"base_price": 150000},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)

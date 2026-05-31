@@ -7,6 +7,7 @@ import factory
 from apps.finance.models import (
     AccountsPayable,
     AccountsReceivable,
+    CashTransaction,
     Expense,
     ExpenseCategory,
     PaymentRecord,
@@ -68,3 +69,17 @@ class ExpenseFactory(factory.django.DjangoModelFactory):
     amount = 100000
     expense_date = factory.LazyFunction(lambda: date.today())
     payment_method = Expense.PaymentMethod.TRANSFER
+
+
+class CashTransactionFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = CashTransaction
+
+    company = factory.SubFactory(CompanyFactory)  # type: ignore[no-untyped-call]
+    transaction_date = factory.LazyFunction(lambda: date.today())  # type: ignore[no-untyped-call]
+    description = factory.Sequence(lambda n: f"Cash transaction {n}")  # type: ignore[no-untyped-call]
+    amount = 1000000
+    transaction_type = CashTransaction.TransactionType.INFLOW
+    category = CashTransaction.TransactionCategory.EQUITY_INJECTION
+    reference_number = ""
+    note = ""

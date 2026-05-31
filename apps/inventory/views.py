@@ -1,24 +1,33 @@
-from typing import Any, Type
+from typing import Any, Type, cast
 
 from django.db import models, transaction
-from django.db.models import QuerySet
+from django.db.models import Prefetch, QuerySet
 from django.shortcuts import get_object_or_404
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, MultiPartParser
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.serializers import Serializer
+from rest_framework.views import APIView
 
 from apps.inventory.constants.categories import MASTER_CATEGORY
-from apps.inventory.models import Category, Product, ProductPhoto, Warehouse
+from apps.inventory.models import (
+    Category,
+    Product,
+    ProductPhoto,
+    ProductVariant,
+    StockMovement,
+    Warehouse,
+)
 from apps.inventory.serializers import (
     CategorySerializer,
     ProductCreateSerializer,
     ProductPhotoSerializer,
     ProductSerializer,
     ProductVariantStockSerializer,
+    StockMovementSerializer,
     WarehouseSerializer,
 )
 from apps.inventory.services import product_service
@@ -33,11 +42,13 @@ class CategoryViewSet(viewsets.ModelViewSet):
 
 
 class ProductViewSet(viewsets.ModelViewSet):
-    queryset = Product.objects.filter(is_active=True).all()
+    queryset = Product.objects.none()
     permission_classes = [IsStaffOrReadOnly]
 
     def get_queryset(self) -> QuerySet[Product]:
-        qs = Product.objects.filter(is_active=True)
+        if not self.request.user.is_authenticated:
+            return Product.objects.none()
+        qs = Product.objects.filter(is_active=True, company=self.request.user.profile.company)
         search = self.request.query_params.get("search")
         if search:
             qs = qs.filter(models.Q(name__icontains=search) | models.Q(sku_code__icontains=search))
@@ -122,6 +133,30 @@ class ProductViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK,
         )
 
+    @action(detail=True, methods=["patch"], url_path=r"update_variant_price/(?P<variant_id>[^/.]+)")
+    def update_variant_price(
+        self, request: Request, pk: str | None = None, variant_id: str | None = None
+    ) -> Response:
+        product = self.get_object()
+        try:
+            variant = ProductVariant.objects.get(
+                id=variant_id, product=product, company=product.company
+            )
+        except ProductVariant.DoesNotExist:
+            return Response({"error": "Variant not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        base_price = request.data.get("base_price")
+        if base_price is None or not isinstance(base_price, int) or base_price < 0:
+            return Response(
+                {"error": "base_price is required and must be a non-negative integer"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from apps.inventory.services.product_service import ProductService
+
+        result = ProductService().update_variant_base_price(str(variant.id), base_price)
+        return Response(result, status=status.HTTP_200_OK)
+
     def create(self, request: Request, *args: Any, **kwargs: Any) -> Response:
         is_many = isinstance(request.data, list)
         serializer = self.get_serializer(data=request.data, many=is_many)
@@ -204,9 +239,11 @@ class ProductVariantStockViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self) -> QuerySet:
         from apps.inventory.models import ProductVariant
 
-        qs = ProductVariant.objects.filter(is_active=True).select_related(
-            "product", "product__category"
-        )
+        if not self.request.user.is_authenticated:
+            return ProductVariant.objects.none()
+        qs = ProductVariant.objects.filter(
+            is_active=True, company=self.request.user.profile.company
+        ).select_related("product", "product__category")
         search = self.request.query_params.get("search")
         if search:
             from django.db import models as db_models
@@ -268,7 +305,200 @@ class InventoryBulkViewSet(viewsets.ViewSet):
         return Response(result, status=200)
 
 
+class AvgSalesView(APIView):
+    """
+    GET /api/inventory/avg-sales/
+    Query params:
+      - days: int (default 30, must be 7 or 30)
+      - variant_ids: comma-separated string of variant IDs
+                     e.g. ?variant_ids=01ABC,01DEF
+    Returns AVG sales/day per variant over the specified window.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request) -> Response:
+        days_param = request.query_params.get("days", "30")
+        try:
+            days = int(days_param)
+        except ValueError:
+            return Response(
+                {"error": "days must be an integer (7 or 30)"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if days not in [7, 30]:
+            return Response(
+                {"error": "days must be 7 or 30"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        variant_ids_param = request.query_params.get("variant_ids", "")
+        if not variant_ids_param:
+            return Response(
+                {"error": "variant_ids is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        variant_ids = [v.strip() for v in variant_ids_param.split(",") if v.strip()]
+        if not variant_ids:
+            return Response(
+                {"error": "variant_ids is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from apps.inventory.services.inventory_service import InventoryService
+
+        service = InventoryService()
+        results = service.get_avg_sales_per_day(variant_ids=variant_ids, days=days)
+
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        date_from = (timezone.now().date() - timedelta(days=days)).isoformat()
+
+        return Response(
+            {
+                "days": days,
+                "date_from": date_from,
+                "results": results,
+            }
+        )
+
+
+class InventorySummaryView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request) -> Response:
+        company = request.user.profile.company
+
+        warehouses = list(
+            Warehouse.objects.filter(is_active=True, company=company).order_by("name")
+        )
+
+        products = (
+            Product.objects.filter(is_active=True, company=company)
+            .order_by("sku_code")
+            .prefetch_related(
+                Prefetch(
+                    "variants",
+                    queryset=ProductVariant.objects.filter(is_active=True)
+                    .order_by("sku_variant_code")
+                    .prefetch_related("warehouse_stocks"),
+                    to_attr="active_variants",
+                ),
+                Prefetch(
+                    "photos",
+                    queryset=ProductPhoto.objects.filter(is_primary=True),
+                    to_attr="primary_photos",
+                ),
+            )
+        )
+
+        total_cogs_stock = 0
+        total_selling_price = 0
+        total_variants = 0
+
+        product_list = []
+        for product in products:
+            variant_list = []
+            for _v in product.active_variants:
+                v = cast(ProductVariant, _v)
+                pvw_list = list(v.warehouse_stocks.all())
+                total_qty = sum(pvw.physical_qty for pvw in pvw_list)
+                warehouse_stocks = {str(pvw.warehouse_id): pvw.physical_qty for pvw in pvw_list}  # type: ignore[attr-defined]
+                total_cogs_stock += v.current_cogs * total_qty
+                total_selling_price += v.base_price * total_qty
+                total_variants += 1
+                variant_list.append(
+                    {
+                        "variant_id": str(v.id),
+                        "sku_variant_code": v.sku_variant_code,
+                        "variant_name": v.name,
+                        "variant_values": v.variant_values,
+                        "total_qty": total_qty,
+                        "warehouse_stocks": warehouse_stocks,
+                        "current_cogs": v.current_cogs,
+                        "base_price": v.base_price,
+                    }
+                )
+
+            primary_photo = cast(
+                ProductPhoto | None, product.primary_photos[0] if product.primary_photos else None
+            )
+            product_list.append(
+                {
+                    "product_id": str(product.id),
+                    "product_name": product.name,
+                    "sku_code": product.sku_code,
+                    "photo_url": (
+                        request.build_absolute_uri(primary_photo.image.url)
+                        if primary_photo
+                        else None
+                    ),
+                    "variants": variant_list,
+                }
+            )
+
+        return Response(
+            {
+                "warehouses": [{"id": str(w.id), "name": w.name} for w in warehouses],
+                "products": product_list,
+                "summary": {
+                    "total_cogs_stock": total_cogs_stock,
+                    "total_selling_price": total_selling_price,
+                    "total_products": len(product_list),
+                    "total_variants": total_variants,
+                },
+            }
+        )
+
+
+class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = StockMovementSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self) -> QuerySet:
+        qs = (
+            StockMovement.objects.filter(company=self.request.user.profile.company).select_related(
+                "product_variant", "warehouse"
+            )
+            if self.request.user.is_authenticated
+            else StockMovement.objects.none()
+        )
+
+        warehouse_id = self.request.query_params.get("warehouse")
+        if warehouse_id:
+            qs = qs.filter(warehouse_id=warehouse_id)
+
+        product_variant_id = self.request.query_params.get("product_variant")
+        if product_variant_id:
+            qs = qs.filter(product_variant_id=product_variant_id)
+
+        movement_type = self.request.query_params.get("movement_type")
+        if movement_type:
+            try:
+                short_code = StockMovement.MovementType[movement_type].value
+                qs = qs.filter(movement_type=short_code)
+            except KeyError:
+                qs = qs.filter(movement_type=movement_type)
+
+        cdate_after = self.request.query_params.get("cdate_after")
+        if cdate_after:
+            qs = qs.filter(cdate__date__gte=cdate_after)
+
+        cdate_before = self.request.query_params.get("cdate_before")
+        if cdate_before:
+            qs = qs.filter(cdate__date__lte=cdate_before)
+
+        return qs
+
+
 class WarehouseViewSet(viewsets.ModelViewSet):
-    queryset = Warehouse.objects.filter(is_active=True).all()
+    queryset = Warehouse.objects.none()
     serializer_class = WarehouseSerializer
     permission_classes = [IsStaffOrReadOnly]
+
+    def get_queryset(self) -> QuerySet:
+        if not self.request.user.is_authenticated:
+            return Warehouse.objects.none()
+        return Warehouse.objects.filter(is_active=True, company=self.request.user.profile.company)

@@ -52,6 +52,7 @@ from core.factories import (
     MarketplaceFactory,
     WarehouseFactory,
 )
+from core.models import UserProfile
 
 
 class ShopeeWebhookAPITest(APITestCase):
@@ -1754,6 +1755,7 @@ class TestShopeeProductUpdate(TestCase):
         )
 
         user = User.objects.create_user(username="tester", password="pass", is_staff=True)
+        UserProfile.objects.create(user=user, company=company, role="admin")
         client = APIClient()
         client.force_authenticate(user=user)
 
@@ -1858,7 +1860,14 @@ class TestShopeeManageOrder(TestCase):
             marketplace_order_id="MANUAL-001",
         )
 
+        from django.contrib.auth import get_user_model
+
+        User = get_user_model()
+        list_user = User.objects.create_user(username="listuser", password="pass")
+        UserProfile.objects.create(user=list_user, company=self.company, role="viewer")
+
         client = APIClient()
+        client.force_authenticate(user=list_user)
         resp = client.get("/sales-orders/?source_platform=SHOPEE")
 
         self.assertEqual(resp.status_code, 200)
@@ -1980,6 +1989,7 @@ class TestShopeePriceSync(TestCase):
         )
 
         user = User.objects.create_user(username="priceuser", password="pass", is_staff=True)
+        UserProfile.objects.create(user=user, company=company, role="admin")
         client = APIClient()
         client.force_authenticate(user=user)
 
