@@ -2719,3 +2719,79 @@ class FreightCalculationTest(TestCase):
         """cbm=0 → 0"""
         result = PurchaseOrderService._calc_shipping_fee(Decimal("5000000"), Decimal("0"))
         self.assertEqual(result, 0)
+
+
+class CreatePOFixTest(TestCase):
+    """Tests for PO create endpoint fixes — relaxed validation, company_id injection, id return."""
+
+    def setUp(self):
+        from core.models import UserProfile
+
+        self.client = APIClient()
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(category=self.category, company=self.company)
+        self.product_variant = ProductVariantFactory(product=self.product)
+        self.user = User.objects.create_user(
+            username="create_po_fix_user", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def test_create_po_minimal_draft(self):
+        """POST with only warehouse_id and one order_detail should succeed (201)."""
+        payload = {
+            "warehouse_id": str(self.warehouse.id),
+            "order_details": [
+                {
+                    "product_variant_id": str(self.product_variant.id),
+                    "ordered_qty": 10,
+                    "unit_price_foreign": 50,
+                }
+            ],
+        }
+
+        response = self.client.post("/purchase-order/", payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIn("id", response.data)
+
+    def test_create_po_returns_id(self):
+        """Response body contains an 'id' that matches a real PurchaseOrder."""
+        payload = {
+            "warehouse_id": str(self.warehouse.id),
+            "order_details": [
+                {
+                    "product_variant_id": str(self.product_variant.id),
+                    "ordered_qty": 5,
+                    "unit_price_foreign": 20,
+                }
+            ],
+        }
+
+        response = self.client.post("/purchase-order/", payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        po_id = response.data.get("id")
+        self.assertIsNotNone(po_id)
+        self.assertTrue(PurchaseOrder.objects.filter(id=po_id).exists())
+
+    def test_create_po_injects_company_id(self):
+        """PO created without company_id in payload should use the authenticated user's company."""
+        payload = {
+            "warehouse_id": str(self.warehouse.id),
+            "order_details": [
+                {
+                    "product_variant_id": str(self.product_variant.id),
+                    "ordered_qty": 3,
+                    "unit_price_foreign": 100,
+                }
+            ],
+        }
+
+        response = self.client.post("/purchase-order/", payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        po = PurchaseOrder.objects.get(id=response.data["id"])
+        self.assertEqual(po.company, self.company)

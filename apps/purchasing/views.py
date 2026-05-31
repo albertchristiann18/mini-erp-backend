@@ -95,13 +95,15 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
 
     def create(self, request: Request, *args: Any, **kwargs: Any) -> Response:
         """Create a new Purchase Order with nested details"""
-        serializer = self.get_serializer(data=request.data)
+        data = request.data.copy()
+        data["company_id"] = str(request.user.profile.company.id)
+        serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
 
         try:
             services = purchasing_service.PurchaseOrderService()
-            services.create_purchase_order(serializer.validated_data)
-            return Response(status=status.HTTP_201_CREATED)
+            po = services.create_purchase_order(serializer.validated_data)
+            return Response({"id": str(po.id)}, status=status.HTTP_201_CREATED)
         except ValidationError as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 

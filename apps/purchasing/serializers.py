@@ -241,28 +241,6 @@ class PurchaseOrderCreateSerializer(serializers.ModelSerializer):
                 {"status": "Purchase Order must be created with DRAFT status"}
             )
 
-        forwarder_name = attrs.get("forwarder_name")
-        if not forwarder_name:
-            raise serializers.ValidationError({"forwarder_name": "Forwarder name is required."})
-
-        shop_services = attrs.get("shop_services")
-        if not shop_services:
-            raise serializers.ValidationError({"shop_services": "Shop services is required."})
-
-        commission_fee_pct = attrs.get("commission_fee_pct")
-        if commission_fee_pct is None:
-            raise serializers.ValidationError(
-                {"commission_fee_pct": "Commission fee percentage is required."}
-            )
-
-        delivery_fee = attrs.get("delivery_fee")
-        if delivery_fee is None:
-            raise serializers.ValidationError({"delivery_fee": "Delivery fee is required."})
-
-        currency = attrs.get("currency")
-        if not currency:
-            raise serializers.ValidationError({"currency": "Currency is required."})
-
         return attrs
 
     def _calculate_totals_from_details(self, order_details: list) -> dict:
