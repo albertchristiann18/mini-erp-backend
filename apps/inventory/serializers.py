@@ -174,6 +174,7 @@ class ProductVariantStockSerializer(serializers.ModelSerializer):
     product_supplier_link = serializers.CharField(
         source="product.supplier_link", read_only=True, allow_null=True
     )
+    product_photo_url = serializers.SerializerMethodField()
 
     class Meta:
         model = ProductVariant
@@ -189,8 +190,14 @@ class ProductVariantStockSerializer(serializers.ModelSerializer):
             "total_available_qty",
             "physical_qty",
             "product_supplier_link",
+            "product_photo_url",
             "is_active",
         ]
+
+    def get_product_photo_url(self, obj: ProductVariant) -> str | None:
+        if obj.product.product_photo:
+            return obj.product.product_photo.url  # type: ignore[no-any-return]
+        return None
 
     def get_physical_qty(self, obj: ProductVariant) -> int:
         req = self.context.get("request")

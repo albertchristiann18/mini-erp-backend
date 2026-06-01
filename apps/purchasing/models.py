@@ -79,6 +79,9 @@ class PurchaseOrder(DefaultModel):
     shipping_fee = models.BigIntegerField(default=0, blank=True, null=True)  # IDR
     procure_amount = models.BigIntegerField(blank=True, null=True)  # IDR
     refund_amount = models.BigIntegerField(blank=True, null=True)  # IDR
+    cogs_ratio_forecast = models.DecimalField(
+        max_digits=6, decimal_places=2, blank=True, null=True
+    )  # Forecast COGS overhead ratio %, e.g. 15.00 means 15%
     total_item_amount = models.BigIntegerField(blank=True, null=True)  # IDR
     total_order_amount = models.BigIntegerField(blank=True, null=True)  # IDR
     total_amount = models.BigIntegerField(blank=True, null=True)  # IDR
@@ -132,6 +135,7 @@ class PurchaseOrder(DefaultModel):
         "weight",
         "shipping_fee_per_cbm",
         "forecast_shipping_fee",
+        "cogs_ratio_forecast",
         "purchase_order_invoice_file",
         "delivery_order_file",
         "delivery_order_invoice_file",

@@ -3052,6 +3052,43 @@ class PurchaseOrderDetailSerializerProductFieldsTest(TestCase):
         )
 
 
+class CogsRatioForecastTest(TestCase):
+    """Tests for cogs_ratio_forecast field on PurchaseOrder."""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(category=self.category, company=self.company)
+        self.product_variant = ProductVariantFactory(product=self.product)
+        self.service = PurchaseOrderService()
+
+    def test_cogs_ratio_forecast_saved_and_returned(self):
+        """Create PO with cogs_ratio_forecast=15.00, update it, reload and assert."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DRAFT,
+        )
+        self.service.update_purchase_order(
+            po,
+            {"cogs_ratio_forecast": Decimal("15.00")},
+        )
+        po.refresh_from_db()
+        self.assertEqual(po.cogs_ratio_forecast, Decimal("15.00"))
+
+    def test_po_detail_serializer_includes_product_photo_url(self):
+        """Serialize a PurchaseOrderDetail, assert product_photo_url key exists."""
+        from apps.purchasing.serializers import PurchaseOrderDetailSerializer
+
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        detail = PurchaseOrderDetailFactory(
+            purchase_order=po, product_variant=self.product_variant
+        )
+        serializer = PurchaseOrderDetailSerializer(detail)
+        self.assertIn("product_photo_url", serializer.data)
+
+
 class ExchangeRateRecalculationTest(TestCase):
     """Tests for recalculating item base prices when exchange_rate changes."""
 

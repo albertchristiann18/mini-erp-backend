@@ -2244,3 +2244,15 @@ class SupplierLinkTest(TestCase):
         serializer = ProductVariantStockSerializer(variant)
         self.assertIn("product_supplier_link", serializer.data)
         self.assertIsNone(serializer.data["product_supplier_link"])
+
+    def test_variant_stock_serializer_includes_product_photo_url(self):
+        """Serialize a ProductVariant, assert product_photo_url key in output."""
+        from apps.inventory.serializers import ProductVariantStockSerializer
+
+        product = ProductFactory(
+            company=self.company,
+            category=self.category,
+        )
+        variant = ProductVariantFactory(product=product)
+        serializer = ProductVariantStockSerializer(variant)
+        self.assertIn("product_photo_url", serializer.data)

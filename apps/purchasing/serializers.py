@@ -11,7 +11,7 @@ from core.utils import compress_pdf_file
 
 
 def _calc_shipping_fee(shipping_fee_per_cbm: Decimal, cbm: Decimal) -> int:
-    """Tiered freight: <0.1→min 0.1 CBM, 0.1–0.5→rate×cbm+100000, ≥0.5→rate×cbm."""
+    """Tiered freight: <0.1->min 0.1 CBM, 0.1-0.5->ratexcbm+100000, >=0.5->ratexcbm."""
     if cbm <= 0 or shipping_fee_per_cbm <= 0:
         return 0
     if cbm < Decimal("0.1"):
@@ -34,6 +34,7 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
     product_supplier_link = serializers.CharField(
         source="product_variant.product.supplier_link", read_only=True, allow_null=True
     )
+    product_photo_url = serializers.SerializerMethodField()
     updated_qty = serializers.IntegerField(read_only=True)
 
     class Meta:
@@ -45,6 +46,7 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
             "product_id",
             "product_name",
             "product_supplier_link",
+            "product_photo_url",
             "ordered_qty",
             "received_qty",
             "updated_qty",
@@ -60,6 +62,10 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["updated_qty"]
 
+    def get_product_photo_url(self, obj: PurchaseOrderDetail) -> str | None:
+        photo = obj.product_variant.product.product_photo
+        return photo.url if photo else None
+
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
         return self._calculate_prices(attrs)
 
@@ -71,24 +77,6 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
         return super().create(validated_data)  # type: ignore
 
     def _calculate_prices(self, attrs: dict[str, Any]) -> dict[str, Any]:
-        """Calculate all price fields based on input values.
-
-        Input fields (user provides):
-        - unit_price_foreign (mandatory)
-        - discounted_unit_price_foreign (optional, defaults to unit_price_foreign)
-        - ordered_qty
-
-        Calculated fields (only if exchange_rate is provided):
-        - unit_price_base = unit_price_foreign * exchange_rate (from parent PO)
-        - discounted_unit_price_foreign = unit_price_foreign if not provided
-        - discounted_unit_price_base = discounted_unit_price_foreign * exchange_rate
-        - total_price_foreign = unit_price_foreign * ordered_qty
-        - discounted_total_price_foreign = discounted_unit_price_foreign * ordered_qty
-        - total_price_base = unit_price_base * ordered_qty
-        - discounted_total_price_base = discounted_unit_price_base * ordered_qty
-
-        If exchange_rate is not provided, these fields will be left blank.
-        """
         unit_price_foreign = attrs.get("unit_price_foreign")
         ordered_qty = attrs.get("ordered_qty", 0) or 0
 
@@ -179,8 +167,6 @@ class PurchaseOrderListSerializer(serializers.ModelSerializer):
         return obj.get_shipping_per_qty()
 
     def get_delivery_fee_idr(self, obj: PurchaseOrder) -> int:
-        from decimal import Decimal
-
         delivery_fee = obj.delivery_fee or Decimal("0")
         exchange_rate = obj.exchange_rate or Decimal("0")
         return int(round(Decimal(str(delivery_fee)) * Decimal(str(exchange_rate))))
@@ -253,7 +239,6 @@ class PurchaseOrderCreateSerializer(serializers.ModelSerializer):
         return attrs
 
     def _calculate_totals_from_details(self, order_details: list) -> dict:
-        """Calculate totals from order details."""
         total_ordered_qty = 0
         total_received_qty = 0
         total_item_amount = 0
@@ -274,7 +259,6 @@ class PurchaseOrderCreateSerializer(serializers.ModelSerializer):
         }
 
     def _calculate_po_totals(self, attrs: dict) -> dict:
-        """Calculate PO totals based on order details and fee fields."""
         order_details = attrs.get("order_details", [])
         totals = self._calculate_totals_from_details(order_details)
 
@@ -375,6 +359,7 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
             "forecast_delivery_date",
             "forecast_cbm",
             "forecast_shipping_fee",
+            "cogs_ratio_forecast",
             "commission_fee_rmb",
             "delivery_order_number",
             "order_details",
@@ -438,11 +423,9 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
                     }
                 )
 
-        # Enforce status-based field locks
         editable = PurchaseOrder.get_editable_fields(current_status)
         editable_header_set = set(editable["header"])
         editable_detail_set = set(editable["order_detail"])
-        # During a status transition, also allow target status editable fields
         if new_status and new_status != current_status:
             target_editable = PurchaseOrder.get_editable_fields(new_status)
             editable_header_set |= set(target_editable["header"])
@@ -466,7 +449,7 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
         order_details = attrs.get("order_details", [])
         for detail_data in order_details:
             if not detail_data.get("id"):
-                continue  # new items bypass field-level edit lock
+                continue
             for field in detail_data:
                 if field in (
                     "id",
@@ -574,7 +557,6 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
     def _calculate_totals_from_details(
         self, order_details: list, existing_details_map: dict | None = None
     ) -> dict:
-        """Calculate totals from order details."""
         total_ordered_qty = 0
         total_received_qty = 0
         total_item_amount = 0
@@ -608,7 +590,6 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
         }
 
     def _calculate_po_totals(self, attrs: dict, existing_totals: dict | None = None) -> dict:
-        """Calculate PO totals based on order details and fee fields."""
         exchange_rate = Decimal(str(attrs.get("exchange_rate") or 0))
         commission_fee_pct = Decimal(str(attrs.get("commission_fee_pct") or 0))
         shipping_fee_per_cbm = Decimal(str(attrs.get("shipping_fee_per_cbm") or 0))
@@ -715,6 +696,7 @@ class PurchaseOrderReadSerializer(serializers.ModelSerializer):
             "forecast_delivery_date",
             "forecast_cbm",
             "forecast_shipping_fee",
+            "cogs_ratio_forecast",
             "commission_fee_rmb",
             "order_details",
             "purchase_order_invoice_file",
