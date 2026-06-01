@@ -29,6 +29,11 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
     id = serializers.CharField(required=False)
     product_variant_id = serializers.CharField(write_only=True)
     product_variant_name = serializers.CharField(source="product_variant.name", read_only=True)
+    product_id = serializers.CharField(source="product_variant.product.id", read_only=True)
+    product_name = serializers.CharField(source="product_variant.product.name", read_only=True)
+    product_supplier_link = serializers.CharField(
+        source="product_variant.product.supplier_link", read_only=True, allow_null=True
+    )
     updated_qty = serializers.IntegerField(read_only=True)
 
     class Meta:
@@ -37,6 +42,9 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
             "id",
             "product_variant_id",
             "product_variant_name",
+            "product_id",
+            "product_name",
+            "product_supplier_link",
             "ordered_qty",
             "received_qty",
             "updated_qty",

@@ -95,6 +95,7 @@ class ProductSerializer(serializers.ModelSerializer):
             "width",
             "height",
             "is_active",
+            "supplier_link",
             "variants",
             "photos",
         ]
@@ -170,6 +171,9 @@ class ProductVariantStockSerializer(serializers.ModelSerializer):
     product_sku = serializers.CharField(source="product.sku_code", read_only=True)
     category_name = serializers.CharField(source="product.category.name", read_only=True)
     physical_qty = serializers.SerializerMethodField()
+    product_supplier_link = serializers.CharField(
+        source="product.supplier_link", read_only=True, allow_null=True
+    )
 
     class Meta:
         model = ProductVariant
@@ -184,6 +188,7 @@ class ProductVariantStockSerializer(serializers.ModelSerializer):
             "base_price",
             "total_available_qty",
             "physical_qty",
+            "product_supplier_link",
             "is_active",
         ]
 

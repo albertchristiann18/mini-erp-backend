@@ -2200,3 +2200,47 @@ class UpdateVariantPriceTest(APITestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class SupplierLinkTest(TestCase):
+    """Tests for supplier_link field on Product model."""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.category = CategoryFactory(company=self.company)
+
+    def test_product_supplier_link_field_exists(self):
+        product = ProductFactory(
+            company=self.company,
+            category=self.category,
+            supplier_link="https://example.com/supplier/product-123",
+        )
+        product.refresh_from_db()
+        self.assertEqual(product.supplier_link, "https://example.com/supplier/product-123")
+
+    def test_variant_stock_serializer_includes_product_supplier_link(self):
+        from apps.inventory.serializers import ProductVariantStockSerializer
+
+        product = ProductFactory(
+            company=self.company,
+            category=self.category,
+            supplier_link="https://example.com/supplier/product-456",
+        )
+        variant = ProductVariantFactory(product=product)
+        serializer = ProductVariantStockSerializer(variant)
+        self.assertIn("product_supplier_link", serializer.data)
+        self.assertEqual(
+            serializer.data["product_supplier_link"], "https://example.com/supplier/product-456"
+        )
+
+    def test_variant_stock_serializer_supplier_link_null_when_not_set(self):
+        from apps.inventory.serializers import ProductVariantStockSerializer
+
+        product = ProductFactory(
+            company=self.company,
+            category=self.category,
+        )
+        variant = ProductVariantFactory(product=product)
+        serializer = ProductVariantStockSerializer(variant)
+        self.assertIn("product_supplier_link", serializer.data)
+        self.assertIsNone(serializer.data["product_supplier_link"])

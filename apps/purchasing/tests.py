@@ -3018,3 +3018,35 @@ class CreatePOFixTest(TestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         po = PurchaseOrder.objects.get(id=response.data["id"])
         self.assertEqual(po.company, self.company)
+
+
+class PurchaseOrderDetailSerializerProductFieldsTest(TestCase):
+    """Tests for product_id, product_name, product_supplier_link in PurchaseOrderDetailSerializer."""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(
+            company=self.company,
+            category=self.category,
+            supplier_link="https://example.com/supplier/product-789",
+        )
+        self.product_variant = ProductVariantFactory(product=self.product)
+        self.po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        self.detail = PurchaseOrderDetailFactory(
+            purchase_order=self.po, product_variant=self.product_variant
+        )
+
+    def test_po_detail_serializer_includes_product_fields(self):
+        from apps.purchasing.serializers import PurchaseOrderDetailSerializer
+
+        serializer = PurchaseOrderDetailSerializer(self.detail)
+        self.assertIn("product_id", serializer.data)
+        self.assertIn("product_name", serializer.data)
+        self.assertIn("product_supplier_link", serializer.data)
+        self.assertEqual(serializer.data["product_id"], str(self.product.id))
+        self.assertEqual(serializer.data["product_name"], self.product.name)
+        self.assertEqual(
+            serializer.data["product_supplier_link"], "https://example.com/supplier/product-789"
+        )

@@ -81,7 +81,9 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
             qs = qs.filter(invoice_date__lte=date_to)
         if forwarder:
             qs = qs.filter(forwarder_name__icontains=forwarder)
-        return qs  # type: ignore[no-any-return]
+        return qs.prefetch_related(  # type: ignore[no-any-return]
+            "order_details__product_variant__product"
+        )
 
     def list(self, request: Request, *args: Any, **kwargs: Any) -> Response:
         """Get list of all Purchase Orders (basic info without details)"""
