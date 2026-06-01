@@ -3050,3 +3050,88 @@ class PurchaseOrderDetailSerializerProductFieldsTest(TestCase):
         self.assertEqual(
             serializer.data["product_supplier_link"], "https://example.com/supplier/product-789"
         )
+
+
+class ExchangeRateRecalculationTest(TestCase):
+    """Tests for recalculating item base prices when exchange_rate changes."""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(category=self.category, company=self.company)
+        self.product_variant = ProductVariantFactory(product=self.product)
+        self.service = PurchaseOrderService()
+
+    def test_recalculates_item_prices_when_exchange_rate_set(self):
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            exchange_rate=None,
+        )
+        detail = PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            unit_price_foreign=Decimal("100"),
+            ordered_qty=2,
+            unit_price_base=None,
+            total_price_base=None,
+            discounted_unit_price_base=None,
+            discounted_total_price_base=None,
+        )
+        po.refresh_from_db()
+
+        self.service.update_purchase_order(po, {"exchange_rate": Decimal("2000")})
+
+        detail.refresh_from_db()
+        self.assertEqual(detail.unit_price_base, 200000)
+        self.assertEqual(detail.total_price_base, 400000)
+        self.assertEqual(detail.discounted_unit_price_base, 200000)
+        self.assertEqual(detail.discounted_total_price_base, 400000)
+
+    def test_recalculates_item_prices_when_exchange_rate_updated(self):
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            exchange_rate=Decimal("1000"),
+        )
+        detail = PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            unit_price_foreign=Decimal("50"),
+            ordered_qty=3,
+            unit_price_base=50000,
+            total_price_base=150000,
+            discounted_unit_price_base=50000,
+            discounted_total_price_base=150000,
+        )
+        po.refresh_from_db()
+
+        self.service.update_purchase_order(po, {"exchange_rate": Decimal("2000")})
+
+        detail.refresh_from_db()
+        self.assertEqual(detail.total_price_base, 300000)
+
+    def test_does_not_recalculate_when_exchange_rate_not_in_update(self):
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            exchange_rate=Decimal("1000"),
+        )
+        detail = PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            unit_price_foreign=Decimal("50"),
+            ordered_qty=3,
+            unit_price_base=50000,
+            total_price_base=150000,
+            discounted_unit_price_base=50000,
+            discounted_total_price_base=150000,
+        )
+        po.refresh_from_db()
+
+        self.service.update_purchase_order(po, {"supplier_name": "New Supplier"})
+
+        detail.refresh_from_db()
+        self.assertEqual(detail.unit_price_base, 50000)
+        self.assertEqual(detail.total_price_base, 150000)

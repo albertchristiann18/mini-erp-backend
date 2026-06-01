@@ -548,6 +548,9 @@ class PurchaseOrderService:
                 setattr(po, attr, value)
         po.save(update_fields=updated_fields)
 
+        if "exchange_rate" in updated_fields and po.exchange_rate:
+            self._recalculate_item_prices(po)
+
         if details_data is not None:
             self._update_order_details(po, details_data, old_status, new_status or old_status)
 
@@ -731,6 +734,46 @@ class PurchaseOrderService:
 
         if new_details:
             PurchaseOrderDetail.objects.bulk_create(new_details, batch_size=100)
+
+    def _recalculate_item_prices(self, po: "PurchaseOrder") -> None:
+        """Recalculate all item base prices using the PO's current exchange_rate.
+
+        Called when exchange_rate is set or changed on a DRAFT PO so that
+        items created before the rate was known get their IDR prices filled in.
+        """
+        if not po.exchange_rate:
+            return
+        exchange_rate = Decimal(str(po.exchange_rate))
+        details = list(po.order_details.all())
+        to_update = []
+        for detail in details:
+            if not detail.unit_price_foreign:
+                continue
+            unit_price_foreign = Decimal(str(detail.unit_price_foreign))
+            disc_foreign = Decimal(
+                str(detail.discounted_unit_price_foreign or unit_price_foreign)
+            )
+            ordered_qty = detail.ordered_qty or 0
+            detail.unit_price_base = int(round(unit_price_foreign * exchange_rate))
+            detail.discounted_unit_price_base = int(round(disc_foreign * exchange_rate))
+            detail.total_price_foreign = unit_price_foreign * ordered_qty
+            detail.discounted_total_price_foreign = disc_foreign * ordered_qty
+            detail.total_price_base = detail.unit_price_base * ordered_qty
+            detail.discounted_total_price_base = detail.discounted_unit_price_base * ordered_qty
+            to_update.append(detail)
+        if to_update:
+            PurchaseOrderDetail.objects.bulk_update(
+                to_update,
+                [
+                    "unit_price_base",
+                    "discounted_unit_price_base",
+                    "total_price_foreign",
+                    "discounted_total_price_foreign",
+                    "total_price_base",
+                    "discounted_total_price_base",
+                ],
+                batch_size=100,
+            )
 
     @staticmethod
     def _calc_shipping_fee(shipping_fee_per_cbm: Decimal, cbm: Decimal) -> int:
