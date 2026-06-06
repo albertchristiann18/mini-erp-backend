@@ -1,7 +1,7 @@
 from typing import Any, Type
 
 from django.core.exceptions import ValidationError
-from django.db.models import Count, QuerySet, Sum
+from django.db.models import Count, Q, QuerySet, Sum
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.filters import OrderingFilter
@@ -81,6 +81,13 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
             qs = qs.filter(invoice_date__lte=date_to)
         if forwarder:
             qs = qs.filter(forwarder_name__icontains=forwarder)
+        search = self.request.query_params.get("search")
+        if search:
+            qs = qs.filter(
+                Q(purchase_order_number__icontains=search)
+                | Q(invoice_number__icontains=search)
+                | Q(delivery_order_number__icontains=search)
+            )
         return qs.prefetch_related(  # type: ignore[no-any-return]
             "order_details__product_variant__product"
         )

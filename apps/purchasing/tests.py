@@ -26,6 +26,7 @@ from apps.purchasing.models import PurchaseOrder, PurchaseOrderStatusHistory
 from apps.purchasing.serializers import PurchaseOrderReadSerializer, PurchaseOrderUpdateSerializer
 from apps.purchasing.services.purchasing_service import PurchaseOrderService
 from core.factories import WarehouseFactory
+from core.models import UserProfile
 
 
 class PurchaseOrderAPITest(TestCase):
@@ -2905,6 +2906,73 @@ class EditableFieldsAndNoteTest(TestCase):
         warnings = response.data.get("warnings", [])
         self.assertEqual(len(warnings), 1)
         self.assertEqual(warnings[0]["type"], "partial_receipt")
+
+
+    def test_snapshot_fields_populated_on_advance_to_ordered(self):
+        """advancing PO to ORDERED writes avg_sales, avg_sales_7d, stock_on_hand, incoming_qty
+        on each PurchaseOrderDetail."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DRAFT,
+        )
+        detail = PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            ordered_qty=10,
+        )
+
+        with patch("apps.purchasing.serializers.compress_pdf_file"):
+            self.service.update_purchase_order(
+                po,
+                {
+                    "status": PurchaseOrder.POStatus.ORDERED,
+                    "purchase_order_invoice_file": "invoice.pdf",
+                    "invoice_number": "INV-SNAP-001",
+                    "invoice_date": date(2026, 1, 15),
+                    "commission_fee_pct": 5,
+                    "forwarder_name": "Test Forwarder",
+                    "supplier_name": "Test Supplier",
+                    "shop_services": "Test Services",
+                    "delivery_fee": 0,
+                    "exchange_rate": 2200,
+                },
+            )
+
+        detail.refresh_from_db()
+        self.assertIsNotNone(detail.avg_sales)
+        self.assertIsNotNone(detail.avg_sales_7d)
+        self.assertEqual(float(detail.avg_sales), 0.0)
+        self.assertEqual(float(detail.avg_sales_7d), 0.0)
+        self.assertEqual(detail.stock_on_hand, 0)
+        self.assertEqual(detail.incoming_qty, 0)
+
+    def test_snapshot_fields_in_api_response(self):
+        """avg_sales, avg_sales_7d, stock_on_hand, incoming_qty are returned in PO detail API."""
+        client = APIClient()
+        user = User.objects.create_user(
+            username="snapshot_api_user", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        client.force_authenticate(user=user)
+
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DRAFT,
+        )
+        PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            ordered_qty=5,
+        )
+        response = client.get(f"/purchase-order/{po.id}/", format="json")
+        self.assertEqual(response.status_code, 200)
+        detail_data = response.data["order_details"][0]
+        self.assertIn("avg_sales", detail_data)
+        self.assertIn("avg_sales_7d", detail_data)
+        self.assertIn("stock_on_hand", detail_data)
+        self.assertIn("incoming_qty", detail_data)
 
 
 class FreightCalculationTest(TestCase):

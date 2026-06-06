@@ -252,7 +252,10 @@ class PurchaseOrderDetail(DefaultModel):
     stock_on_hand = models.IntegerField(default=0)  # Stock before PO received
     avg_sales = models.DecimalField(
         max_digits=15, decimal_places=3, blank=True, null=True
-    )  # Average sales per day the po created
+    )  # Average sales per day (30-day window) at time of ORDERED
+    avg_sales_7d = models.DecimalField(
+        max_digits=15, decimal_places=3, blank=True, null=True
+    )  # Average sales per day (7-day window) at time of ORDERED
 
     supplier_link = models.CharField(max_length=500, blank=True, null=True)
 

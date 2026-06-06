@@ -59,8 +59,12 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
             "discounted_total_price_foreign",
             "discounted_total_price_base",
             "remarks",
+            "avg_sales",
+            "avg_sales_7d",
+            "stock_on_hand",
+            "incoming_qty",
         ]
-        read_only_fields = ["updated_qty"]
+        read_only_fields = ["updated_qty", "avg_sales", "avg_sales_7d", "stock_on_hand", "incoming_qty"]
 
     def get_product_photo_url(self, obj: PurchaseOrderDetail) -> str | None:
         photo = obj.product_variant.product.product_photo
@@ -138,6 +142,7 @@ class PurchaseOrderListSerializer(serializers.ModelSerializer):
             "company_name",
             "supplier_name",
             "invoice_number",
+            "delivery_order_number",
             "invoice_date",
             "delivery_date",
             "forecast_delivery_date",

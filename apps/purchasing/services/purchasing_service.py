@@ -52,6 +52,50 @@ class PurchaseOrderService:
                 )
 
     @transaction.atomic
+    def _snapshot_sales_metrics_at_ordered(self, po: PurchaseOrder) -> None:
+        """Capture avg_sales (7d+30d), stock_on_hand, incoming_qty snapshots on each detail."""
+        details = list(po.order_details.all())
+        if not details:
+            return
+
+        variant_ids = [str(d.product_variant.id) for d in details]
+
+        # Avg sales
+        avg7_list = InventoryService().get_avg_sales_per_day(variant_ids=variant_ids, days=7)
+        avg30_list = InventoryService().get_avg_sales_per_day(variant_ids=variant_ids, days=30)
+        avg7_map: dict[str, float] = {r["variant_id"]: r["avg_sales_per_day"] for r in avg7_list}
+        avg30_map: dict[str, float] = {r["variant_id"]: r["avg_sales_per_day"] for r in avg30_list}
+
+        # SOH — sum physical_qty across all warehouses
+        soh_map: dict[str, int] = {}
+        for pvw in ProductVariantWarehouse.objects.filter(
+            product_variant_id__in=variant_ids
+        ).values("product_variant_id", "physical_qty"):
+            vid = str(pvw["product_variant_id"])
+            soh_map[vid] = soh_map.get(vid, 0) + (pvw["physical_qty"] or 0)
+
+        # Incoming — remaining qty from OTHER open POs (ORDERED+SHIPPED), excluding this PO
+        incoming_map: dict[str, int] = {}
+        for row in PurchaseOrderDetail.objects.filter(
+            purchase_order__status__in=[PurchaseOrder.POStatus.ORDERED, PurchaseOrder.POStatus.SHIPPED],
+            product_variant_id__in=variant_ids,
+        ).exclude(purchase_order=po).values("product_variant_id", "ordered_qty", "received_qty"):
+            vid = str(row["product_variant_id"])
+            gap = max(0, (row["ordered_qty"] or 0) - (row["received_qty"] or 0))
+            incoming_map[vid] = incoming_map.get(vid, 0) + gap
+
+        # Write snapshots
+        for detail in details:
+            vid = str(detail.product_variant.id)
+            detail.avg_sales = avg30_map.get(vid, 0.0)
+            detail.avg_sales_7d = avg7_map.get(vid, 0.0)
+            detail.stock_on_hand = soh_map.get(vid, 0)
+            detail.incoming_qty = incoming_map.get(vid, 0)
+
+        PurchaseOrderDetail.objects.bulk_update(
+            details, ["avg_sales", "avg_sales_7d", "stock_on_hand", "incoming_qty"]
+        )
+
     def create_purchase_order(self, data: dict) -> PurchaseOrder:
         """Create a Purchase Order with nested order details."""
         details_data = data.pop("order_details", [])
@@ -443,6 +487,7 @@ class PurchaseOrderService:
             from apps.finance.services.accounts_payable_service import AccountsPayableService
 
             AccountsPayableService().create_payable_from_po(po)
+            self._snapshot_sales_metrics_at_ordered(po)
 
         elif new_status == PurchaseOrder.POStatus.DELIVERED:
             for item in order_details:
