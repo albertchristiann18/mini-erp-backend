@@ -873,8 +873,8 @@ class PurchaseOrderService:
 
         exchange_rate = Decimal(str(po.exchange_rate or 0))
         commission_fee_pct = Decimal(str(po.commission_fee_pct or 0))
-        shipping_fee_per_cbm = Decimal(str(po.shipping_fee_per_cbm or 0))
-        cbm = Decimal(str(po.cbm or 0))
+        shipping_fee_per_cbm = Decimal(str(po.shipping_fee_per_cbm or po.forecast_shipping_fee_per_cbm or 0))
+        cbm = Decimal(str(po.cbm or po.forecast_cbm or 0))
 
         commission_fee = int(
             round(commission_fee_pct / Decimal("100") * total_item_rmb * exchange_rate)
