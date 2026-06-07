@@ -545,6 +545,54 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
             totals = self._calculate_po_totals(attrs, existing_totals)
             attrs.update(totals)
 
+        # Auto-recalculate freight whenever real or forecast CBM/rate values change.
+        # Priority: real cbm + real rate > forecast cbm + forecast rate.
+        # Skipped for status transitions that already called _calculate_po_totals above.
+        if self.instance and new_status not in [
+            PurchaseOrder.POStatus.ORDERED,
+            PurchaseOrder.POStatus.SHIPPED,
+            PurchaseOrder.POStatus.DELIVERED,
+        ]:
+            cbm_trigger_fields = {"cbm", "shipping_fee_per_cbm", "forecast_cbm", "forecast_shipping_fee_per_cbm"}
+            if cbm_trigger_fields & set(attrs.keys()):
+                real_cbm = attrs.get("cbm") if "cbm" in attrs else self.instance.cbm
+                real_per_cbm = (
+                    attrs.get("shipping_fee_per_cbm")
+                    if "shipping_fee_per_cbm" in attrs
+                    else self.instance.shipping_fee_per_cbm
+                )
+                forecast_cbm_v = (
+                    attrs.get("forecast_cbm")
+                    if "forecast_cbm" in attrs
+                    else self.instance.forecast_cbm
+                )
+                forecast_per_cbm_v = (
+                    attrs.get("forecast_shipping_fee_per_cbm")
+                    if "forecast_shipping_fee_per_cbm" in attrs
+                    else self.instance.forecast_shipping_fee_per_cbm
+                )
+                effective_cbm = real_cbm if real_cbm else forecast_cbm_v
+                effective_per_cbm = real_per_cbm if real_per_cbm else forecast_per_cbm_v
+                if effective_cbm and effective_per_cbm:
+                    new_shipping_fee = _calc_shipping_fee(
+                        Decimal(str(effective_per_cbm)), Decimal(str(effective_cbm))
+                    )
+                    exchange_rate = Decimal(
+                        str(attrs.get("exchange_rate") or self.instance.exchange_rate or 0)
+                    )
+                    commission_fee_pct = Decimal(
+                        str(attrs.get("commission_fee_pct") or self.instance.commission_fee_pct or 0)
+                    )
+                    total_item_rmb = Decimal("0")
+                    for detail in self.instance.order_details.all():
+                        total_item_rmb += Decimal(str(detail.discounted_total_price_foreign or 0))
+                    commission_fee = int(round(commission_fee_pct / 100 * total_item_rmb * exchange_rate))
+                    total_item_amount = self.instance.total_item_amount or 0
+                    attrs["shipping_fee"] = new_shipping_fee
+                    attrs["procure_amount"] = new_shipping_fee + commission_fee
+                    attrs["total_order_amount"] = total_item_amount + commission_fee
+                    attrs["total_amount"] = total_item_amount + commission_fee + new_shipping_fee
+
         if self.instance:
             forecast_cbm_val = attrs.get("forecast_cbm") if "forecast_cbm" in attrs else self.instance.forecast_cbm
             forecast_per_cbm_val = (

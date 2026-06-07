@@ -72,6 +72,7 @@ class ProductSerializer(serializers.ModelSerializer):
     company_id = serializers.UUIDField(source="company.id", read_only=True)
     category_id = serializers.UUIDField(source="category.id", read_only=True)
     category_name = serializers.CharField(source="category.name", read_only=True)
+    master_category_key = serializers.CharField(source="category.master_category_key", read_only=True)
 
     variants = VariantSerializer(many=True, read_only=True)
     photos = ProductPhotoSerializer(many=True, read_only=True)
@@ -96,6 +97,7 @@ class ProductSerializer(serializers.ModelSerializer):
             "height",
             "is_active",
             "supplier_link",
+            "master_category_key",
             "variants",
             "photos",
         ]
@@ -134,6 +136,7 @@ class VariantCreateSerializer(serializers.ModelSerializer):
 class ProductCreateSerializer(serializers.ModelSerializer):
     company_id = serializers.CharField(write_only=True)
     category_id = serializers.CharField(write_only=True)
+    master_category_key = serializers.CharField(source="category.master_category_key", read_only=True)
     variants = VariantCreateSerializer(many=True)
     description = serializers.CharField(required=True, min_length=25, max_length=5000)
 
@@ -150,6 +153,7 @@ class ProductCreateSerializer(serializers.ModelSerializer):
             "length",
             "width",
             "height",
+            "master_category_key",
             "variants",
         ]
 

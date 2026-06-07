@@ -2109,6 +2109,58 @@ class ForecastFieldsTest(TestCase):
         self.assertEqual(po.forecast_shipping_fee, 5000000)
         self.assertEqual(po.commission_fee_rmb, 150.000)
 
+    def test_draft_patch_real_cbm_and_rate_sets_shipping_fee(self):
+        """PATCH cbm + shipping_fee_per_cbm on DRAFT should auto-calculate shipping_fee."""
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        payload = {
+            "cbm": "2.500",
+            "shipping_fee_per_cbm": 2000000,
+        }
+        response = self.client.patch(f"/purchase-order/{po.id}/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        po.refresh_from_db()
+        self.assertEqual(po.shipping_fee, 5000000)
+
+    def test_draft_patch_forecast_cbm_and_rate_sets_shipping_fee_when_no_real_cbm(self):
+        """PATCH forecast_cbm + forecast_shipping_fee_per_cbm when real cbm is null should use forecast values."""
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        payload = {
+            "forecast_cbm": "3.000",
+            "forecast_shipping_fee_per_cbm": 1500000,
+        }
+        response = self.client.patch(f"/purchase-order/{po.id}/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        po.refresh_from_db()
+        self.assertEqual(po.shipping_fee, 4500000)
+
+    def test_draft_patch_real_cbm_overrides_forecast(self):
+        """Instance has forecast values; PATCH real cbm + real per_cbm should use real values."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            forecast_cbm=2.500,
+            forecast_shipping_fee_per_cbm=2000000,
+        )
+        payload = {
+            "cbm": "3.000",
+            "shipping_fee_per_cbm": 1500000,
+        }
+        response = self.client.patch(f"/purchase-order/{po.id}/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        po.refresh_from_db()
+        self.assertEqual(po.shipping_fee, 4500000)
+
+    def test_draft_patch_only_cbm_no_rate_does_not_change_shipping_fee(self):
+        """PATCH cbm alone (no rate on instance) should leave shipping_fee unchanged."""
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        payload = {
+            "cbm": "2.500",
+        }
+        response = self.client.patch(f"/purchase-order/{po.id}/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        po.refresh_from_db()
+        self.assertEqual(po.shipping_fee, 0)
+
     def test_list_serializer_includes_forecast_delivery_date(self):
         """GET /purchase-order/ should include forecast_delivery_date in results."""
         PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
