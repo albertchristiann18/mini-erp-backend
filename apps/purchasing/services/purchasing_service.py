@@ -122,6 +122,7 @@ class PurchaseOrderService:
                 )
 
             PurchaseOrderDetail.objects.bulk_create(order_details, batch_size=100)
+            self._recalculate_forecast_cbm(po)
 
         return po
 
