@@ -599,6 +599,7 @@ class PurchaseOrderService:
         if details_data is not None:
             self._update_order_details(po, details_data, old_status, new_status or old_status)
 
+        self._recalculate_forecast_cbm(po)
         self._recalculate_po_totals(po)
 
         incremental_order_details = order_details if order_details and new_status is None else None
@@ -837,6 +838,24 @@ class PurchaseOrderService:
         else:
             fee = cbm * shipping_fee_per_cbm
         return int(round(fee))
+
+    def _recalculate_forecast_cbm(self, po: PurchaseOrder) -> None:
+        total_cbm = Decimal("0")
+        has_dimensions = False
+        for detail in po.order_details.all().select_related("product_variant__product"):
+            product = detail.product_variant.product
+            if product.length > 0 and product.width > 0 and product.height > 0:
+                has_dimensions = True
+                volume_m3 = (
+                    Decimal(str(product.length))
+                    * Decimal(str(product.width))
+                    * Decimal(str(product.height))
+                    / Decimal("1000000")
+                )
+                total_cbm += volume_m3 * detail.ordered_qty
+        if has_dimensions:
+            po.forecast_cbm = round(total_cbm, 6)
+            po.save(update_fields=["forecast_cbm", "udate"])
 
     def _recalculate_po_totals(self, po: PurchaseOrder) -> None:
         """Recalculate PO totals based on order details and fee fields."""

@@ -3250,3 +3250,104 @@ class ExchangeRateRecalculationTest(TestCase):
         detail.refresh_from_db()
         self.assertEqual(detail.unit_price_base, 50000)
         self.assertEqual(detail.total_price_base, 150000)
+
+
+class ForecastCbmAutoCalculationTest(TestCase):
+    """Tests for auto-calculation of forecast_cbm from product dimensions."""
+
+    def setUp(self):
+        from core.models import UserProfile
+
+        self.client = APIClient()
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.category = CategoryFactory(company=self.company)
+        self.user = User.objects.create_user(
+            username="cbm_auto_test_user", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def test_forecast_cbm_auto_calculated_on_item_add(self):
+        product = ProductFactory(
+            category=self.category, company=self.company, length=25, width=20, height=10
+        )
+        product_variant = ProductVariantFactory(product=product)
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+
+        response = self.client.patch(
+            f"/purchase-order/{po.id}/",
+            {
+                "order_details": [
+                    {
+                        "product_variant_id": str(product_variant.id),
+                        "ordered_qty": 10,
+                        "unit_price_foreign": 10,
+                    }
+                ]
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        po.refresh_from_db()
+        self.assertEqual(po.forecast_cbm, Decimal("0.050000"))
+
+    def test_forecast_cbm_not_set_when_no_dimensions(self):
+        product = ProductFactory(
+            category=self.category, company=self.company, length=0, width=0, height=0
+        )
+        product_variant = ProductVariantFactory(product=product)
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+
+        response = self.client.patch(
+            f"/purchase-order/{po.id}/",
+            {
+                "order_details": [
+                    {
+                        "product_variant_id": str(product_variant.id),
+                        "ordered_qty": 10,
+                        "unit_price_foreign": 10,
+                    }
+                ]
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        po.refresh_from_db()
+        self.assertIsNone(po.forecast_cbm)
+
+    def test_forecast_cbm_sums_multiple_items(self):
+        product_a = ProductFactory(
+            category=self.category, company=self.company, length=10, width=10, height=10
+        )
+        variant_a = ProductVariantFactory(product=product_a)
+        product_b = ProductFactory(
+            category=self.category, company=self.company, length=20, width=20, height=5
+        )
+        variant_b = ProductVariantFactory(product=product_b)
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+
+        response = self.client.patch(
+            f"/purchase-order/{po.id}/",
+            {
+                "order_details": [
+                    {
+                        "product_variant_id": str(variant_a.id),
+                        "ordered_qty": 5,
+                        "unit_price_foreign": 10,
+                    },
+                    {
+                        "product_variant_id": str(variant_b.id),
+                        "ordered_qty": 3,
+                        "unit_price_foreign": 20,
+                    },
+                ]
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        po.refresh_from_db()
+        self.assertEqual(po.forecast_cbm, Decimal("0.011000"))
