@@ -57,6 +57,9 @@ class PurchaseOrderAPITest(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["id"], str(po.id))
         self.assertEqual(len(response.data["order_details"]), 1)
+        detail = response.data["order_details"][0]
+        self.assertIn("variant_id", detail)
+        self.assertEqual(str(po.order_details.first().product_variant.id), detail["variant_id"])
 
     def test_get_list_of_two_pos(self):
         """Get list of 2 POs"""
@@ -2083,7 +2086,7 @@ class ForecastFieldsTest(TestCase):
         po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
         self.assertIsNone(po.forecast_delivery_date)
         self.assertIsNone(po.forecast_cbm)
-        self.assertIsNone(po.forecast_shipping_fee)
+        self.assertIsNone(po.forecast_shipping_fee_per_cbm)
         self.assertIsNone(po.commission_fee_rmb)
 
     def test_patch_forecast_fields(self):
@@ -2092,7 +2095,7 @@ class ForecastFieldsTest(TestCase):
         payload = {
             "forecast_delivery_date": "2026-08-01",
             "forecast_cbm": "2.500",
-            "forecast_shipping_fee": 5000000,
+            "forecast_shipping_fee_per_cbm": 2000000,
             "commission_fee_rmb": "150.000",
         }
 
@@ -2102,6 +2105,7 @@ class ForecastFieldsTest(TestCase):
         po.refresh_from_db()
         self.assertEqual(str(po.forecast_delivery_date), "2026-08-01")
         self.assertEqual(po.forecast_cbm, 2.500)
+        self.assertEqual(po.forecast_shipping_fee_per_cbm, 2000000)
         self.assertEqual(po.forecast_shipping_fee, 5000000)
         self.assertEqual(po.commission_fee_rmb, 150.000)
 
@@ -3120,30 +3124,36 @@ class PurchaseOrderDetailSerializerProductFieldsTest(TestCase):
         )
 
 
-class CogsRatioForecastTest(TestCase):
-    """Tests for cogs_ratio_forecast field on PurchaseOrder."""
+class ForecastShippingPerCbmTest(TestCase):
+    """Tests for forecast_shipping_fee_per_cbm auto-calculation on PurchaseOrder."""
 
     def setUp(self):
+        from core.models import UserProfile
+
+        self.client = APIClient()
         self.company = CompanyFactory()
         self.warehouse = WarehouseFactory(company=self.company)
         self.category = CategoryFactory(company=self.company)
         self.product = ProductFactory(category=self.category, company=self.company)
         self.product_variant = ProductVariantFactory(product=self.product)
-        self.service = PurchaseOrderService()
+        self.user = User.objects.create_user(
+            username="forecast_per_cbm_test_user", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
 
-    def test_cogs_ratio_forecast_saved_and_returned(self):
-        """Create PO with cogs_ratio_forecast=15.00, update it, reload and assert."""
-        po = PurchaseOrderFactory(
-            warehouse=self.warehouse,
-            company=self.company,
-            status=PurchaseOrder.POStatus.DRAFT,
-        )
-        self.service.update_purchase_order(
-            po,
-            {"cogs_ratio_forecast": Decimal("15.00")},
-        )
+    def test_forecast_shipping_fee_auto_calculated(self):
+        """PATCH a DRAFT PO with forecast_cbm and forecast_shipping_fee_per_cbm should auto-calculate forecast_shipping_fee."""
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        payload = {
+            "forecast_cbm": "2.500",
+            "forecast_shipping_fee_per_cbm": 2000000,
+        }
+        response = self.client.patch(f"/purchase-order/{po.id}/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
         po.refresh_from_db()
-        self.assertEqual(po.cogs_ratio_forecast, Decimal("15.00"))
+        self.assertEqual(po.forecast_shipping_fee, 5000000)
+        self.assertEqual(po.forecast_shipping_fee_per_cbm, 2000000)
 
     def test_po_detail_serializer_includes_product_photo_url(self):
         """Serialize a PurchaseOrderDetail, assert product_photo_url key exists."""

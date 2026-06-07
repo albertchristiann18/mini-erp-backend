@@ -39,6 +39,7 @@ class PurchaseOrder(DefaultModel):
     forecast_delivery_date = models.DateField(null=True, blank=True)
     forecast_cbm = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True)
     forecast_shipping_fee = models.BigIntegerField(null=True, blank=True)  # IDR
+    forecast_shipping_fee_per_cbm = models.BigIntegerField(null=True, blank=True)  # IDR per m³
     commission_fee_rmb = models.DecimalField(
         max_digits=10, decimal_places=3, null=True, blank=True
     )  # RMB
@@ -134,8 +135,7 @@ class PurchaseOrder(DefaultModel):
         "forecast_cbm",
         "weight",
         "shipping_fee_per_cbm",
-        "forecast_shipping_fee",
-        "cogs_ratio_forecast",
+        "forecast_shipping_fee_per_cbm",
         "purchase_order_invoice_file",
         "delivery_order_file",
         "delivery_order_invoice_file",

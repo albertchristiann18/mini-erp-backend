@@ -28,6 +28,7 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
 
     id = serializers.CharField(required=False)
     product_variant_id = serializers.CharField(write_only=True)
+    variant_id = serializers.CharField(source="product_variant.id", read_only=True)
     product_variant_name = serializers.CharField(source="product_variant.name", read_only=True)
     product_id = serializers.CharField(source="product_variant.product.id", read_only=True)
     product_name = serializers.CharField(source="product_variant.product.name", read_only=True)
@@ -42,6 +43,7 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "product_variant_id",
+            "variant_id",
             "product_variant_name",
             "product_id",
             "product_name",
@@ -64,7 +66,7 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
             "stock_on_hand",
             "incoming_qty",
         ]
-        read_only_fields = ["updated_qty", "avg_sales", "avg_sales_7d", "stock_on_hand", "incoming_qty"]
+        read_only_fields = ["updated_qty", "avg_sales", "avg_sales_7d", "stock_on_hand", "incoming_qty", "variant_id"]
 
     def get_product_photo_url(self, obj: PurchaseOrderDetail) -> str | None:
         photo = obj.product_variant.product.product_photo
@@ -363,8 +365,8 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
             "delivery_date",
             "forecast_delivery_date",
             "forecast_cbm",
+            "forecast_shipping_fee_per_cbm",
             "forecast_shipping_fee",
-            "cogs_ratio_forecast",
             "commission_fee_rmb",
             "delivery_order_number",
             "order_details",
@@ -391,6 +393,7 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
             "procure_amount",
             "commission_fee",
             "shipping_fee",
+            "forecast_shipping_fee",
         ]
 
     def validate(self, attrs: dict) -> dict:
@@ -541,6 +544,18 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
 
             totals = self._calculate_po_totals(attrs, existing_totals)
             attrs.update(totals)
+
+        if self.instance:
+            forecast_cbm_val = attrs.get("forecast_cbm") if "forecast_cbm" in attrs else self.instance.forecast_cbm
+            forecast_per_cbm_val = (
+                attrs.get("forecast_shipping_fee_per_cbm")
+                if "forecast_shipping_fee_per_cbm" in attrs
+                else self.instance.forecast_shipping_fee_per_cbm
+            )
+            if forecast_cbm_val and forecast_per_cbm_val:
+                attrs["forecast_shipping_fee"] = _calc_shipping_fee(
+                    Decimal(str(forecast_per_cbm_val)), Decimal(str(forecast_cbm_val))
+                )
 
         return attrs
 
@@ -701,7 +716,7 @@ class PurchaseOrderReadSerializer(serializers.ModelSerializer):
             "forecast_delivery_date",
             "forecast_cbm",
             "forecast_shipping_fee",
-            "cogs_ratio_forecast",
+            "forecast_shipping_fee_per_cbm",
             "commission_fee_rmb",
             "order_details",
             "purchase_order_invoice_file",
