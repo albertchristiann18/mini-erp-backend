@@ -78,25 +78,29 @@ class ProductService:
             )
         ProductVariantMarketplace.objects.bulk_create(create_listing_data, batch_size=100)
 
-        created_variants_by_product: dict[int, list[ProductVariant]] = {i: [] for i in range(len(data_list))}
+        created_variants_by_product: dict[int, list[ProductVariant]] = {
+            i: [] for i in range(len(data_list))
+        }
         for j, variant in enumerate(created_variants):
             product_idx = variant_product_map[j]
             created_variants_by_product[product_idx].append(variant)
 
         result = []
         for i, product in enumerate(created_products):
-            result.append({
-                "id": str(product.id),
-                "name": product.name,
-                "variants": [
-                    {
-                        "id": str(v.id),
-                        "name": v.name,
-                        "sku_variant_code": v.sku_variant_code,
-                    }
-                    for v in created_variants_by_product[i]
-                ],
-            })
+            result.append(
+                {
+                    "id": str(product.id),
+                    "name": product.name,
+                    "variants": [
+                        {
+                            "id": str(v.id),
+                            "name": v.name,
+                            "sku_variant_code": v.sku_variant_code,
+                        }
+                        for v in created_variants_by_product[i]
+                    ],
+                }
+            )
         return result
 
     def _trigger_shopee_product_update(self, product_id: str) -> None:

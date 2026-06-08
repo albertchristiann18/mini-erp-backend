@@ -76,10 +76,17 @@ class PurchaseOrderService:
 
         # Incoming — remaining qty from OTHER open POs (ORDERED+SHIPPED), excluding this PO
         incoming_map: dict[str, int] = {}
-        for row in PurchaseOrderDetail.objects.filter(
-            purchase_order__status__in=[PurchaseOrder.POStatus.ORDERED, PurchaseOrder.POStatus.SHIPPED],
-            product_variant_id__in=variant_ids,
-        ).exclude(purchase_order=po).values("product_variant_id", "ordered_qty", "received_qty"):
+        for row in (
+            PurchaseOrderDetail.objects.filter(
+                purchase_order__status__in=[
+                    PurchaseOrder.POStatus.ORDERED,
+                    PurchaseOrder.POStatus.SHIPPED,
+                ],
+                product_variant_id__in=variant_ids,
+            )
+            .exclude(purchase_order=po)
+            .values("product_variant_id", "ordered_qty", "received_qty")
+        ):
             vid = str(row["product_variant_id"])
             gap = max(0, (row["ordered_qty"] or 0) - (row["received_qty"] or 0))
             incoming_map[vid] = incoming_map.get(vid, 0) + gap
@@ -797,9 +804,7 @@ class PurchaseOrderService:
             if not detail.unit_price_foreign:
                 continue
             unit_price_foreign = Decimal(str(detail.unit_price_foreign))
-            disc_foreign = Decimal(
-                str(detail.discounted_unit_price_foreign or unit_price_foreign)
-            )
+            disc_foreign = Decimal(str(detail.discounted_unit_price_foreign or unit_price_foreign))
             ordered_qty = detail.ordered_qty or 0
             detail.unit_price_base = int(round(unit_price_foreign * exchange_rate))
             detail.discounted_unit_price_base = int(round(disc_foreign * exchange_rate))
@@ -873,7 +878,9 @@ class PurchaseOrderService:
 
         exchange_rate = Decimal(str(po.exchange_rate or 0))
         commission_fee_pct = Decimal(str(po.commission_fee_pct or 0))
-        shipping_fee_per_cbm = Decimal(str(po.shipping_fee_per_cbm or po.forecast_shipping_fee_per_cbm or 0))
+        shipping_fee_per_cbm = Decimal(
+            str(po.shipping_fee_per_cbm or po.forecast_shipping_fee_per_cbm or 0)
+        )
         cbm = Decimal(str(po.cbm or po.forecast_cbm or 0))
 
         commission_fee = int(

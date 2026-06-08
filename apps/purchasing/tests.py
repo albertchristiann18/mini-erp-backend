@@ -2876,11 +2876,7 @@ class EditableFieldsAndNoteTest(TestCase):
 
         response = self.client.patch(
             f"/purchase-order/{po.id}/",
-            {
-                "order_details": [
-                    {"id": str(detail.id), "ordered_qty": 15}
-                ]
-            },
+            {"order_details": [{"id": str(detail.id), "ordered_qty": 15}]},
             format="json",
         )
 
@@ -2962,7 +2958,6 @@ class EditableFieldsAndNoteTest(TestCase):
         warnings = response.data.get("warnings", [])
         self.assertEqual(len(warnings), 1)
         self.assertEqual(warnings[0]["type"], "partial_receipt")
-
 
     def test_snapshot_fields_populated_on_advance_to_ordered(self):
         """advancing PO to ORDERED writes avg_sales, avg_sales_7d, stock_on_hand, incoming_qty
@@ -3212,9 +3207,7 @@ class ForecastShippingPerCbmTest(TestCase):
         from apps.purchasing.serializers import PurchaseOrderDetailSerializer
 
         po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
-        detail = PurchaseOrderDetailFactory(
-            purchase_order=po, product_variant=self.product_variant
-        )
+        detail = PurchaseOrderDetailFactory(purchase_order=po, product_variant=self.product_variant)
         serializer = PurchaseOrderDetailSerializer(detail)
         self.assertIn("product_photo_url", serializer.data)
 

@@ -66,7 +66,14 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
             "stock_on_hand",
             "incoming_qty",
         ]
-        read_only_fields = ["updated_qty", "avg_sales", "avg_sales_7d", "stock_on_hand", "incoming_qty", "variant_id"]
+        read_only_fields = [
+            "updated_qty",
+            "avg_sales",
+            "avg_sales_7d",
+            "stock_on_hand",
+            "incoming_qty",
+            "variant_id",
+        ]
 
     def get_product_photo_url(self, obj: PurchaseOrderDetail) -> str | None:
         photo = obj.product_variant.product.product_photo
@@ -553,7 +560,12 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
             PurchaseOrder.POStatus.SHIPPED,
             PurchaseOrder.POStatus.DELIVERED,
         ]:
-            cbm_trigger_fields = {"cbm", "shipping_fee_per_cbm", "forecast_cbm", "forecast_shipping_fee_per_cbm"}
+            cbm_trigger_fields = {
+                "cbm",
+                "shipping_fee_per_cbm",
+                "forecast_cbm",
+                "forecast_shipping_fee_per_cbm",
+            }
             if cbm_trigger_fields & set(attrs.keys()):
                 real_cbm = attrs.get("cbm") if "cbm" in attrs else self.instance.cbm
                 real_per_cbm = (
@@ -581,12 +593,16 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
                         str(attrs.get("exchange_rate") or self.instance.exchange_rate or 0)
                     )
                     commission_fee_pct = Decimal(
-                        str(attrs.get("commission_fee_pct") or self.instance.commission_fee_pct or 0)
+                        str(
+                            attrs.get("commission_fee_pct") or self.instance.commission_fee_pct or 0
+                        )
                     )
                     total_item_rmb = Decimal("0")
                     for detail in self.instance.order_details.all():
                         total_item_rmb += Decimal(str(detail.discounted_total_price_foreign or 0))
-                    commission_fee = int(round(commission_fee_pct / 100 * total_item_rmb * exchange_rate))
+                    commission_fee = int(
+                        round(commission_fee_pct / 100 * total_item_rmb * exchange_rate)
+                    )
                     total_item_amount = self.instance.total_item_amount or 0
                     attrs["shipping_fee"] = new_shipping_fee
                     attrs["procure_amount"] = new_shipping_fee + commission_fee
@@ -594,7 +610,9 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
                     attrs["total_amount"] = total_item_amount + commission_fee + new_shipping_fee
 
         if self.instance:
-            forecast_cbm_val = attrs.get("forecast_cbm") if "forecast_cbm" in attrs else self.instance.forecast_cbm
+            forecast_cbm_val = (
+                attrs.get("forecast_cbm") if "forecast_cbm" in attrs else self.instance.forecast_cbm
+            )
             forecast_per_cbm_val = (
                 attrs.get("forecast_shipping_fee_per_cbm")
                 if "forecast_shipping_fee_per_cbm" in attrs

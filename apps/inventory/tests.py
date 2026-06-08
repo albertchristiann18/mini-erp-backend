@@ -278,12 +278,14 @@ class InventoryAPITest(APITestCase):
             "category_id": str(self.category.id),
             "name": "Test Product Quick",
             "description": "Test Product Quick (created via PO - update description later)",
-            "variants": [{
-                "name": "Blue / M",
-                "sku_variant_code": "TSH-001-BLU-M",
-                "base_price": 50000,
-                "marketplace_listings": [],
-            }],
+            "variants": [
+                {
+                    "name": "Blue / M",
+                    "sku_variant_code": "TSH-001-BLU-M",
+                    "base_price": 50000,
+                    "marketplace_listings": [],
+                }
+            ],
         }
         response = self.client.post("/product/", payload, format="json")
         self.assertEqual(response.status_code, 201)
@@ -299,12 +301,14 @@ class InventoryAPITest(APITestCase):
             "category_id": str(self.category.id),
             "name": "SKU Test Product",
             "description": "SKU Test Product (created via PO - update description later)",
-            "variants": [{
-                "name": "Red / L",
-                "sku_variant_code": "SKU-001-RED-L",
-                "base_price": 75000,
-                "marketplace_listings": [],
-            }],
+            "variants": [
+                {
+                    "name": "Red / L",
+                    "sku_variant_code": "SKU-001-RED-L",
+                    "base_price": 75000,
+                    "marketplace_listings": [],
+                }
+            ],
         }
         response = self.client.post("/product/", payload, format="json")
         self.assertEqual(response.status_code, 201)
