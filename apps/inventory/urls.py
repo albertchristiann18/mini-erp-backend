@@ -18,5 +18,7 @@ router.register(r"warehouse", views.WarehouseViewSet)
 router.register(r"master-categories", views.MasterCategoryViewSet, basename="master-category")
 router.register(r"inventory", views.InventoryBulkViewSet, basename="inventory-bulk")
 router.register(r"stock-movements", views.StockMovementViewSet, basename="stock-movement")
+router.register(r"suppliers", views.SupplierViewSet, basename="supplier")
+router.register(r"variant-suppliers", views.ProductVariantSupplierViewSet, basename="variant-supplier")
 
 urlpatterns += router.urls

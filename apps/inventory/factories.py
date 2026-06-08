@@ -8,8 +8,10 @@ from apps.inventory.models import (
     ProductCogs,
     ProductVariant,
     ProductVariantMarketplace,
+    ProductVariantSupplier,
     ProductVariantWarehouse,
     StockMovement,
+    Supplier,
 )
 from core.factories import CompanyFactory, MarketplaceFactory, WarehouseFactory
 
@@ -110,3 +112,27 @@ class StockMovementFactory(factory.django.DjangoModelFactory):
     balance_after = 10
     reference_number = ""
     note = ""
+
+
+class SupplierFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = Supplier
+
+    name = factory.Sequence(lambda n: f"Test Supplier {n}")
+    contact_name = "Test Contact"
+    phone = "12345678"
+    country = "China"
+    is_active = True
+    company = factory.SubFactory(CompanyFactory)
+
+
+class ProductVariantSupplierFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = ProductVariantSupplier
+
+    product_variant = factory.SubFactory(ProductVariantFactory)
+    supplier = factory.SubFactory(SupplierFactory)
+    company = factory.LazyAttribute(lambda o: o.product_variant.company)
+    supplier_link = None
+    is_primary = False
+    notes = None

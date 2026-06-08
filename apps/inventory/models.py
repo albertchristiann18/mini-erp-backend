@@ -277,3 +277,35 @@ class StockMovement(DefaultModel):
 
     class Meta:
         ordering = ["-cdate"]
+
+
+class Supplier(DefaultModel):
+    id = ULIDField(primary_key=True, default=generate_ulid, editable=False, db_column="supplier_id")
+    name = models.CharField(max_length=255)
+    contact_name = models.CharField(max_length=255, blank=True, null=True)
+    phone = models.CharField(max_length=50, blank=True, null=True)
+    country = models.CharField(max_length=100, blank=True, null=True)
+    notes = models.TextField(blank=True, null=True)
+    is_active = models.BooleanField(default=True)
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class ProductVariantSupplier(DefaultModel):
+    id = ULIDField(primary_key=True, default=generate_ulid, editable=False, db_column="product_variant_supplier_id")
+    product_variant = models.ForeignKey(ProductVariant, on_delete=models.CASCADE, related_name="variant_suppliers")
+    supplier = models.ForeignKey(Supplier, on_delete=models.CASCADE, related_name="variant_suppliers")
+    supplier_link = models.URLField(max_length=500, blank=True, null=True, help_text="URL to this product on the supplier's site")
+    is_primary = models.BooleanField(default=False, help_text="Primary supplier for this variant")
+    notes = models.TextField(blank=True, null=True)
+
+    class Meta:
+        unique_together = ["product_variant", "supplier"]
+
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        if self.is_primary:
+            ProductVariantSupplier.objects.filter(
+                product_variant=self.product_variant, is_primary=True
+            ).exclude(pk=self.pk).update(is_primary=False)
+        super().save(*args, **kwargs)

@@ -140,6 +140,7 @@ class PurchaseOrderListSerializer(serializers.ModelSerializer):
     cost_ratio_cogs = serializers.SerializerMethodField()
     shipping_per_qty = serializers.SerializerMethodField()
     delivery_fee_idr = serializers.SerializerMethodField()
+    supplier_id = serializers.CharField(source="supplier.id", read_only=True, allow_null=True)
 
     class Meta:
         model = PurchaseOrder
@@ -150,6 +151,7 @@ class PurchaseOrderListSerializer(serializers.ModelSerializer):
             "warehouse_name",
             "company_name",
             "supplier_name",
+            "supplier_id",
             "invoice_number",
             "delivery_order_number",
             "invoice_date",
@@ -192,6 +194,7 @@ class PurchaseOrderCreateSerializer(serializers.ModelSerializer):
     order_details = PurchaseOrderDetailSerializer(many=True, write_only=True, required=True)
     warehouse_id = serializers.CharField(write_only=True)
     company_id = serializers.CharField(write_only=True)
+    supplier_id = serializers.CharField(required=False, allow_null=True, write_only=True)
 
     class Meta:
         model = PurchaseOrder
@@ -199,6 +202,7 @@ class PurchaseOrderCreateSerializer(serializers.ModelSerializer):
             "purchase_order_number",
             "warehouse_id",
             "company_id",
+            "supplier_id",
             "supplier_name",
             "forwarder_name",
             "shop_services",
@@ -249,6 +253,16 @@ class PurchaseOrderCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"status": "Purchase Order must be created with DRAFT status"}
             )
+
+        supplier_id = attrs.pop("supplier_id", None)
+        if supplier_id:
+            from apps.inventory.models import Supplier
+            try:
+                supplier = Supplier.objects.get(id=supplier_id)
+                attrs["supplier"] = supplier
+                attrs["supplier_name"] = supplier.name
+            except Supplier.DoesNotExist:
+                raise serializers.ValidationError({"supplier_id": "Supplier not found."})
 
         return attrs
 
@@ -342,6 +356,7 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
 
     order_details = PurchaseOrderDetailSerializer(many=True, required=False)
     warehouse_id = serializers.CharField(write_only=True, required=False)
+    supplier_id = serializers.CharField(required=False, allow_null=True, write_only=True)
 
     class Meta:
         model = PurchaseOrder
@@ -349,6 +364,7 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
             "purchase_order_number",
             "status",
             "warehouse_id",
+            "supplier_id",
             "supplier_name",
             "forwarder_name",
             "shop_services",
@@ -406,6 +422,16 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
     def validate(self, attrs: dict) -> dict:
         if not self.instance:
             return attrs
+
+        supplier_id = attrs.pop("supplier_id", None)
+        if supplier_id is not None:
+            from apps.inventory.models import Supplier
+            try:
+                supplier = Supplier.objects.get(id=supplier_id)
+                attrs["supplier"] = supplier
+                attrs["supplier_name"] = supplier.name
+            except Supplier.DoesNotExist:
+                raise serializers.ValidationError({"supplier_id": "Supplier not found."})
 
         current_status = self.instance.status
         new_status = attrs.get("status")
@@ -744,6 +770,7 @@ class PurchaseOrderReadSerializer(serializers.ModelSerializer):
     status_history = PurchaseOrderStatusHistorySerializer(many=True, read_only=True)
     next_status = serializers.SerializerMethodField()
     editable_fields = serializers.SerializerMethodField()
+    supplier_id = serializers.CharField(source="supplier.id", read_only=True, allow_null=True)
 
     class Meta:
         model = PurchaseOrder
@@ -758,6 +785,7 @@ class PurchaseOrderReadSerializer(serializers.ModelSerializer):
             "warehouse_name",
             "company_name",
             "supplier_name",
+            "supplier_id",
             "forwarder_name",
             "shop_services",
             "commission_fee_pct",

@@ -18,7 +18,9 @@ from apps.inventory.models import (
     Product,
     ProductPhoto,
     ProductVariant,
+    ProductVariantSupplier,
     StockMovement,
+    Supplier,
     Warehouse,
 )
 from apps.inventory.serializers import (
@@ -27,7 +29,9 @@ from apps.inventory.serializers import (
     ProductPhotoSerializer,
     ProductSerializer,
     ProductVariantStockSerializer,
+    ProductVariantSupplierSerializer,
     StockMovementSerializer,
+    SupplierSerializer,
     WarehouseSerializer,
 )
 from apps.inventory.services import product_service
@@ -256,6 +260,9 @@ class ProductVariantStockViewSet(viewsets.ReadOnlyModelViewSet):
                 | db_models.Q(sku_variant_code__icontains=search)
                 | db_models.Q(product__name__icontains=search)
             )
+        supplier_id = self.request.query_params.get("supplier_id")
+        if supplier_id:
+            qs = qs.filter(variant_suppliers__supplier__id=supplier_id)
         return qs.order_by("product__name", "name")
 
 
@@ -505,3 +512,37 @@ class WarehouseViewSet(viewsets.ModelViewSet):
         if not self.request.user.is_authenticated:
             return Warehouse.objects.none()
         return Warehouse.objects.filter(is_active=True, company=self.request.user.profile.company)
+
+
+class SupplierViewSet(viewsets.ModelViewSet):
+    serializer_class = SupplierSerializer
+    permission_classes = [IsAuthenticated]
+
+    def perform_create(self, serializer) -> None:
+        serializer.save(company=self.request.user.profile.company)
+
+    def get_queryset(self) -> QuerySet["Supplier"]:
+        qs = Supplier.objects.filter(company=self.request.user.profile.company)
+        if self.request.query_params.get("active_only"):
+            qs = qs.filter(is_active=True)
+        search = self.request.query_params.get("search")
+        if search:
+            qs = qs.filter(name__icontains=search)
+        return qs.order_by("name")
+
+
+class ProductVariantSupplierViewSet(viewsets.ModelViewSet):
+    serializer_class = ProductVariantSupplierSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self) -> QuerySet["ProductVariantSupplier"]:
+        qs = ProductVariantSupplier.objects.filter(
+            company=self.request.user.profile.company
+        ).select_related("supplier", "product_variant")
+        variant_id = self.request.query_params.get("product_variant_id")
+        supplier_id = self.request.query_params.get("supplier_id")
+        if variant_id:
+            qs = qs.filter(product_variant__id=variant_id)
+        if supplier_id:
+            qs = qs.filter(supplier__id=supplier_id)
+        return qs

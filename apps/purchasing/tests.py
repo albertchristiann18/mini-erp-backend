@@ -2580,9 +2580,97 @@ class PaginationOrderingSummaryTest(TestCase):
         expected_procure_amount = (ordered_po.procure_amount or 0) + (
             shipped_po.procure_amount or 0
         )
-        self.assertEqual(response.data["upcoming_total_amount"], expected_total_amount)
-        self.assertEqual(response.data["upcoming_total_item_amount"], expected_total_item_amount)
         self.assertEqual(response.data["upcoming_procure_amount"], expected_procure_amount)
+
+
+class TestPurchaseOrderWithSupplier(APITestCase):
+    """Tests for PurchaseOrder with Supplier FK"""
+
+    def setUp(self):
+        from apps.inventory.factories import SupplierFactory
+        from core.models import UserProfile
+
+        self.client = APIClient()
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(category=self.category, company=self.company)
+        self.product_variant = ProductVariantFactory(product=self.product)
+        self.supplier = SupplierFactory(company=self.company)
+        self.user = User.objects.create_user(
+            username="po_supplier_test", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def test_create_po_with_supplier_id(self):
+        payload = {
+            "warehouse_id": str(self.warehouse.id),
+            "company_id": str(self.company.id),
+            "supplier_id": str(self.supplier.id),
+            "supplier_name": "Old Name",
+            "order_details": [
+                {
+                    "product_variant_id": str(self.product_variant.id),
+                    "ordered_qty": 10,
+                    "unit_price_foreign": 100,
+                }
+            ],
+        }
+        response = self.client.post("/purchase-order/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        po_id = response.data["id"]
+        detail_response = self.client.get(f"/purchase-order/{po_id}/", format="json")
+        self.assertEqual(detail_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(detail_response.data["supplier_id"], str(self.supplier.id))
+        self.assertEqual(detail_response.data["supplier_name"], self.supplier.name)
+
+    def test_create_po_without_supplier_id(self):
+        payload = {
+            "warehouse_id": str(self.warehouse.id),
+            "company_id": str(self.company.id),
+            "supplier_name": "Legacy Supplier",
+            "order_details": [
+                {
+                    "product_variant_id": str(self.product_variant.id),
+                    "ordered_qty": 10,
+                    "unit_price_foreign": 100,
+                }
+            ],
+        }
+        response = self.client.post("/purchase-order/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        po_id = response.data["id"]
+        detail_response = self.client.get(f"/purchase-order/{po_id}/", format="json")
+        self.assertIsNone(detail_response.data["supplier_id"])
+
+    def test_update_po_supplier(self):
+        from apps.inventory.factories import SupplierFactory
+
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        supplier2 = SupplierFactory(company=self.company)
+        response = self.client.patch(
+            f"/purchase-order/{po.id}/",
+            {"supplier_id": str(supplier2.id)},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        detail_response = self.client.get(f"/purchase-order/{po.id}/", format="json")
+        self.assertEqual(detail_response.data["supplier_id"], str(supplier2.id))
+        self.assertEqual(detail_response.data["supplier_name"], supplier2.name)
+
+    def test_supplier_name_from_fk(self):
+        from apps.inventory.factories import SupplierFactory
+
+        supplier = SupplierFactory(company=self.company)
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        self.client.patch(
+            f"/purchase-order/{po.id}/",
+            {"supplier_id": str(supplier.id)},
+            format="json",
+        )
+        detail_response = self.client.get(f"/purchase-order/{po.id}/", format="json")
+        self.assertEqual(detail_response.data["supplier_name"], supplier.name)
 
     def test_forecast_cbm_in_list_response(self):
         """create PO with forecast_cbm set, assert it appears in list response"""

@@ -2260,3 +2260,223 @@ class SupplierLinkTest(TestCase):
         variant = ProductVariantFactory(product=product)
         serializer = ProductVariantStockSerializer(variant)
         self.assertIn("product_photo_url", serializer.data)
+
+
+class TestSupplierCRUD(APITestCase):
+    """Tests for Supplier CRUD endpoints"""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.user = User.objects.create_user(
+            username="supplier_test_user", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def test_create_supplier(self):
+        response = self.client.post(
+            "/suppliers/",
+            {"name": "PT Supplier A", "contact_name": "Budi", "country": "Indonesia"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIn("id", response.data)
+
+    def test_list_suppliers(self):
+        from apps.inventory.factories import SupplierFactory
+        SupplierFactory(company=self.company)
+        response = self.client.get("/suppliers/", {"company_id": self.company.id}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        results = response.data.get("results", response.data)
+        self.assertGreaterEqual(len(results), 1)
+
+    def test_update_supplier(self):
+        from apps.inventory.factories import SupplierFactory
+        supplier = SupplierFactory(company=self.company)
+        response = self.client.patch(
+            f"/suppliers/{supplier.id}/",
+            {"name": "PT Supplier B"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        response = self.client.get(f"/suppliers/{supplier.id}/", format="json")
+        self.assertEqual(response.data["name"], "PT Supplier B")
+
+    def test_deactivate_supplier(self):
+        from apps.inventory.factories import SupplierFactory
+        supplier = SupplierFactory(company=self.company, is_active=True)
+        response = self.client.patch(
+            f"/suppliers/{supplier.id}/",
+            {"is_active": False},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        response = self.client.get(
+            "/suppliers/", {"company_id": self.company.id, "active_only": "true"}, format="json"
+        )
+        results = response.data.get("results", response.data)
+        ids = [s["id"] for s in results]
+        self.assertNotIn(str(supplier.id), ids)
+
+    def test_search_supplier(self):
+        from apps.inventory.factories import SupplierFactory
+        SupplierFactory(company=self.company, name="Alpha Supplier")
+        SupplierFactory(company=self.company, name="Beta Trading")
+        response = self.client.get(
+            "/suppliers/", {"search": "Alpha", "company_id": self.company.id}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        results = response.data.get("results", response.data)
+        names = [s["name"] for s in results]
+        self.assertIn("Alpha Supplier", names)
+        self.assertNotIn("Beta Trading", names)
+
+
+class TestProductVariantSupplierCRUD(APITestCase):
+    """Tests for ProductVariantSupplier CRUD endpoints"""
+
+    def setUp(self):
+        from apps.inventory.factories import SupplierFactory
+        self.company = CompanyFactory()
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(category=self.category, company=self.company)
+        self.variant = ProductVariantFactory(product=self.product, company=self.company)
+        self.supplier = SupplierFactory(company=self.company)
+        self.user = User.objects.create_user(
+            username="pvs_test_user", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def test_link_variant_to_supplier(self):
+        response = self.client.post(
+            "/variant-suppliers/",
+            {
+                "product_variant_id": str(self.variant.id),
+                "supplier_id": str(self.supplier.id),
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["supplier_name"], self.supplier.name)
+
+    def test_set_primary_supplier(self):
+        s1 = self.client.post(
+            "/variant-suppliers/",
+            {
+                "product_variant_id": str(self.variant.id),
+                "supplier_id": str(self.supplier.id),
+                "is_primary": True,
+            },
+            format="json",
+        ).data
+        self.assertTrue(s1["is_primary"])
+        supplier2 = SupplierFactory(company=self.company)
+        s2 = self.client.post(
+            "/variant-suppliers/",
+            {
+                "product_variant_id": str(self.variant.id),
+                "supplier_id": str(supplier2.id),
+                "is_primary": True,
+            },
+            format="json",
+        ).data
+        self.assertTrue(s2["is_primary"])
+        s1_resp = self.client.get(f"/variant-suppliers/{s1['id']}/", format="json")
+        self.assertFalse(s1_resp.data["is_primary"])
+
+    def test_list_by_variant(self):
+        self.client.post(
+            "/variant-suppliers/",
+            {
+                "product_variant_id": str(self.variant.id),
+                "supplier_id": str(self.supplier.id),
+            },
+            format="json",
+        )
+        response = self.client.get(
+            "/variant-suppliers/", {"product_variant_id": self.variant.id}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        results = response.data.get("results", response.data)
+        self.assertEqual(len(results), 1)
+
+    def test_list_by_supplier(self):
+        self.client.post(
+            "/variant-suppliers/",
+            {
+                "product_variant_id": str(self.variant.id),
+                "supplier_id": str(self.supplier.id),
+            },
+            format="json",
+        )
+        response = self.client.get(
+            "/variant-suppliers/", {"supplier_id": self.supplier.id}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        results = response.data.get("results", response.data)
+        self.assertEqual(len(results), 1)
+
+    def test_update_supplier_link(self):
+        pvs = self.client.post(
+            "/variant-suppliers/",
+            {
+                "product_variant_id": str(self.variant.id),
+                "supplier_id": str(self.supplier.id),
+            },
+            format="json",
+        ).data
+        response = self.client.patch(
+            f"/variant-suppliers/{pvs['id']}/",
+            {"supplier_link": "https://example.com/new-link"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["supplier_link"], "https://example.com/new-link")
+
+
+class TestVariantFilterBySupplier(APITestCase):
+    """Tests for filtering variants by supplier"""
+
+    def setUp(self):
+        from apps.inventory.factories import SupplierFactory
+        self.company = CompanyFactory()
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(category=self.category, company=self.company)
+        self.variant_a = ProductVariantFactory(product=self.product, company=self.company)
+        self.variant_b = ProductVariantFactory(product=self.product, company=self.company)
+        self.supplier_a = SupplierFactory(company=self.company)
+        self.supplier_b = SupplierFactory(company=self.company)
+        self.user = User.objects.create_user(
+            username="vfilter_test_user", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+        self.client.post(
+            "/variant-suppliers/",
+            {
+                "product_variant_id": str(self.variant_a.id),
+                "supplier_id": str(self.supplier_a.id),
+            },
+            format="json",
+        )
+        self.client.post(
+            "/variant-suppliers/",
+            {
+                "product_variant_id": str(self.variant_b.id),
+                "supplier_id": str(self.supplier_b.id),
+            },
+            format="json",
+        )
+
+    def test_filter_variants_by_supplier(self):
+        response = self.client.get(
+            "/product-variants/", {"supplier_id": self.supplier_a.id}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [v["id"] for v in response.data["results"]]
+        self.assertIn(str(self.variant_a.id), ids)
+        self.assertNotIn(str(self.variant_b.id), ids)
