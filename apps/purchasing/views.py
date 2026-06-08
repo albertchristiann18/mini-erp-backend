@@ -258,7 +258,7 @@ class ReplenishmentView(APIView):
       {
         variant_id, sku_variant_code, variant_name, product_name,
         stock_on_hand, incoming_qty,
-        avg_sales_7d, avg_sales_30d
+        avg_sales_7d, avg_sales_14d, avg_sales_30d
       }
     """
 
@@ -322,6 +322,8 @@ class ReplenishmentView(APIView):
 
         avg7_map = {r["variant_id"]: r["avg_sales_per_day"] for r in avg7}
         avg30_map = {r["variant_id"]: r["avg_sales_per_day"] for r in avg30}
+        avg14 = svc.get_avg_sales_per_day(variant_ids=all_ids, days=14)
+        avg14_map = {r["variant_id"]: r["avg_sales_per_day"] for r in avg14}
 
         # Variant metadata
         variants = ProductVariant.objects.filter(
@@ -340,6 +342,7 @@ class ReplenishmentView(APIView):
                     "stock_on_hand": soh_map.get(vid, 0),
                     "incoming_qty": incoming_map.get(vid, 0),
                     "avg_sales_7d": avg7_map.get(vid, 0.0),
+                    "avg_sales_14d": avg14_map.get(vid, 0.0),
                     "avg_sales_30d": avg30_map.get(vid, 0.0),
                 }
             )
