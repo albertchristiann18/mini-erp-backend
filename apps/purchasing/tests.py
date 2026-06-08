@@ -26,6 +26,7 @@ from apps.purchasing.models import PurchaseOrder, PurchaseOrderStatusHistory
 from apps.purchasing.serializers import PurchaseOrderReadSerializer, PurchaseOrderUpdateSerializer
 from apps.purchasing.services.purchasing_service import PurchaseOrderService
 from core.factories import WarehouseFactory
+from core.models import UserProfile
 
 
 class PurchaseOrderAPITest(TestCase):
@@ -56,6 +57,9 @@ class PurchaseOrderAPITest(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["id"], str(po.id))
         self.assertEqual(len(response.data["order_details"]), 1)
+        detail = response.data["order_details"][0]
+        self.assertIn("variant_id", detail)
+        self.assertEqual(str(po.order_details.first().product_variant.id), detail["variant_id"])
 
     def test_get_list_of_two_pos(self):
         """Get list of 2 POs"""
@@ -306,8 +310,8 @@ class PurchaseOrderAPITest(TestCase):
         self.assertEqual(cogs1.count(), 1)
         self.assertEqual(cogs1.first().cogs_amount, 33000)
 
-    def test_cannot_edit_ordered_qty_on_ordered_po(self):
-        """PATCH ordered_qty on ORDERED PO should return 400."""
+    def test_can_edit_ordered_qty_on_ordered_po(self):
+        """PATCH ordered_qty on ORDERED PO should return 200 — qty is now editable in ORDERED status."""
         po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
         detail = PurchaseOrderDetailFactory(
             purchase_order=po, product_variant=self.product_variant, ordered_qty=100
@@ -335,7 +339,9 @@ class PurchaseOrderAPITest(TestCase):
             {"order_details": [{"id": str(detail.id), "ordered_qty": 999}]},
             format="json",
         )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        detail.refresh_from_db()
+        self.assertEqual(detail.ordered_qty, 999)
 
     def test_cannot_edit_unit_price_on_ordered_po(self):
         """PATCH unit_price_foreign on ORDERED PO should return 400."""
@@ -2080,7 +2086,7 @@ class ForecastFieldsTest(TestCase):
         po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
         self.assertIsNone(po.forecast_delivery_date)
         self.assertIsNone(po.forecast_cbm)
-        self.assertIsNone(po.forecast_shipping_fee)
+        self.assertIsNone(po.forecast_shipping_fee_per_cbm)
         self.assertIsNone(po.commission_fee_rmb)
 
     def test_patch_forecast_fields(self):
@@ -2089,7 +2095,7 @@ class ForecastFieldsTest(TestCase):
         payload = {
             "forecast_delivery_date": "2026-08-01",
             "forecast_cbm": "2.500",
-            "forecast_shipping_fee": 5000000,
+            "forecast_shipping_fee_per_cbm": 2000000,
             "commission_fee_rmb": "150.000",
         }
 
@@ -2099,8 +2105,61 @@ class ForecastFieldsTest(TestCase):
         po.refresh_from_db()
         self.assertEqual(str(po.forecast_delivery_date), "2026-08-01")
         self.assertEqual(po.forecast_cbm, 2.500)
+        self.assertEqual(po.forecast_shipping_fee_per_cbm, 2000000)
         self.assertEqual(po.forecast_shipping_fee, 5000000)
         self.assertEqual(po.commission_fee_rmb, 150.000)
+
+    def test_draft_patch_real_cbm_and_rate_sets_shipping_fee(self):
+        """PATCH cbm + shipping_fee_per_cbm on DRAFT should auto-calculate shipping_fee."""
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        payload = {
+            "cbm": "2.500",
+            "shipping_fee_per_cbm": 2000000,
+        }
+        response = self.client.patch(f"/purchase-order/{po.id}/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        po.refresh_from_db()
+        self.assertEqual(po.shipping_fee, 5000000)
+
+    def test_draft_patch_forecast_cbm_and_rate_sets_shipping_fee_when_no_real_cbm(self):
+        """PATCH forecast_cbm + forecast_shipping_fee_per_cbm when real cbm is null should use forecast values."""
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        payload = {
+            "forecast_cbm": "3.000",
+            "forecast_shipping_fee_per_cbm": 1500000,
+        }
+        response = self.client.patch(f"/purchase-order/{po.id}/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        po.refresh_from_db()
+        self.assertEqual(po.shipping_fee, 4500000)
+
+    def test_draft_patch_real_cbm_overrides_forecast(self):
+        """Instance has forecast values; PATCH real cbm + real per_cbm should use real values."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            forecast_cbm=2.500,
+            forecast_shipping_fee_per_cbm=2000000,
+        )
+        payload = {
+            "cbm": "3.000",
+            "shipping_fee_per_cbm": 1500000,
+        }
+        response = self.client.patch(f"/purchase-order/{po.id}/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        po.refresh_from_db()
+        self.assertEqual(po.shipping_fee, 4500000)
+
+    def test_draft_patch_only_cbm_no_rate_does_not_change_shipping_fee(self):
+        """PATCH cbm alone (no rate on instance) should leave shipping_fee unchanged."""
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        payload = {
+            "cbm": "2.500",
+        }
+        response = self.client.patch(f"/purchase-order/{po.id}/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        po.refresh_from_db()
+        self.assertEqual(po.shipping_fee, 0)
 
     def test_list_serializer_includes_forecast_delivery_date(self):
         """GET /purchase-order/ should include forecast_delivery_date in results."""
@@ -2789,10 +2848,41 @@ class EditableFieldsAndNoteTest(TestCase):
         self.assertIn("exchange_rate", fields["header"])
         self.assertIn("ordered_qty", fields["order_detail"])
 
-    def test_ordered_po_editable_fields_has_empty_order_detail(self):
-        """ORDERED status should have empty order_detail list."""
+    def test_ordered_po_editable_fields_includes_ordered_qty(self):
+        """ORDERED status allows editing ordered_qty only (not price fields)."""
         fields = PurchaseOrder.get_editable_fields(PurchaseOrder.POStatus.ORDERED)
-        self.assertEqual(fields["order_detail"], [])
+        self.assertIn("ordered_qty", fields["order_detail"])
+        self.assertNotIn("unit_price_foreign", fields["order_detail"])
+        self.assertNotIn("discounted_unit_price_foreign", fields["order_detail"])
+
+    def test_ordered_po_can_update_ordered_qty(self):
+        """PATCH ordered_qty on an existing ORDERED PO detail should succeed and update the qty."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.ORDERED,
+            exchange_rate=Decimal("2250"),
+            commission_fee_pct=5,
+        )
+        detail = PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            ordered_qty=10,
+            unit_price_foreign=Decimal("25.000"),
+            discounted_unit_price_foreign=Decimal("22.000"),
+        )
+        # Recalculate PO totals to reflect the detail
+        PurchaseOrderService()._recalculate_po_totals(po)
+
+        response = self.client.patch(
+            f"/purchase-order/{po.id}/",
+            {"order_details": [{"id": str(detail.id), "ordered_qty": 15}]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        detail.refresh_from_db()
+        self.assertEqual(detail.ordered_qty, 15)
 
     def test_draft_po_editable_fields_has_order_detail_fields(self):
         """DRAFT status should have all editable order_detail fields."""
@@ -2868,6 +2958,72 @@ class EditableFieldsAndNoteTest(TestCase):
         warnings = response.data.get("warnings", [])
         self.assertEqual(len(warnings), 1)
         self.assertEqual(warnings[0]["type"], "partial_receipt")
+
+    def test_snapshot_fields_populated_on_advance_to_ordered(self):
+        """advancing PO to ORDERED writes avg_sales, avg_sales_7d, stock_on_hand, incoming_qty
+        on each PurchaseOrderDetail."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DRAFT,
+        )
+        detail = PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            ordered_qty=10,
+        )
+
+        with patch("apps.purchasing.serializers.compress_pdf_file"):
+            self.service.update_purchase_order(
+                po,
+                {
+                    "status": PurchaseOrder.POStatus.ORDERED,
+                    "purchase_order_invoice_file": "invoice.pdf",
+                    "invoice_number": "INV-SNAP-001",
+                    "invoice_date": date(2026, 1, 15),
+                    "commission_fee_pct": 5,
+                    "forwarder_name": "Test Forwarder",
+                    "supplier_name": "Test Supplier",
+                    "shop_services": "Test Services",
+                    "delivery_fee": 0,
+                    "exchange_rate": 2200,
+                },
+            )
+
+        detail.refresh_from_db()
+        self.assertIsNotNone(detail.avg_sales)
+        self.assertIsNotNone(detail.avg_sales_7d)
+        self.assertEqual(float(detail.avg_sales), 0.0)
+        self.assertEqual(float(detail.avg_sales_7d), 0.0)
+        self.assertEqual(detail.stock_on_hand, 0)
+        self.assertEqual(detail.incoming_qty, 0)
+
+    def test_snapshot_fields_in_api_response(self):
+        """avg_sales, avg_sales_7d, stock_on_hand, incoming_qty are returned in PO detail API."""
+        client = APIClient()
+        user = User.objects.create_user(
+            username="snapshot_api_user", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        client.force_authenticate(user=user)
+
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DRAFT,
+        )
+        PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            ordered_qty=5,
+        )
+        response = client.get(f"/purchase-order/{po.id}/", format="json")
+        self.assertEqual(response.status_code, 200)
+        detail_data = response.data["order_details"][0]
+        self.assertIn("avg_sales", detail_data)
+        self.assertIn("avg_sales_7d", detail_data)
+        self.assertIn("stock_on_hand", detail_data)
+        self.assertIn("incoming_qty", detail_data)
 
 
 class FreightCalculationTest(TestCase):
@@ -2981,3 +3137,262 @@ class CreatePOFixTest(TestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         po = PurchaseOrder.objects.get(id=response.data["id"])
         self.assertEqual(po.company, self.company)
+
+
+class PurchaseOrderDetailSerializerProductFieldsTest(TestCase):
+    """Tests for product_id, product_name, product_supplier_link in PurchaseOrderDetailSerializer."""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(
+            company=self.company,
+            category=self.category,
+            supplier_link="https://example.com/supplier/product-789",
+        )
+        self.product_variant = ProductVariantFactory(product=self.product)
+        self.po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        self.detail = PurchaseOrderDetailFactory(
+            purchase_order=self.po, product_variant=self.product_variant
+        )
+
+    def test_po_detail_serializer_includes_product_fields(self):
+        from apps.purchasing.serializers import PurchaseOrderDetailSerializer
+
+        serializer = PurchaseOrderDetailSerializer(self.detail)
+        self.assertIn("product_id", serializer.data)
+        self.assertIn("product_name", serializer.data)
+        self.assertIn("product_supplier_link", serializer.data)
+        self.assertEqual(serializer.data["product_id"], str(self.product.id))
+        self.assertEqual(serializer.data["product_name"], self.product.name)
+        self.assertEqual(
+            serializer.data["product_supplier_link"], "https://example.com/supplier/product-789"
+        )
+
+
+class ForecastShippingPerCbmTest(TestCase):
+    """Tests for forecast_shipping_fee_per_cbm auto-calculation on PurchaseOrder."""
+
+    def setUp(self):
+        from core.models import UserProfile
+
+        self.client = APIClient()
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(category=self.category, company=self.company)
+        self.product_variant = ProductVariantFactory(product=self.product)
+        self.user = User.objects.create_user(
+            username="forecast_per_cbm_test_user", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def test_forecast_shipping_fee_auto_calculated(self):
+        """PATCH a DRAFT PO with forecast_cbm and forecast_shipping_fee_per_cbm should auto-calculate forecast_shipping_fee."""
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        payload = {
+            "forecast_cbm": "2.500",
+            "forecast_shipping_fee_per_cbm": 2000000,
+        }
+        response = self.client.patch(f"/purchase-order/{po.id}/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        po.refresh_from_db()
+        self.assertEqual(po.forecast_shipping_fee, 5000000)
+        self.assertEqual(po.forecast_shipping_fee_per_cbm, 2000000)
+
+    def test_po_detail_serializer_includes_product_photo_url(self):
+        """Serialize a PurchaseOrderDetail, assert product_photo_url key exists."""
+        from apps.purchasing.serializers import PurchaseOrderDetailSerializer
+
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        detail = PurchaseOrderDetailFactory(purchase_order=po, product_variant=self.product_variant)
+        serializer = PurchaseOrderDetailSerializer(detail)
+        self.assertIn("product_photo_url", serializer.data)
+
+
+class ExchangeRateRecalculationTest(TestCase):
+    """Tests for recalculating item base prices when exchange_rate changes."""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(category=self.category, company=self.company)
+        self.product_variant = ProductVariantFactory(product=self.product)
+        self.service = PurchaseOrderService()
+
+    def test_recalculates_item_prices_when_exchange_rate_set(self):
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            exchange_rate=None,
+        )
+        detail = PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            unit_price_foreign=Decimal("100"),
+            ordered_qty=2,
+            unit_price_base=None,
+            total_price_base=None,
+            discounted_unit_price_base=None,
+            discounted_total_price_base=None,
+        )
+        po.refresh_from_db()
+
+        self.service.update_purchase_order(po, {"exchange_rate": Decimal("2000")})
+
+        detail.refresh_from_db()
+        self.assertEqual(detail.unit_price_base, 200000)
+        self.assertEqual(detail.total_price_base, 400000)
+        self.assertEqual(detail.discounted_unit_price_base, 200000)
+        self.assertEqual(detail.discounted_total_price_base, 400000)
+
+    def test_recalculates_item_prices_when_exchange_rate_updated(self):
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            exchange_rate=Decimal("1000"),
+        )
+        detail = PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            unit_price_foreign=Decimal("50"),
+            ordered_qty=3,
+            unit_price_base=50000,
+            total_price_base=150000,
+            discounted_unit_price_base=50000,
+            discounted_total_price_base=150000,
+        )
+        po.refresh_from_db()
+
+        self.service.update_purchase_order(po, {"exchange_rate": Decimal("2000")})
+
+        detail.refresh_from_db()
+        self.assertEqual(detail.total_price_base, 300000)
+
+    def test_does_not_recalculate_when_exchange_rate_not_in_update(self):
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            exchange_rate=Decimal("1000"),
+        )
+        detail = PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            unit_price_foreign=Decimal("50"),
+            ordered_qty=3,
+            unit_price_base=50000,
+            total_price_base=150000,
+            discounted_unit_price_base=50000,
+            discounted_total_price_base=150000,
+        )
+        po.refresh_from_db()
+
+        self.service.update_purchase_order(po, {"supplier_name": "New Supplier"})
+
+        detail.refresh_from_db()
+        self.assertEqual(detail.unit_price_base, 50000)
+        self.assertEqual(detail.total_price_base, 150000)
+
+
+class ForecastCbmAutoCalculationTest(TestCase):
+    """Tests for auto-calculation of forecast_cbm from product dimensions."""
+
+    def setUp(self):
+        from core.models import UserProfile
+
+        self.client = APIClient()
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.category = CategoryFactory(company=self.company)
+        self.user = User.objects.create_user(
+            username="cbm_auto_test_user", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def test_forecast_cbm_auto_calculated_on_item_add(self):
+        product = ProductFactory(
+            category=self.category, company=self.company, length=25, width=20, height=10
+        )
+        product_variant = ProductVariantFactory(product=product)
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+
+        response = self.client.patch(
+            f"/purchase-order/{po.id}/",
+            {
+                "order_details": [
+                    {
+                        "product_variant_id": str(product_variant.id),
+                        "ordered_qty": 10,
+                        "unit_price_foreign": 10,
+                    }
+                ]
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        po.refresh_from_db()
+        self.assertEqual(po.forecast_cbm, Decimal("0.050000"))
+
+    def test_forecast_cbm_not_set_when_no_dimensions(self):
+        product = ProductFactory(
+            category=self.category, company=self.company, length=0, width=0, height=0
+        )
+        product_variant = ProductVariantFactory(product=product)
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+
+        response = self.client.patch(
+            f"/purchase-order/{po.id}/",
+            {
+                "order_details": [
+                    {
+                        "product_variant_id": str(product_variant.id),
+                        "ordered_qty": 10,
+                        "unit_price_foreign": 10,
+                    }
+                ]
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        po.refresh_from_db()
+        self.assertIsNone(po.forecast_cbm)
+
+    def test_forecast_cbm_sums_multiple_items(self):
+        product_a = ProductFactory(
+            category=self.category, company=self.company, length=10, width=10, height=10
+        )
+        variant_a = ProductVariantFactory(product=product_a)
+        product_b = ProductFactory(
+            category=self.category, company=self.company, length=20, width=20, height=5
+        )
+        variant_b = ProductVariantFactory(product=product_b)
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+
+        response = self.client.patch(
+            f"/purchase-order/{po.id}/",
+            {
+                "order_details": [
+                    {
+                        "product_variant_id": str(variant_a.id),
+                        "ordered_qty": 5,
+                        "unit_price_foreign": 10,
+                    },
+                    {
+                        "product_variant_id": str(variant_b.id),
+                        "ordered_qty": 3,
+                        "unit_price_foreign": 20,
+                    },
+                ]
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        po.refresh_from_db()
+        self.assertEqual(po.forecast_cbm, Decimal("0.011000"))

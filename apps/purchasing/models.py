@@ -39,6 +39,7 @@ class PurchaseOrder(DefaultModel):
     forecast_delivery_date = models.DateField(null=True, blank=True)
     forecast_cbm = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True)
     forecast_shipping_fee = models.BigIntegerField(null=True, blank=True)  # IDR
+    forecast_shipping_fee_per_cbm = models.BigIntegerField(null=True, blank=True)  # IDR per m³
     commission_fee_rmb = models.DecimalField(
         max_digits=10, decimal_places=3, null=True, blank=True
     )  # RMB
@@ -79,6 +80,9 @@ class PurchaseOrder(DefaultModel):
     shipping_fee = models.BigIntegerField(default=0, blank=True, null=True)  # IDR
     procure_amount = models.BigIntegerField(blank=True, null=True)  # IDR
     refund_amount = models.BigIntegerField(blank=True, null=True)  # IDR
+    cogs_ratio_forecast = models.DecimalField(
+        max_digits=6, decimal_places=2, blank=True, null=True
+    )  # Forecast COGS overhead ratio %, e.g. 15.00 means 15%
     total_item_amount = models.BigIntegerField(blank=True, null=True)  # IDR
     total_order_amount = models.BigIntegerField(blank=True, null=True)  # IDR
     total_amount = models.BigIntegerField(blank=True, null=True)  # IDR
@@ -131,7 +135,7 @@ class PurchaseOrder(DefaultModel):
         "forecast_cbm",
         "weight",
         "shipping_fee_per_cbm",
-        "forecast_shipping_fee",
+        "forecast_shipping_fee_per_cbm",
         "purchase_order_invoice_file",
         "delivery_order_file",
         "delivery_order_invoice_file",
@@ -155,7 +159,7 @@ class PurchaseOrder(DefaultModel):
         elif status == cls.POStatus.ORDERED:
             return {
                 "header": list(cls._ALL_EDITABLE_HEADER),
-                "order_detail": [],
+                "order_detail": ["ordered_qty"],
             }
         elif status == cls.POStatus.SHIPPED:
             return {
@@ -248,7 +252,10 @@ class PurchaseOrderDetail(DefaultModel):
     stock_on_hand = models.IntegerField(default=0)  # Stock before PO received
     avg_sales = models.DecimalField(
         max_digits=15, decimal_places=3, blank=True, null=True
-    )  # Average sales per day the po created
+    )  # Average sales per day (30-day window) at time of ORDERED
+    avg_sales_7d = models.DecimalField(
+        max_digits=15, decimal_places=3, blank=True, null=True
+    )  # Average sales per day (7-day window) at time of ORDERED
 
     supplier_link = models.CharField(max_length=500, blank=True, null=True)
 

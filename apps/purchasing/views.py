@@ -1,7 +1,7 @@
 from typing import Any, Type
 
 from django.core.exceptions import ValidationError
-from django.db.models import Count, QuerySet, Sum
+from django.db.models import Count, Q, QuerySet, Sum
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.filters import OrderingFilter
@@ -81,7 +81,16 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
             qs = qs.filter(invoice_date__lte=date_to)
         if forwarder:
             qs = qs.filter(forwarder_name__icontains=forwarder)
-        return qs  # type: ignore[no-any-return]
+        search = self.request.query_params.get("search")
+        if search:
+            qs = qs.filter(
+                Q(purchase_order_number__icontains=search)
+                | Q(invoice_number__icontains=search)
+                | Q(delivery_order_number__icontains=search)
+            )
+        return qs.prefetch_related(  # type: ignore[no-any-return]
+            "order_details__product_variant__product"
+        )
 
     def list(self, request: Request, *args: Any, **kwargs: Any) -> Response:
         """Get list of all Purchase Orders (basic info without details)"""
@@ -249,7 +258,7 @@ class ReplenishmentView(APIView):
       {
         variant_id, sku_variant_code, variant_name, product_name,
         stock_on_hand, incoming_qty,
-        avg_sales_7d, avg_sales_30d
+        avg_sales_7d, avg_sales_14d, avg_sales_30d
       }
     """
 
@@ -313,6 +322,8 @@ class ReplenishmentView(APIView):
 
         avg7_map = {r["variant_id"]: r["avg_sales_per_day"] for r in avg7}
         avg30_map = {r["variant_id"]: r["avg_sales_per_day"] for r in avg30}
+        avg14 = svc.get_avg_sales_per_day(variant_ids=all_ids, days=14)
+        avg14_map = {r["variant_id"]: r["avg_sales_per_day"] for r in avg14}
 
         # Variant metadata
         variants = ProductVariant.objects.filter(
@@ -331,6 +342,7 @@ class ReplenishmentView(APIView):
                     "stock_on_hand": soh_map.get(vid, 0),
                     "incoming_qty": incoming_map.get(vid, 0),
                     "avg_sales_7d": avg7_map.get(vid, 0.0),
+                    "avg_sales_14d": avg14_map.get(vid, 0.0),
                     "avg_sales_30d": avg30_map.get(vid, 0.0),
                 }
             )

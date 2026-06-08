@@ -52,6 +52,57 @@ class PurchaseOrderService:
                 )
 
     @transaction.atomic
+    def _snapshot_sales_metrics_at_ordered(self, po: PurchaseOrder) -> None:
+        """Capture avg_sales (7d+30d), stock_on_hand, incoming_qty snapshots on each detail."""
+        details = list(po.order_details.all())
+        if not details:
+            return
+
+        variant_ids = [str(d.product_variant.id) for d in details]
+
+        # Avg sales
+        avg7_list = InventoryService().get_avg_sales_per_day(variant_ids=variant_ids, days=7)
+        avg30_list = InventoryService().get_avg_sales_per_day(variant_ids=variant_ids, days=30)
+        avg7_map: dict[str, float] = {r["variant_id"]: r["avg_sales_per_day"] for r in avg7_list}
+        avg30_map: dict[str, float] = {r["variant_id"]: r["avg_sales_per_day"] for r in avg30_list}
+
+        # SOH — sum physical_qty across all warehouses
+        soh_map: dict[str, int] = {}
+        for pvw in ProductVariantWarehouse.objects.filter(
+            product_variant_id__in=variant_ids
+        ).values("product_variant_id", "physical_qty"):
+            vid = str(pvw["product_variant_id"])
+            soh_map[vid] = soh_map.get(vid, 0) + (pvw["physical_qty"] or 0)
+
+        # Incoming — remaining qty from OTHER open POs (ORDERED+SHIPPED), excluding this PO
+        incoming_map: dict[str, int] = {}
+        for row in (
+            PurchaseOrderDetail.objects.filter(
+                purchase_order__status__in=[
+                    PurchaseOrder.POStatus.ORDERED,
+                    PurchaseOrder.POStatus.SHIPPED,
+                ],
+                product_variant_id__in=variant_ids,
+            )
+            .exclude(purchase_order=po)
+            .values("product_variant_id", "ordered_qty", "received_qty")
+        ):
+            vid = str(row["product_variant_id"])
+            gap = max(0, (row["ordered_qty"] or 0) - (row["received_qty"] or 0))
+            incoming_map[vid] = incoming_map.get(vid, 0) + gap
+
+        # Write snapshots
+        for detail in details:
+            vid = str(detail.product_variant.id)
+            detail.avg_sales = avg30_map.get(vid, 0.0)
+            detail.avg_sales_7d = avg7_map.get(vid, 0.0)
+            detail.stock_on_hand = soh_map.get(vid, 0)
+            detail.incoming_qty = incoming_map.get(vid, 0)
+
+        PurchaseOrderDetail.objects.bulk_update(
+            details, ["avg_sales", "avg_sales_7d", "stock_on_hand", "incoming_qty"]
+        )
+
     def create_purchase_order(self, data: dict) -> PurchaseOrder:
         """Create a Purchase Order with nested order details."""
         details_data = data.pop("order_details", [])
@@ -78,6 +129,7 @@ class PurchaseOrderService:
                 )
 
             PurchaseOrderDetail.objects.bulk_create(order_details, batch_size=100)
+            self._recalculate_forecast_cbm(po)
 
         return po
 
@@ -443,6 +495,7 @@ class PurchaseOrderService:
             from apps.finance.services.accounts_payable_service import AccountsPayableService
 
             AccountsPayableService().create_payable_from_po(po)
+            self._snapshot_sales_metrics_at_ordered(po)
 
         elif new_status == PurchaseOrder.POStatus.DELIVERED:
             for item in order_details:
@@ -548,9 +601,13 @@ class PurchaseOrderService:
                 setattr(po, attr, value)
         po.save(update_fields=updated_fields)
 
+        if "exchange_rate" in updated_fields and po.exchange_rate:
+            self._recalculate_item_prices(po)
+
         if details_data is not None:
             self._update_order_details(po, details_data, old_status, new_status or old_status)
 
+        self._recalculate_forecast_cbm(po)
         self._recalculate_po_totals(po)
 
         incremental_order_details = order_details if order_details and new_status is None else None
@@ -732,6 +789,44 @@ class PurchaseOrderService:
         if new_details:
             PurchaseOrderDetail.objects.bulk_create(new_details, batch_size=100)
 
+    def _recalculate_item_prices(self, po: "PurchaseOrder") -> None:
+        """Recalculate all item base prices using the PO's current exchange_rate.
+
+        Called when exchange_rate is set or changed on a DRAFT PO so that
+        items created before the rate was known get their IDR prices filled in.
+        """
+        if not po.exchange_rate:
+            return
+        exchange_rate = Decimal(str(po.exchange_rate))
+        details = list(po.order_details.all())
+        to_update = []
+        for detail in details:
+            if not detail.unit_price_foreign:
+                continue
+            unit_price_foreign = Decimal(str(detail.unit_price_foreign))
+            disc_foreign = Decimal(str(detail.discounted_unit_price_foreign or unit_price_foreign))
+            ordered_qty = detail.ordered_qty or 0
+            detail.unit_price_base = int(round(unit_price_foreign * exchange_rate))
+            detail.discounted_unit_price_base = int(round(disc_foreign * exchange_rate))
+            detail.total_price_foreign = unit_price_foreign * ordered_qty
+            detail.discounted_total_price_foreign = disc_foreign * ordered_qty
+            detail.total_price_base = detail.unit_price_base * ordered_qty
+            detail.discounted_total_price_base = detail.discounted_unit_price_base * ordered_qty
+            to_update.append(detail)
+        if to_update:
+            PurchaseOrderDetail.objects.bulk_update(
+                to_update,
+                [
+                    "unit_price_base",
+                    "discounted_unit_price_base",
+                    "total_price_foreign",
+                    "discounted_total_price_foreign",
+                    "total_price_base",
+                    "discounted_total_price_base",
+                ],
+                batch_size=100,
+            )
+
     @staticmethod
     def _calc_shipping_fee(shipping_fee_per_cbm: Decimal, cbm: Decimal) -> int:
         """Tiered freight calculation.
@@ -750,6 +845,24 @@ class PurchaseOrderService:
             fee = cbm * shipping_fee_per_cbm
         return int(round(fee))
 
+    def _recalculate_forecast_cbm(self, po: PurchaseOrder) -> None:
+        total_cbm = Decimal("0")
+        has_dimensions = False
+        for detail in po.order_details.all().select_related("product_variant__product"):
+            product = detail.product_variant.product
+            if product.length > 0 and product.width > 0 and product.height > 0:
+                has_dimensions = True
+                volume_m3 = (
+                    Decimal(str(product.length))
+                    * Decimal(str(product.width))
+                    * Decimal(str(product.height))
+                    / Decimal("1000000")
+                )
+                total_cbm += volume_m3 * detail.ordered_qty
+        if has_dimensions:
+            po.forecast_cbm = round(total_cbm, 6)
+            po.save(update_fields=["forecast_cbm", "udate"])
+
     def _recalculate_po_totals(self, po: PurchaseOrder) -> None:
         """Recalculate PO totals based on order details and fee fields."""
         total_ordered_qty = 0
@@ -765,8 +878,10 @@ class PurchaseOrderService:
 
         exchange_rate = Decimal(str(po.exchange_rate or 0))
         commission_fee_pct = Decimal(str(po.commission_fee_pct or 0))
-        shipping_fee_per_cbm = Decimal(str(po.shipping_fee_per_cbm or 0))
-        cbm = Decimal(str(po.cbm or 0))
+        shipping_fee_per_cbm = Decimal(
+            str(po.shipping_fee_per_cbm or po.forecast_shipping_fee_per_cbm or 0)
+        )
+        cbm = Decimal(str(po.cbm or po.forecast_cbm or 0))
 
         commission_fee = int(
             round(commission_fee_pct / Decimal("100") * total_item_rmb * exchange_rate)

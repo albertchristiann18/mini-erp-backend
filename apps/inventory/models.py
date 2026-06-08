@@ -50,6 +50,7 @@ class Product(DefaultModel):
     width = models.IntegerField(default=0)
     height = models.IntegerField(default=0)
     is_active = models.BooleanField(default=True)
+    supplier_link = models.URLField(max_length=500, blank=True, null=True)
 
     shipping_config = models.JSONField(
         default=get_default_shipping_config,

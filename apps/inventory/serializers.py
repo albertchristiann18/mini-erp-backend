@@ -72,6 +72,9 @@ class ProductSerializer(serializers.ModelSerializer):
     company_id = serializers.UUIDField(source="company.id", read_only=True)
     category_id = serializers.UUIDField(source="category.id", read_only=True)
     category_name = serializers.CharField(source="category.name", read_only=True)
+    master_category_key = serializers.CharField(
+        source="category.master_category_key", read_only=True
+    )
 
     variants = VariantSerializer(many=True, read_only=True)
     photos = ProductPhotoSerializer(many=True, read_only=True)
@@ -95,6 +98,8 @@ class ProductSerializer(serializers.ModelSerializer):
             "width",
             "height",
             "is_active",
+            "supplier_link",
+            "master_category_key",
             "variants",
             "photos",
         ]
@@ -120,16 +125,22 @@ class VariantCreateSerializer(serializers.ModelSerializer):
         model = ProductVariant
         fields = [
             "name",
-            # "sku_variant_code",
+            "sku_variant_code",
             "variant_values",
             "base_price",
             "marketplace_listings",
         ]
+        extra_kwargs = {
+            "sku_variant_code": {"required": False, "allow_blank": True, "default": ""},
+        }
 
 
 class ProductCreateSerializer(serializers.ModelSerializer):
     company_id = serializers.CharField(write_only=True)
     category_id = serializers.CharField(write_only=True)
+    master_category_key = serializers.CharField(
+        source="category.master_category_key", read_only=True
+    )
     variants = VariantCreateSerializer(many=True)
     description = serializers.CharField(required=True, min_length=25, max_length=5000)
 
@@ -146,6 +157,7 @@ class ProductCreateSerializer(serializers.ModelSerializer):
             "length",
             "width",
             "height",
+            "master_category_key",
             "variants",
         ]
 
@@ -167,6 +179,10 @@ class ProductVariantStockSerializer(serializers.ModelSerializer):
     product_sku = serializers.CharField(source="product.sku_code", read_only=True)
     category_name = serializers.CharField(source="product.category.name", read_only=True)
     physical_qty = serializers.SerializerMethodField()
+    product_supplier_link = serializers.CharField(
+        source="product.supplier_link", read_only=True, allow_null=True
+    )
+    product_photo_url = serializers.SerializerMethodField()
 
     class Meta:
         model = ProductVariant
@@ -181,8 +197,15 @@ class ProductVariantStockSerializer(serializers.ModelSerializer):
             "base_price",
             "total_available_qty",
             "physical_qty",
+            "product_supplier_link",
+            "product_photo_url",
             "is_active",
         ]
+
+    def get_product_photo_url(self, obj: ProductVariant) -> str | None:
+        if obj.product.product_photo:
+            return obj.product.product_photo.url  # type: ignore[no-any-return]
+        return None
 
     def get_physical_qty(self, obj: ProductVariant) -> int:
         req = self.context.get("request")

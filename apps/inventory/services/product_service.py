@@ -13,8 +13,13 @@ logger = logging.getLogger(__name__)
 
 class ProductService:
     @transaction.atomic
-    def create_product_with_variants(self, validated_data: list) -> None:
-        company_id = validated_data[0].get("company_id", "")
+    def create_product_with_variants(self, validated_data: list | dict) -> list[dict]:
+        if isinstance(validated_data, dict):
+            data_list = [validated_data]
+        else:
+            data_list = list(validated_data)
+
+        company_id = data_list[0].get("company_id", "")
 
         products = [
             Product(
@@ -28,20 +33,21 @@ class ProductService:
                 width=data.get("width", 0),
                 height=data.get("height", 0),
             )
-            for data in validated_data
+            for data in data_list
         ]
         created_products = Product.objects.bulk_create(products, batch_size=100)
 
         product_index_map = {i: obj.id for i, obj in enumerate(created_products)}
 
+        variant_product_map: list[int] = []
         listings_data_tupple = []
         variants = []
         variant_index = 0
-        for i in range(len(validated_data)):
-            data = validated_data[i]
+        for i in range(len(data_list)):
+            data = data_list[i]
             variants_data = data.pop("variants")
             for variant_data in variants_data:
-                for listing_data in variant_data["marketplace_listings"]:
+                for listing_data in variant_data.get("marketplace_listings", []):
                     listings_data_tupple.append((variant_index, listing_data))
 
                 variants.append(
@@ -49,10 +55,12 @@ class ProductService:
                         product_id=product_index_map[i],
                         company_id=company_id,
                         name=variant_data.get("name", ""),
+                        sku_variant_code=variant_data.get("sku_variant_code", ""),
                         variant_values=variant_data.get("variant_values", {}),
                         base_price=variant_data.get("base_price", 0),
                     )
                 )
+                variant_product_map.append(i)
                 variant_index += 1
 
         created_variants = ProductVariant.objects.bulk_create(variants, batch_size=100)
@@ -69,6 +77,31 @@ class ProductService:
                 )
             )
         ProductVariantMarketplace.objects.bulk_create(create_listing_data, batch_size=100)
+
+        created_variants_by_product: dict[int, list[ProductVariant]] = {
+            i: [] for i in range(len(data_list))
+        }
+        for j, variant in enumerate(created_variants):
+            product_idx = variant_product_map[j]
+            created_variants_by_product[product_idx].append(variant)
+
+        result = []
+        for i, product in enumerate(created_products):
+            result.append(
+                {
+                    "id": str(product.id),
+                    "name": product.name,
+                    "variants": [
+                        {
+                            "id": str(v.id),
+                            "name": v.name,
+                            "sku_variant_code": v.sku_variant_code,
+                        }
+                        for v in created_variants_by_product[i]
+                    ],
+                }
+            )
+        return result
 
     def _trigger_shopee_product_update(self, product_id: str) -> None:
         from apps.inventory.models import Product
