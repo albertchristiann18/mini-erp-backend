@@ -2332,6 +2332,35 @@ class TestSupplierCRUD(APITestCase):
         self.assertIn("Alpha Supplier", names)
         self.assertNotIn("Beta Trading", names)
 
+    def test_create_supplier_with_link(self):
+        response = self.client.post(
+            "/suppliers/",
+            {"name": "PT Supplier Link", "supplier_link": "https://shop.example.com/store/abc"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["supplier_link"], "https://shop.example.com/store/abc")
+
+    def test_update_supplier_link(self):
+        from apps.inventory.factories import SupplierFactory
+        supplier = SupplierFactory(company=self.company)
+        response = self.client.patch(
+            f"/suppliers/{supplier.id}/",
+            {"supplier_link": "https://new-link.com"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["supplier_link"], "https://new-link.com")
+
+    def test_supplier_link_optional(self):
+        response = self.client.post(
+            "/suppliers/",
+            {"name": "PT Supplier No Link"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIsNone(response.data["supplier_link"])
+
 
 class TestProductVariantSupplierCRUD(APITestCase):
     """Tests for ProductVariantSupplier CRUD endpoints"""
