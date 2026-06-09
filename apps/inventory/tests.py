@@ -51,7 +51,10 @@ class InventoryAPITest(APITestCase):
                 "category_id": str(self.category.id),
                 "name": "Kemeja Batik Pria Premium",
                 "description": "Batik Slimfit bahan katun halus, nyaman untuk kerja maupun acara formal.",
-                "variant_options": [{"name": "Warna", "order": 1}, {"name": "Size", "order": 2}],
+                "variant_options": [
+                    {"id": "warna", "name": "Warna", "order": 1, "values": [{"id": "navy", "label": "Navy"}]},
+                    {"id": "size", "name": "Size", "order": 2, "values": [{"id": "l", "label": "L"}, {"id": "xl", "label": "XL"}]},
+                ],
                 "specifications": {
                     "Merek": "Tidak ada merek",
                     "Bahan": ["Katun", "Bulu Domba"],
@@ -66,7 +69,7 @@ class InventoryAPITest(APITestCase):
                     {
                         "name": "Batik Premium - Navy - L",
                         # "sku_variant_code": "1",
-                        "variant_values": {"1": "Navy", "2": "L"},
+                        "variant_values": {"warna": "navy", "size": "l"},
                         "base_price": 180000,
                         "marketplace_listings": [
                             {
@@ -79,7 +82,7 @@ class InventoryAPITest(APITestCase):
                     {
                         "name": "Batik Premium - Navy - XL",
                         # "sku_variant_code": "2",
-                        "variant_values": {"1": "Navy", "2": "XL"},
+                        "variant_values": {"warna": "navy", "size": "xl"},
                         "base_price": 185000,
                         "marketplace_listings": [
                             {
@@ -112,7 +115,10 @@ class InventoryAPITest(APITestCase):
                 "category_id": str(self.category.id),
                 "name": "Kemeja Batik Pria Premium B",
                 "description": "Batik Slimfit bahan katun halus, nyaman untuk kerja maupun acara formal.",
-                "variant_options": [{"name": "Warna", "order": 1}, {"name": "Size", "order": 2}],
+                "variant_options": [
+                    {"id": "warna", "name": "Warna", "order": 1, "values": [{"id": "blue", "label": "Blue"}]},
+                    {"id": "size", "name": "Size", "order": 2, "values": [{"id": "l", "label": "L"}, {"id": "xl", "label": "XL"}]},
+                ],
                 "specifications": {
                     "Merek": "Tidak ada merek",
                     "Bahan": ["Katun", "Bulu Domba"],
@@ -127,7 +133,7 @@ class InventoryAPITest(APITestCase):
                     {
                         "name": "Batik Premium B - Blue - L",
                         # "sku_variant_code": "1",
-                        "variant_values": {"1": "Blue", "2": "L"},
+                        "variant_values": {"warna": "blue", "size": "l"},
                         "base_price": 180000,
                         "marketplace_listings": [
                             {
@@ -140,7 +146,7 @@ class InventoryAPITest(APITestCase):
                     {
                         "name": "Batik Premium B - Blue - XL",
                         # "sku_variant_code": "2",
-                        "variant_values": {"1": "Blue", "2": "XL"},
+                        "variant_values": {"warna": "blue", "size": "xl"},
                         "base_price": 185000,
                         "marketplace_listings": [
                             {
@@ -194,7 +200,10 @@ class InventoryAPITest(APITestCase):
                 "category_id": str(self.category.id),
                 "name": "Kemeja Batik Pria Premium B",
                 "description": "Batik Slimfit bahan katun halus, nyaman untuk kerja maupun acara formal.",
-                "variant_options": [{"name": "Warna", "order": 1}, {"name": "Size", "order": 2}],
+                "variant_options": [
+                    {"id": "warna", "name": "Warna", "order": 1, "values": [{"id": "blue", "label": "Blue"}]},
+                    {"id": "size", "name": "Size", "order": 2, "values": [{"id": "l", "label": "L"}, {"id": "xl", "label": "XL"}]},
+                ],
                 "specifications": {
                     "Merek": "Tidak ada merek",
                     "Bahan": ["Katun", "Bulu Domba"],
@@ -209,7 +218,7 @@ class InventoryAPITest(APITestCase):
                     {
                         "name": "Batik Premium B - Blue - L",
                         # "sku_variant_code": "1",
-                        "variant_values": {"1": "Blue", "2": "L"},
+                        "variant_values": {"warna": "blue", "size": "l"},
                         "base_price": 180000,
                         "marketplace_listings": [
                             {
@@ -222,7 +231,7 @@ class InventoryAPITest(APITestCase):
                     {
                         "name": "Batik Premium B - Blue - XL",
                         # "sku_variant_code": "2",
-                        "variant_values": {"1": "Blue", "2": "XL"},
+                        "variant_values": {"warna": "blue", "size": "xl"},
                         "base_price": 185000,
                         "marketplace_listings": [
                             {
@@ -234,12 +243,9 @@ class InventoryAPITest(APITestCase):
                 ],
             }
         ]
-
         response = self.client.post("/product/", payload, format="json")
-
         # 1. Basic Response Check
         assert response.status_code == 201
-
         # 2. Verify Database Integrity (Counts)
         assert Product.objects.count() == 2
         assert ProductVariant.objects.count() == 4
@@ -2484,10 +2490,12 @@ class SaveVariantsTest(APITestCase):
     def test_save_variants_creates_new_variants(self):
         """POST save_variants with no id → creates new variants, returns created=2"""
         payload = {
-            "variant_options": [{"name": "Color", "order": 1, "values": ["Red", "Blue"]}],
+            "variant_options": [
+                {"id": "color", "name": "Color", "order": 1, "values": [{"id": "red", "label": "Red"}, {"id": "blue", "label": "Blue"}]}
+            ],
             "variants": [
-                {"variant_values": {"1": "Red"}, "sku_variant_code": "", "base_price": 100000},
-                {"variant_values": {"1": "Blue"}, "sku_variant_code": "", "base_price": 110000},
+                {"variant_values": {"color": "red"}, "sku_variant_code": "", "base_price": 100000},
+                {"variant_values": {"color": "blue"}, "sku_variant_code": "", "base_price": 110000},
             ],
         }
         resp = self.client.post(self._url(self.product.id), payload, format="json")
@@ -2495,14 +2503,19 @@ class SaveVariantsTest(APITestCase):
         self.assertEqual(resp.data["created"], 2)
         self.assertEqual(resp.data["updated"], 0)
         self.assertEqual(ProductVariant.objects.filter(product=self.product, is_active=True).count(), 2)
+        variants = ProductVariant.objects.filter(product=self.product, is_active=True).order_by("base_price")
+        self.assertEqual(variants[0].name, "Red")
+        self.assertEqual(variants[1].name, "Blue")
 
     def test_save_variants_updates_existing_variant(self):
         """POST save_variants with existing variant id → updates base_price"""
-        variant = ProductVariantFactory(product=self.product, company=self.company, variant_values={"1": "Red"})
+        variant = ProductVariantFactory(product=self.product, company=self.company, variant_values={"color": "red"})
         payload = {
-            "variant_options": [],
+            "variant_options": [
+                {"id": "color", "name": "Color", "order": 1, "values": [{"id": "red", "label": "Red"}]}
+            ],
             "variants": [
-                {"id": str(variant.id), "variant_values": {"1": "Red"}, "base_price": 999000},
+                {"id": str(variant.id), "variant_values": {"color": "red"}, "base_price": 999000},
             ],
         }
         resp = self.client.post(self._url(self.product.id), payload, format="json")
@@ -2513,12 +2526,14 @@ class SaveVariantsTest(APITestCase):
 
     def test_save_variants_deactivates_stale_without_stock(self):
         """Variants not in payload with no stock → deactivated"""
-        v1 = ProductVariantFactory(product=self.product, company=self.company, variant_values={"1": "Red"})
-        v2 = ProductVariantFactory(product=self.product, company=self.company, variant_values={"1": "Blue"})
+        v1 = ProductVariantFactory(product=self.product, company=self.company, variant_values={"color": "red"})
+        v2 = ProductVariantFactory(product=self.product, company=self.company, variant_values={"color": "blue"})
         payload = {
-            "variant_options": [],
+            "variant_options": [
+                {"id": "color", "name": "Color", "order": 1, "values": [{"id": "red", "label": "Red"}, {"id": "blue", "label": "Blue"}]}
+            ],
             "variants": [
-                {"id": str(v1.id), "variant_values": {"1": "Red"}, "base_price": 100000},
+                {"id": str(v1.id), "variant_values": {"color": "red"}, "base_price": 100000},
             ],
         }
         resp = self.client.post(self._url(self.product.id), payload, format="json")
@@ -2529,17 +2544,19 @@ class SaveVariantsTest(APITestCase):
 
     def test_save_variants_keeps_stale_with_stock(self):
         """Variants not in payload WITH stock → kept active, in kept_with_stock"""
-        v1 = ProductVariantFactory(product=self.product, company=self.company, variant_values={"1": "Red"})
+        v1 = ProductVariantFactory(product=self.product, company=self.company, variant_values={"color": "red"})
         v2 = ProductVariantFactory(
             product=self.product, company=self.company,
-            variant_values={"1": "Blue"},
+            variant_values={"color": "blue"},
         )
         ProductVariant.objects.filter(id=v2.id).update(total_incoming_qty=10, total_available_qty=5)
         v2.refresh_from_db()
         payload = {
-            "variant_options": [],
+            "variant_options": [
+                {"id": "color", "name": "Color", "order": 1, "values": [{"id": "red", "label": "Red"}, {"id": "blue", "label": "Blue"}]}
+            ],
             "variants": [
-                {"id": str(v1.id), "variant_values": {"1": "Red"}, "base_price": 100000},
+                {"id": str(v1.id), "variant_values": {"color": "red"}, "base_price": 100000},
             ],
         }
         resp = self.client.post(self._url(self.product.id), payload, format="json")
@@ -2550,7 +2567,7 @@ class SaveVariantsTest(APITestCase):
 
     def test_save_variants_updates_variant_options(self):
         """variant_options is persisted on the product"""
-        opts = [{"name": "Color", "order": 1, "values": ["Red"]}]
+        opts = [{"id": "size", "name": "Size", "order": 1, "values": [{"id": "s", "label": "S"}]}]
         payload = {"variant_options": opts, "variants": []}
         self.client.post(self._url(self.product.id), payload, format="json")
         self.product.refresh_from_db()

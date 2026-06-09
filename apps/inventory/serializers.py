@@ -138,15 +138,29 @@ class VariantCreateSerializer(serializers.ModelSerializer):
         }
 
 
+class VariantOptionValueSerializer(serializers.Serializer):
+    id = serializers.CharField()
+    label = serializers.CharField()
+
+
+class VariantOptionSerializer(serializers.Serializer):
+    id = serializers.CharField()
+    name = serializers.CharField()
+    order = serializers.IntegerField(min_value=1)
+    values = VariantOptionValueSerializer(many=True, default=list)
+
+
 class SaveVariantItemSerializer(serializers.Serializer):
     id = serializers.CharField(required=False, allow_blank=True, allow_null=True, default="")
-    variant_values = serializers.DictField(child=serializers.CharField(allow_blank=True), default=dict)
+    variant_values = serializers.DictField(
+        child=serializers.CharField(allow_blank=True), default=dict
+    )
     sku_variant_code = serializers.CharField(required=False, allow_blank=True, default="")
     base_price = serializers.IntegerField(min_value=0, default=0)
 
 
 class SaveVariantsSerializer(serializers.Serializer):
-    variant_options = serializers.ListField(child=serializers.DictField(), default=list)
+    variant_options = VariantOptionSerializer(many=True, default=list)
     variants = SaveVariantItemSerializer(many=True)
 
 
@@ -273,7 +287,19 @@ class SupplierSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Supplier
-        fields = ["id", "company_id", "name", "contact_name", "phone", "country", "notes", "supplier_link", "is_active", "cdate", "udate"]
+        fields = [
+            "id",
+            "company_id",
+            "name",
+            "contact_name",
+            "phone",
+            "country",
+            "notes",
+            "supplier_link",
+            "is_active",
+            "cdate",
+            "udate",
+        ]
         read_only_fields = ["id", "cdate", "udate"]
 
 
@@ -309,7 +335,9 @@ class ProductVariantSupplierSerializer(serializers.ModelSerializer):
             **validated_data,
         )
 
-    def update(self, instance: ProductVariantSupplier, validated_data: dict) -> ProductVariantSupplier:
+    def update(
+        self, instance: ProductVariantSupplier, validated_data: dict
+    ) -> ProductVariantSupplier:
         validated_data.pop("product_variant_id", None)
         validated_data.pop("supplier_id", None)
         for attr, value in validated_data.items():

@@ -116,9 +116,18 @@ class ProductService:
         product.variant_options = variant_options
         product.save(update_fields=["variant_options", "udate"])
 
-        def build_name(variant_values: dict[str, str]) -> str:
-            sorted_keys = sorted(variant_values.keys())
-            parts = [variant_values[k] for k in sorted_keys if variant_values.get(k, "").strip()]
+        def build_name(variant_values: dict[str, str], variant_options: list[dict]) -> str:
+            sorted_opts = sorted(variant_options, key=lambda o: o.get("order", 0))
+            parts: list[str] = []
+            for opt in sorted_opts:
+                val_id = variant_values.get(opt["id"], "").strip()
+                if not val_id:
+                    continue
+                label = next(
+                    (v["label"] for v in opt.get("values", []) if v["id"] == val_id),
+                    val_id,
+                )
+                parts.append(label)
             return " / ".join(parts) if parts else "Default"
 
         incoming_ids: set[str] = set()
@@ -130,7 +139,7 @@ class ProductService:
             variant_values = v_data.get("variant_values", {})
             sku_variant_code = v_data.get("sku_variant_code", "")
             base_price = v_data.get("base_price", 0)
-            name = build_name(variant_values)
+            name = build_name(variant_values, variant_options)
 
             if variant_id:
                 try:
@@ -142,7 +151,15 @@ class ProductService:
                     if sku_variant_code:
                         variant.sku_variant_code = sku_variant_code
                     variant.is_active = True
-                    variant.save(update_fields=["name", "base_price", "sku_variant_code", "is_active", "udate"])
+                    variant.save(
+                        update_fields=[
+                            "name",
+                            "base_price",
+                            "sku_variant_code",
+                            "is_active",
+                            "udate",
+                        ]
+                    )
                     incoming_ids.add(str(variant.id))
                     updated_count += 1
                 except ProductVariant.DoesNotExist:
