@@ -6,10 +6,24 @@ from django.db import transaction
 from apps.inventory.models import (
     Product,
     ProductVariant,
-    ProductVariantMarketplace,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _build_variant_name(variant_values: dict[str, str], variant_options: list[dict]) -> str:
+    sorted_opts = sorted(variant_options, key=lambda o: o.get("order", 0))
+    parts: list[str] = []
+    for opt in sorted_opts:
+        val_id = variant_values.get(opt["id"], "").strip()
+        if not val_id:
+            continue
+        label = next(
+            (v["label"] for v in opt.get("values", []) if v["id"] == val_id),
+            val_id,
+        )
+        parts.append(label)
+    return " / ".join(parts) if parts else "Default"
 
 
 class ProductService:
@@ -28,6 +42,7 @@ class ProductService:
                 category_id=data.get("category_id", ""),
                 name=data.get("name", ""),
                 description=data.get("description", ""),
+                variant_options=data.get("variant_options", []),
                 specifications=data.get("specifications", {}),
                 weight=data.get("weight", 0),
                 length=data.get("length", 0),
@@ -37,72 +52,50 @@ class ProductService:
             for data in data_list
         ]
         created_products = Product.objects.bulk_create(products, batch_size=100)
-
         product_index_map = {i: obj.id for i, obj in enumerate(created_products)}
 
         variant_product_map: list[int] = []
-        listings_data_tupple = []
-        variants = []
-        variant_index = 0
-        for i in range(len(data_list)):
-            data = data_list[i]
+        variants: list[ProductVariant] = []
+        for i, data in enumerate(data_list):
             variants_data = data.pop("variants", [])
+            variant_options_data = data.get("variant_options", [])
             for variant_data in variants_data:
-                for listing_data in variant_data.get("marketplace_listings", []):
-                    listings_data_tupple.append((variant_index, listing_data))
-
+                variant_values = variant_data.get("variant_values", {})
                 variants.append(
                     ProductVariant(
                         product_id=product_index_map[i],
                         company_id=company_id,
-                        name=variant_data.get("name", ""),
+                        name=_build_variant_name(variant_values, variant_options_data),
                         sku_variant_code=variant_data.get("sku_variant_code", ""),
-                        variant_values=variant_data.get("variant_values", {}),
+                        variant_values=variant_values,
                         base_price=variant_data.get("base_price", 0),
                     )
                 )
                 variant_product_map.append(i)
-                variant_index += 1
 
         created_variants = ProductVariant.objects.bulk_create(variants, batch_size=100)
-        variant_index_map = {i: obj.id for i, obj in enumerate(created_variants)}
-        create_listing_data = []
-        for i, listing_data in listings_data_tupple:
-            create_listing_data.append(
-                ProductVariantMarketplace(
-                    product_variant_id=variant_index_map[i],
-                    company_id=company_id,
-                    marketplace_id=listing_data["marketplace_id"],
-                    selling_price=listing_data["selling_price"],
-                    discounted_price=listing_data.get("discounted_price"),
-                )
-            )
-        ProductVariantMarketplace.objects.bulk_create(create_listing_data, batch_size=100)
 
         created_variants_by_product: dict[int, list[ProductVariant]] = {
             i: [] for i in range(len(data_list))
         }
         for j, variant in enumerate(created_variants):
-            product_idx = variant_product_map[j]
-            created_variants_by_product[product_idx].append(variant)
+            created_variants_by_product[variant_product_map[j]].append(variant)
 
-        result = []
-        for i, product in enumerate(created_products):
-            result.append(
-                {
-                    "id": str(product.id),
-                    "name": product.name,
-                    "variants": [
-                        {
-                            "id": str(v.id),
-                            "name": v.name,
-                            "sku_variant_code": v.sku_variant_code,
-                        }
-                        for v in created_variants_by_product[i]
-                    ],
-                }
-            )
-        return result
+        return [
+            {
+                "id": str(product.id),
+                "name": product.name,
+                "variants": [
+                    {
+                        "id": str(v.id),
+                        "name": v.name,
+                        "sku_variant_code": v.sku_variant_code,
+                    }
+                    for v in created_variants_by_product[i]
+                ],
+            }
+            for i, product in enumerate(created_products)
+        ]
 
     @transaction.atomic
     def save_variants(
@@ -116,20 +109,6 @@ class ProductService:
         product.variant_options = variant_options
         product.save(update_fields=["variant_options", "udate"])
 
-        def build_name(variant_values: dict[str, str], variant_options: list[dict]) -> str:
-            sorted_opts = sorted(variant_options, key=lambda o: o.get("order", 0))
-            parts: list[str] = []
-            for opt in sorted_opts:
-                val_id = variant_values.get(opt["id"], "").strip()
-                if not val_id:
-                    continue
-                label = next(
-                    (v["label"] for v in opt.get("values", []) if v["id"] == val_id),
-                    val_id,
-                )
-                parts.append(label)
-            return " / ".join(parts) if parts else "Default"
-
         incoming_ids: set[str] = set()
         created_count = 0
         updated_count = 0
@@ -139,7 +118,7 @@ class ProductService:
             variant_values = v_data.get("variant_values", {})
             sku_variant_code = v_data.get("sku_variant_code", "")
             base_price = v_data.get("base_price", 0)
-            name = build_name(variant_values, variant_options)
+            name = _build_variant_name(variant_values, variant_options)
 
             if variant_id:
                 try:

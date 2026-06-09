@@ -13,7 +13,7 @@ from apps.inventory.models import (
     Supplier,
     Warehouse,
 )
-from core.models import Company, Marketplace
+from core.models import Company
 
 
 class CategorySerializer(serializers.ModelSerializer):
@@ -108,36 +108,6 @@ class ProductSerializer(serializers.ModelSerializer):
         ]
 
 
-class VariantMarketplaceCreateSerializer(serializers.ModelSerializer):
-    marketplace_id = serializers.CharField(write_only=True)
-
-    class Meta:
-        model = ProductVariantMarketplace
-        fields = ["marketplace_id", "selling_price", "discounted_price"]
-
-    def validate_marketplace_id(self, value: Any) -> Any:
-        if not Marketplace.objects.filter(id=value).exists():
-            raise serializers.ValidationError("Marketplace not found")
-        return value
-
-
-class VariantCreateSerializer(serializers.ModelSerializer):
-    marketplace_listings = VariantMarketplaceCreateSerializer(many=True)
-
-    class Meta:
-        model = ProductVariant
-        fields = [
-            "name",
-            "sku_variant_code",
-            "variant_values",
-            "base_price",
-            "marketplace_listings",
-        ]
-        extra_kwargs = {
-            "sku_variant_code": {"required": False, "allow_blank": True, "default": ""},
-        }
-
-
 class VariantOptionValueSerializer(serializers.Serializer):
     id = serializers.CharField()
     label = serializers.CharField()
@@ -170,7 +140,8 @@ class ProductCreateSerializer(serializers.ModelSerializer):
     master_category_key = serializers.CharField(
         source="category.master_category_key", read_only=True
     )
-    variants = VariantCreateSerializer(many=True, required=False, default=list)
+    variant_options = VariantOptionSerializer(many=True, required=False, default=list)
+    variants = SaveVariantItemSerializer(many=True, required=False, default=list)
     description = serializers.CharField(required=True, min_length=25, max_length=5000)
 
     class Meta:

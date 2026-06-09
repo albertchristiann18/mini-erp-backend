@@ -27,14 +27,13 @@ from apps.inventory.models import (
     ProductCogs,
     ProductPhoto,
     ProductVariant,
-    ProductVariantMarketplace,
     ProductVariantWarehouse,
     StockMovement,
 )
 from apps.inventory.services.inventory_service import InventoryService
 from apps.purchasing.factories import PurchaseOrderFactory
 from apps.purchasing.models import PurchaseOrder
-from core.factories import CompanyFactory, MarketplaceFactory, WarehouseFactory
+from core.factories import CompanyFactory, WarehouseFactory
 from core.permissions import IsStaffOrReadOnly as StaffPerm
 
 _real_staff_perm = StaffPerm.has_permission
@@ -44,7 +43,6 @@ class InventoryAPITest(APITestCase):
     def setUp(self):
         self.company = CompanyFactory()
         self.category = CategoryFactory(company=self.company)
-        self.marketplace = MarketplaceFactory()
         self.base_payload = [
             {
                 "company_id": str(self.company.id),
@@ -67,29 +65,12 @@ class InventoryAPITest(APITestCase):
                 "height": 3,
                 "variants": [
                     {
-                        "name": "Batik Premium - Navy - L",
-                        # "sku_variant_code": "1",
                         "variant_values": {"warna": "navy", "size": "l"},
                         "base_price": 180000,
-                        "marketplace_listings": [
-                            {
-                                "marketplace_id": str(self.marketplace.id),
-                                "selling_price": 210000,
-                                "discounted_price": 195000,
-                            }
-                        ],
                     },
                     {
-                        "name": "Batik Premium - Navy - XL",
-                        # "sku_variant_code": "2",
                         "variant_values": {"warna": "navy", "size": "xl"},
                         "base_price": 185000,
-                        "marketplace_listings": [
-                            {
-                                "marketplace_id": str(self.marketplace.id),
-                                "selling_price": 215000,
-                            }
-                        ],
                     },
                 ],
             }
@@ -131,29 +112,12 @@ class InventoryAPITest(APITestCase):
                 "height": 3,
                 "variants": [
                     {
-                        "name": "Batik Premium B - Blue - L",
-                        # "sku_variant_code": "1",
                         "variant_values": {"warna": "blue", "size": "l"},
                         "base_price": 180000,
-                        "marketplace_listings": [
-                            {
-                                "marketplace_id": str(self.marketplace.id),
-                                "selling_price": 210000,
-                                "discounted_price": 195000,
-                            }
-                        ],
                     },
                     {
-                        "name": "Batik Premium B - Blue - XL",
-                        # "sku_variant_code": "2",
                         "variant_values": {"warna": "blue", "size": "xl"},
                         "base_price": 185000,
-                        "marketplace_listings": [
-                            {
-                                "marketplace_id": str(self.marketplace.id),
-                                "selling_price": 215000,
-                            }
-                        ],
                     },
                 ],
             }
@@ -165,10 +129,6 @@ class InventoryAPITest(APITestCase):
         # 1. Verify Database Counts (The most important bulk check)
         self.assertEqual(Product.objects.count(), 2)
         self.assertEqual(ProductVariant.objects.count(), 4)
-        # Verify 4 listings (2 per product in your payload)
-        from apps.inventory.models import ProductVariantMarketplace
-
-        self.assertEqual(ProductVariantMarketplace.objects.count(), 4)
 
         # 2. Verify First Product Relationship
         product_a = Product.objects.get(name="Kemeja Batik Pria Premium")
@@ -190,7 +150,7 @@ class InventoryAPITest(APITestCase):
 
     def test_create_multiple_products_with_nested_variants_and_listings(self):
         """
-        Tests that 2 products with multiple variants and listings
+        Tests that 2 products with multiple variants
         are correctly mapped and saved in bulk.
         """
         # setup_data would be a fixture or dictionary containing your payload
@@ -216,29 +176,12 @@ class InventoryAPITest(APITestCase):
                 "height": 3,
                 "variants": [
                     {
-                        "name": "Batik Premium B - Blue - L",
-                        # "sku_variant_code": "1",
                         "variant_values": {"warna": "blue", "size": "l"},
                         "base_price": 180000,
-                        "marketplace_listings": [
-                            {
-                                "marketplace_id": str(self.marketplace.id),
-                                "selling_price": 210000,
-                                "discounted_price": 195000,
-                            }
-                        ],
                     },
                     {
-                        "name": "Batik Premium B - Blue - XL",
-                        # "sku_variant_code": "2",
                         "variant_values": {"warna": "blue", "size": "xl"},
                         "base_price": 185000,
-                        "marketplace_listings": [
-                            {
-                                "marketplace_id": str(self.marketplace.id),
-                                "selling_price": 215000,
-                            }
-                        ],
                     },
                 ],
             }
@@ -249,7 +192,6 @@ class InventoryAPITest(APITestCase):
         # 2. Verify Database Integrity (Counts)
         assert Product.objects.count() == 2
         assert ProductVariant.objects.count() == 4
-        assert ProductVariantMarketplace.objects.count() == 4
 
         # 3. Verify Specific Mapping (Global Indexing Check)
         # Fetch the second product to ensure it didn't get Product A's variants
@@ -261,22 +203,6 @@ class InventoryAPITest(APITestCase):
             # Verify the variant names match the 'Blue' logic in payload B
             assert "Blue" in variant.name
 
-            # Verify Marketplace Listings are linked to these specific variants
-            listings = ProductVariantMarketplace.objects.filter(product_variant=variant)
-            assert listings.exists()
-            assert listings.count() == 1
-
-    def test_atomic_rollback_on_failure(self):
-        """
-        Tests that if data is partially corrupt (e.g., missing marketplace_id),
-        NO products are created (Transaction Rollback).
-        """
-        payload = self.base_payload
-        payload[0]["variants"][1]["marketplace_listings"][0]["marketplace_id"] = None
-
-        self.client.post("/product/", payload, format="json")
-        assert Product.objects.count() == 0
-
     def test_create_product_returns_id_and_variant_ids(self):
         """POST /product/ returns {id, name, variants: [{id, name, sku_variant_code}]}"""
         payload = {
@@ -284,12 +210,14 @@ class InventoryAPITest(APITestCase):
             "category_id": str(self.category.id),
             "name": "Test Product Quick",
             "description": "Test Product Quick (created via PO - update description later)",
+            "variant_options": [
+                {"id": "color", "name": "Color", "order": 1, "values": [{"id": "blue", "label": "Blue"}]},
+            ],
             "variants": [
                 {
-                    "name": "Blue / M",
+                    "variant_values": {"color": "blue"},
                     "sku_variant_code": "TSH-001-BLU-M",
                     "base_price": 50000,
-                    "marketplace_listings": [],
                 }
             ],
         }
@@ -298,7 +226,7 @@ class InventoryAPITest(APITestCase):
         self.assertIn("id", response.data)
         self.assertEqual(len(response.data["variants"]), 1)
         self.assertEqual(response.data["variants"][0]["sku_variant_code"], "TSH-001-BLU-M")
-        self.assertEqual(response.data["variants"][0]["name"], "Blue / M")
+        self.assertEqual(response.data["variants"][0]["name"], "Blue")
 
     def test_create_product_sets_sku_variant_code_in_db(self):
         """sku_variant_code from request is saved to the ProductVariant record."""
@@ -309,10 +237,9 @@ class InventoryAPITest(APITestCase):
             "description": "SKU Test Product (created via PO - update description later)",
             "variants": [
                 {
-                    "name": "Red / L",
+                    "variant_values": {"color": "red"},
                     "sku_variant_code": "SKU-001-RED-L",
                     "base_price": 75000,
-                    "marketplace_listings": [],
                 }
             ],
         }
