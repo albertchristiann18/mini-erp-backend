@@ -35,7 +35,7 @@ from apps.inventory.serializers import (
     WarehouseSerializer,
 )
 from apps.inventory.services import product_service
-from apps.inventory.services.bulk_inventory_service import BulkInventoryService
+from apps.inventory.services.inventory_service import InventoryService
 from core.permissions import IsStaffOrReadOnly
 
 
@@ -299,7 +299,7 @@ class InventoryBulkViewSet(viewsets.ViewSet):
         updates = request.data
         if not isinstance(updates, list):
             return Response({"error": "Expected JSON array"}, status=400)
-        result = BulkInventoryService.bulk_update(updates)
+        result = InventoryService().adjust_stock_batch(updates)
         return Response(result, status=200)
 
     @action(detail=False, methods=["post"], url_path="adjust")
@@ -320,7 +320,7 @@ class InventoryBulkViewSet(viewsets.ViewSet):
         if adj_type not in ("add", "min", "set"):
             return Response({"error": "type must be add, min, or set"}, status=400)
 
-        result = BulkInventoryService.bulk_update(
+        result = InventoryService().adjust_stock_batch(
             [
                 {
                     "variant_id": variant_id,
