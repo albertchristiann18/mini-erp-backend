@@ -61,6 +61,7 @@ class VariantSerializer(serializers.ModelSerializer):
     class Meta:
         model = ProductVariant
         fields = [
+            "id",
             "name",
             "sku_variant_code",
             "variant_values",
@@ -137,13 +138,25 @@ class VariantCreateSerializer(serializers.ModelSerializer):
         }
 
 
+class SaveVariantItemSerializer(serializers.Serializer):
+    id = serializers.CharField(required=False, allow_blank=True, allow_null=True, default="")
+    variant_values = serializers.DictField(child=serializers.CharField(allow_blank=True), default=dict)
+    sku_variant_code = serializers.CharField(required=False, allow_blank=True, default="")
+    base_price = serializers.IntegerField(min_value=0, default=0)
+
+
+class SaveVariantsSerializer(serializers.Serializer):
+    variant_options = serializers.ListField(child=serializers.DictField(), default=list)
+    variants = SaveVariantItemSerializer(many=True)
+
+
 class ProductCreateSerializer(serializers.ModelSerializer):
     company_id = serializers.CharField(write_only=True)
     category_id = serializers.CharField(write_only=True)
     master_category_key = serializers.CharField(
         source="category.master_category_key", read_only=True
     )
-    variants = VariantCreateSerializer(many=True)
+    variants = VariantCreateSerializer(many=True, required=False, default=list)
     description = serializers.CharField(required=True, min_length=25, max_length=5000)
 
     class Meta:

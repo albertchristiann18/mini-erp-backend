@@ -2466,6 +2466,110 @@ class TestProductVariantSupplierCRUD(APITestCase):
         self.assertEqual(response.data["supplier_link"], "https://example.com/new-link")
 
 
+class SaveVariantsTest(APITestCase):
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(company=self.company, category=self.category, description="A" * 25)
+        self.user = User.objects.create_user(
+            username="savevars_user", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def _url(self, pk):
+        return f"/product/{pk}/save_variants/"
+
+    def test_save_variants_creates_new_variants(self):
+        """POST save_variants with no id → creates new variants, returns created=2"""
+        payload = {
+            "variant_options": [{"name": "Color", "order": 1, "values": ["Red", "Blue"]}],
+            "variants": [
+                {"variant_values": {"1": "Red"}, "sku_variant_code": "", "base_price": 100000},
+                {"variant_values": {"1": "Blue"}, "sku_variant_code": "", "base_price": 110000},
+            ],
+        }
+        resp = self.client.post(self._url(self.product.id), payload, format="json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["created"], 2)
+        self.assertEqual(resp.data["updated"], 0)
+        self.assertEqual(ProductVariant.objects.filter(product=self.product, is_active=True).count(), 2)
+
+    def test_save_variants_updates_existing_variant(self):
+        """POST save_variants with existing variant id → updates base_price"""
+        variant = ProductVariantFactory(product=self.product, company=self.company, variant_values={"1": "Red"})
+        payload = {
+            "variant_options": [],
+            "variants": [
+                {"id": str(variant.id), "variant_values": {"1": "Red"}, "base_price": 999000},
+            ],
+        }
+        resp = self.client.post(self._url(self.product.id), payload, format="json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["updated"], 1)
+        variant.refresh_from_db()
+        self.assertEqual(variant.base_price, 999000)
+
+    def test_save_variants_deactivates_stale_without_stock(self):
+        """Variants not in payload with no stock → deactivated"""
+        v1 = ProductVariantFactory(product=self.product, company=self.company, variant_values={"1": "Red"})
+        v2 = ProductVariantFactory(product=self.product, company=self.company, variant_values={"1": "Blue"})
+        payload = {
+            "variant_options": [],
+            "variants": [
+                {"id": str(v1.id), "variant_values": {"1": "Red"}, "base_price": 100000},
+            ],
+        }
+        resp = self.client.post(self._url(self.product.id), payload, format="json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(str(v2.id), resp.data["deactivated"])
+        v2.refresh_from_db()
+        self.assertFalse(v2.is_active)
+
+    def test_save_variants_keeps_stale_with_stock(self):
+        """Variants not in payload WITH stock → kept active, in kept_with_stock"""
+        v1 = ProductVariantFactory(product=self.product, company=self.company, variant_values={"1": "Red"})
+        v2 = ProductVariantFactory(
+            product=self.product, company=self.company,
+            variant_values={"1": "Blue"},
+        )
+        ProductVariant.objects.filter(id=v2.id).update(total_incoming_qty=10, total_available_qty=5)
+        v2.refresh_from_db()
+        payload = {
+            "variant_options": [],
+            "variants": [
+                {"id": str(v1.id), "variant_values": {"1": "Red"}, "base_price": 100000},
+            ],
+        }
+        resp = self.client.post(self._url(self.product.id), payload, format="json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(str(v2.id), resp.data["kept_with_stock"])
+        v2.refresh_from_db()
+        self.assertTrue(v2.is_active)
+
+    def test_save_variants_updates_variant_options(self):
+        """variant_options is persisted on the product"""
+        opts = [{"name": "Color", "order": 1, "values": ["Red"]}]
+        payload = {"variant_options": opts, "variants": []}
+        self.client.post(self._url(self.product.id), payload, format="json")
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.variant_options, opts)
+
+    def test_create_product_without_variants(self):
+        """POST /product/ with variants=[] returns 201"""
+        payload = {
+            "company_id": str(self.company.id),
+            "category_id": str(self.category.id),
+            "name": "No Variant Product",
+            "description": "A" * 25,
+            "variants": [],
+        }
+        resp = self.client.post("/product/", payload, format="json")
+        self.assertEqual(resp.status_code, 201)
+        self.assertTrue(Product.objects.filter(name="No Variant Product").exists())
+
+
 class TestVariantFilterBySupplier(APITestCase):
     """Tests for filtering variants by supplier"""
 

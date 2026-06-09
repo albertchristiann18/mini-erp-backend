@@ -161,6 +161,24 @@ class ProductViewSet(viewsets.ModelViewSet):
         result = ProductService().update_variant_base_price(str(variant.id), base_price)
         return Response(result, status=status.HTTP_200_OK)
 
+    @action(detail=True, methods=["post"], url_path="save_variants")
+    def save_variants(self, request: Request, pk: str | None = None) -> Response:
+        product = self.get_object()
+        from apps.inventory.serializers import SaveVariantsSerializer
+        from apps.inventory.services.product_service import ProductService
+
+        serializer = SaveVariantsSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        result = ProductService().save_variants(
+            product_id=str(product.id),
+            company_id=str(product.company_id),
+            variant_options=serializer.validated_data["variant_options"],
+            variants=list(serializer.validated_data["variants"]),
+        )
+        return Response(result, status=status.HTTP_200_OK)
+
     def create(self, request: Request, *args: Any, **kwargs: Any) -> Response:
         is_many = isinstance(request.data, list)
         serializer = self.get_serializer(data=request.data, many=is_many)

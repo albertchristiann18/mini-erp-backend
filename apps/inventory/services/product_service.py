@@ -1,4 +1,5 @@
 import logging
+from typing import Any
 
 from django.db import transaction
 
@@ -45,7 +46,7 @@ class ProductService:
         variant_index = 0
         for i in range(len(data_list)):
             data = data_list[i]
-            variants_data = data.pop("variants")
+            variants_data = data.pop("variants", [])
             for variant_data in variants_data:
                 for listing_data in variant_data.get("marketplace_listings", []):
                     listings_data_tupple.append((variant_index, listing_data))
@@ -102,6 +103,92 @@ class ProductService:
                 }
             )
         return result
+
+    @transaction.atomic
+    def save_variants(
+        self,
+        product_id: str,
+        company_id: str,
+        variant_options: list[dict],
+        variants: list[dict],
+    ) -> dict[str, Any]:
+        product = Product.objects.select_for_update().get(id=product_id, company_id=company_id)
+        product.variant_options = variant_options
+        product.save(update_fields=["variant_options", "udate"])
+
+        def build_name(variant_values: dict[str, str]) -> str:
+            sorted_keys = sorted(variant_values.keys())
+            parts = [variant_values[k] for k in sorted_keys if variant_values.get(k, "").strip()]
+            return " / ".join(parts) if parts else "Default"
+
+        incoming_ids: set[str] = set()
+        created_count = 0
+        updated_count = 0
+
+        for v_data in variants:
+            variant_id = (v_data.get("id") or "").strip()
+            variant_values = v_data.get("variant_values", {})
+            sku_variant_code = v_data.get("sku_variant_code", "")
+            base_price = v_data.get("base_price", 0)
+            name = build_name(variant_values)
+
+            if variant_id:
+                try:
+                    variant = ProductVariant.objects.select_for_update().get(
+                        id=variant_id, product_id=product_id, company_id=company_id
+                    )
+                    variant.name = name
+                    variant.base_price = base_price
+                    if sku_variant_code:
+                        variant.sku_variant_code = sku_variant_code
+                    variant.is_active = True
+                    variant.save(update_fields=["name", "base_price", "sku_variant_code", "is_active", "udate"])
+                    incoming_ids.add(str(variant.id))
+                    updated_count += 1
+                except ProductVariant.DoesNotExist:
+                    new_variant = ProductVariant.objects.create(
+                        product_id=product_id,
+                        company_id=company_id,
+                        name=name,
+                        variant_values=variant_values,
+                        sku_variant_code=sku_variant_code,
+                        base_price=base_price,
+                    )
+                    incoming_ids.add(str(new_variant.id))
+                    created_count += 1
+            else:
+                new_variant = ProductVariant.objects.create(
+                    product_id=product_id,
+                    company_id=company_id,
+                    name=name,
+                    variant_values=variant_values,
+                    sku_variant_code=sku_variant_code,
+                    base_price=base_price,
+                )
+                incoming_ids.add(str(new_variant.id))
+                created_count += 1
+
+        stale_qs = ProductVariant.objects.filter(
+            product_id=product_id, company_id=company_id, is_active=True
+        ).exclude(id__in=list(incoming_ids))
+
+        deactivated: list[str] = []
+        kept_with_stock: list[str] = []
+        for v in stale_qs.select_for_update():
+            if v.total_incoming_qty == 0 and v.total_available_qty == 0:
+                v.is_active = False
+                v.save(update_fields=["is_active", "udate"])
+                deactivated.append(str(v.id))
+            else:
+                kept_with_stock.append(str(v.id))
+
+        return {
+            "product_id": str(product.id),
+            "created": created_count,
+            "updated": updated_count,
+            "deactivated": deactivated,
+            "kept_with_stock": kept_with_stock,
+        }
 
     def _trigger_shopee_product_update(self, product_id: str) -> None:
         from apps.inventory.models import Product
