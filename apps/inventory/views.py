@@ -19,7 +19,6 @@ from apps.inventory.models import (
     ProductPhoto,
     ProductSupplier,
     ProductVariant,
-    ProductVariantSupplier,
     StockMovement,
     Supplier,
     Warehouse,
@@ -31,7 +30,6 @@ from apps.inventory.serializers import (
     ProductSerializer,
     ProductSupplierSerializer,
     ProductVariantStockSerializer,
-    ProductVariantSupplierSerializer,
     StockMovementSerializer,
     SupplierSerializer,
     WarehouseSerializer,
@@ -549,23 +547,6 @@ class SupplierViewSet(viewsets.ModelViewSet):
         if search:
             qs = qs.filter(name__icontains=search)
         return qs.order_by("name")
-
-
-class ProductVariantSupplierViewSet(viewsets.ModelViewSet):
-    serializer_class = ProductVariantSupplierSerializer
-    permission_classes = [IsAuthenticated]
-
-    def get_queryset(self) -> QuerySet["ProductVariantSupplier"]:
-        qs = ProductVariantSupplier.objects.filter(
-            company=self.request.user.profile.company
-        ).select_related("supplier", "product_variant")
-        variant_id = self.request.query_params.get("product_variant_id")
-        supplier_id = self.request.query_params.get("supplier_id")
-        if variant_id:
-            qs = qs.filter(product_variant__id=variant_id)
-        if supplier_id:
-            qs = qs.filter(supplier__id=supplier_id)
-        return qs
 
 
 class ProductSupplierViewSet(viewsets.ModelViewSet):

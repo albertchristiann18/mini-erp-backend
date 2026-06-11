@@ -9,7 +9,6 @@ from apps.inventory.models import (
     ProductSupplier,
     ProductVariant,
     ProductVariantMarketplace,
-    ProductVariantSupplier,
     ProductVariantWarehouse,
     StockMovement,
     Supplier,
@@ -126,18 +125,6 @@ class SupplierFactory(factory.django.DjangoModelFactory):
     country = "China"
     is_active = True
     company = factory.SubFactory(CompanyFactory)
-
-
-class ProductVariantSupplierFactory(factory.django.DjangoModelFactory):
-    class Meta:
-        model = ProductVariantSupplier
-
-    product_variant = factory.SubFactory(ProductVariantFactory)
-    supplier = factory.SubFactory(SupplierFactory)
-    company = factory.LazyAttribute(lambda o: o.product_variant.company)
-    supplier_link = None
-    is_primary = False
-    notes = None
 
 
 class ProductSupplierFactory(factory.django.DjangoModelFactory):

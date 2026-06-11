@@ -9,7 +9,6 @@ from apps.inventory.models import (
     ProductSupplier,
     ProductVariant,
     ProductVariantMarketplace,
-    ProductVariantSupplier,
     StockMovement,
     Supplier,
     Warehouse,
@@ -268,49 +267,6 @@ class SupplierSerializer(serializers.ModelSerializer):
             "udate",
         ]
         read_only_fields = ["id", "cdate", "udate"]
-
-
-class ProductVariantSupplierSerializer(serializers.ModelSerializer):
-    supplier_name = serializers.CharField(source="supplier.name", read_only=True)
-    product_variant_id = serializers.CharField(write_only=True)
-    supplier_id = serializers.CharField(write_only=True)
-
-    class Meta:
-        model = ProductVariantSupplier
-        fields = [
-            "id",
-            "product_variant_id",
-            "supplier_id",
-            "supplier_name",
-            "supplier_link",
-            "is_primary",
-            "notes",
-            "cdate",
-            "udate",
-        ]
-        read_only_fields = ["id", "supplier_name", "cdate", "udate"]
-
-    def create(self, validated_data: dict) -> ProductVariantSupplier:
-        from apps.inventory.models import ProductVariant, Supplier
-
-        product_variant = ProductVariant.objects.get(id=validated_data.pop("product_variant_id"))
-        supplier = Supplier.objects.get(id=validated_data.pop("supplier_id"))
-        return ProductVariantSupplier.objects.create(
-            product_variant=product_variant,
-            supplier=supplier,
-            company=product_variant.company,
-            **validated_data,
-        )
-
-    def update(
-        self, instance: ProductVariantSupplier, validated_data: dict
-    ) -> ProductVariantSupplier:
-        validated_data.pop("product_variant_id", None)
-        validated_data.pop("supplier_id", None)
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
-        instance.save()
-        return instance
 
 
 class ProductSupplierSerializer(serializers.ModelSerializer):
