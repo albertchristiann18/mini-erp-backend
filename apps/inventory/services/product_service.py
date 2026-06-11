@@ -11,19 +11,8 @@ from apps.inventory.models import (
 logger = logging.getLogger(__name__)
 
 
-def _build_variant_name(variant_values: dict[str, str], variant_options: list[dict]) -> str:
-    sorted_opts = sorted(variant_options, key=lambda o: o.get("order", 0))
-    parts: list[str] = []
-    for opt in sorted_opts:
-        val_id = variant_values.get(opt["id"], "").strip()
-        if not val_id:
-            continue
-        label = next(
-            (v["label"] for v in opt.get("values", []) if v["id"] == val_id),
-            val_id,
-        )
-        parts.append(label)
-    return " / ".join(parts) if parts else "Default"
+def _build_variant_name(variant_values: dict[str, str]) -> str:
+    return " / ".join(v for v in variant_values.values() if v) or "Default"
 
 
 class ProductService:
@@ -58,14 +47,13 @@ class ProductService:
         variants: list[ProductVariant] = []
         for i, data in enumerate(data_list):
             variants_data = data.pop("variants", [])
-            variant_options_data = data.get("variant_options", [])
             for variant_data in variants_data:
                 variant_values = variant_data.get("variant_values", {})
                 variants.append(
                     ProductVariant(
                         product_id=product_index_map[i],
                         company_id=company_id,
-                        name=_build_variant_name(variant_values, variant_options_data),
+                        name=_build_variant_name(variant_values),
                         sku_variant_code=variant_data.get("sku_variant_code", ""),
                         variant_values=variant_values,
                         base_price=variant_data.get("base_price", 0),
@@ -102,7 +90,7 @@ class ProductService:
         self,
         product_id: str,
         company_id: str,
-        variant_options: list[dict],
+        variant_options: dict[str, list[str]],
         variants: list[dict],
     ) -> dict[str, Any]:
         product = Product.objects.select_for_update().get(id=product_id, company_id=company_id)
@@ -118,7 +106,7 @@ class ProductService:
             variant_values = v_data.get("variant_values", {})
             sku_variant_code = v_data.get("sku_variant_code", "")
             base_price = v_data.get("base_price", 0)
-            name = _build_variant_name(variant_values, variant_options)
+            name = _build_variant_name(variant_values)
 
             if variant_id:
                 try:

@@ -6,6 +6,7 @@ from apps.inventory.models import (
     Category,
     Product,
     ProductCogs,
+    ProductSupplier,
     ProductVariant,
     ProductVariantMarketplace,
     ProductVariantSupplier,
@@ -37,6 +38,7 @@ class ProductVariantFactory(factory.django.DjangoModelFactory):
     product = factory.SubFactory(ProductFactory)  # type: ignore[no-untyped-call]
     company = factory.LazyAttribute(lambda o: o.product.company if o.product else None)  # type: ignore[attr-defined,no-untyped-call]
     variant_values = {}
+    sku_variant_code = factory.Sequence(lambda n: f"SKU-VAR-{n:04d}")
 
 
 class CategoryFactory(factory.django.DjangoModelFactory):
@@ -136,3 +138,13 @@ class ProductVariantSupplierFactory(factory.django.DjangoModelFactory):
     supplier_link = None
     is_primary = False
     notes = None
+
+
+class ProductSupplierFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = ProductSupplier
+
+    product = factory.SubFactory(ProductFactory)
+    supplier = factory.SubFactory(SupplierFactory)
+    company = factory.LazyAttribute(lambda o: o.product.company)
+    supplier_link = None

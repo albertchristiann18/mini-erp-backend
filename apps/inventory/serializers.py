@@ -6,6 +6,7 @@ from apps.inventory.models import (
     Category,
     Product,
     ProductPhoto,
+    ProductSupplier,
     ProductVariant,
     ProductVariantMarketplace,
     ProductVariantSupplier,
@@ -66,6 +67,9 @@ class VariantSerializer(serializers.ModelSerializer):
             "sku_variant_code",
             "variant_values",
             "base_price",
+            "current_cogs",
+            "total_available_qty",
+            "total_incoming_qty",
             "marketplace_listings",
             "is_active",
         ]
@@ -101,23 +105,10 @@ class ProductSerializer(serializers.ModelSerializer):
             "width",
             "height",
             "is_active",
-            "supplier_link",
             "master_category_key",
             "variants",
             "photos",
         ]
-
-
-class VariantOptionValueSerializer(serializers.Serializer):
-    id = serializers.CharField()
-    label = serializers.CharField()
-
-
-class VariantOptionSerializer(serializers.Serializer):
-    id = serializers.CharField()
-    name = serializers.CharField()
-    order = serializers.IntegerField(min_value=1)
-    values = VariantOptionValueSerializer(many=True, default=list)
 
 
 class SaveVariantItemSerializer(serializers.Serializer):
@@ -130,7 +121,9 @@ class SaveVariantItemSerializer(serializers.Serializer):
 
 
 class SaveVariantsSerializer(serializers.Serializer):
-    variant_options = VariantOptionSerializer(many=True, default=list)
+    variant_options = serializers.DictField(
+        child=serializers.ListField(child=serializers.CharField()), default=dict
+    )
     variants = SaveVariantItemSerializer(many=True)
 
 
@@ -140,7 +133,9 @@ class ProductCreateSerializer(serializers.ModelSerializer):
     master_category_key = serializers.CharField(
         source="category.master_category_key", read_only=True
     )
-    variant_options = VariantOptionSerializer(many=True, required=False, default=list)
+    variant_options = serializers.DictField(
+        child=serializers.ListField(child=serializers.CharField()), required=False, default=dict
+    )
     variants = SaveVariantItemSerializer(many=True, required=False, default=list)
     description = serializers.CharField(required=True, min_length=25, max_length=5000)
 
@@ -179,9 +174,7 @@ class ProductVariantStockSerializer(serializers.ModelSerializer):
     product_sku = serializers.CharField(source="product.sku_code", read_only=True)
     category_name = serializers.CharField(source="product.category.name", read_only=True)
     physical_qty = serializers.SerializerMethodField()
-    product_supplier_link = serializers.CharField(
-        source="product.supplier_link", read_only=True, allow_null=True
-    )
+    product_supplier_link = serializers.SerializerMethodField()
     product_photo_url = serializers.SerializerMethodField()
 
     class Meta:
@@ -201,6 +194,9 @@ class ProductVariantStockSerializer(serializers.ModelSerializer):
             "product_photo_url",
             "is_active",
         ]
+
+    def get_product_supplier_link(self, obj: ProductVariant) -> str | None:
+        return None
 
     def get_product_photo_url(self, obj: ProductVariant) -> str | None:
         if obj.product.product_photo:
@@ -315,3 +311,26 @@ class ProductVariantSupplierSerializer(serializers.ModelSerializer):
             setattr(instance, attr, value)
         instance.save()
         return instance
+
+
+class ProductSupplierSerializer(serializers.ModelSerializer):
+    supplier_name = serializers.CharField(source="supplier.name", read_only=True)
+    product_id = serializers.CharField(write_only=True)
+    supplier_id = serializers.CharField(write_only=True)
+
+    class Meta:
+        model = ProductSupplier
+        fields = [
+            "id",
+            "product_id",
+            "supplier_id",
+            "supplier_name",
+            "supplier_link",
+            "cdate",
+            "udate",
+        ]
+        read_only_fields = ["id", "cdate", "udate"]
+
+    def create(self, validated_data: dict) -> "ProductSupplier":
+        company = self.context["request"].user.profile.company
+        return ProductSupplier.objects.create(company=company, **validated_data)

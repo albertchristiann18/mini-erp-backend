@@ -18,9 +18,11 @@ from apps.inventory.factories import (
     CategoryFactory,
     ProductCogsFactory,
     ProductFactory,
+    ProductSupplierFactory,
     ProductVariantFactory,
     ProductVariantWarehouseFactory,
     StockMovementFactory,
+    SupplierFactory,
 )
 from apps.inventory.models import (
     Product,
@@ -49,10 +51,7 @@ class InventoryAPITest(APITestCase):
                 "category_id": str(self.category.id),
                 "name": "Kemeja Batik Pria Premium",
                 "description": "Batik Slimfit bahan katun halus, nyaman untuk kerja maupun acara formal.",
-                "variant_options": [
-                    {"id": "warna", "name": "Warna", "order": 1, "values": [{"id": "navy", "label": "Navy"}]},
-                    {"id": "size", "name": "Size", "order": 2, "values": [{"id": "l", "label": "L"}, {"id": "xl", "label": "XL"}]},
-                ],
+                "variant_options": {"warna": ["Navy"], "size": ["L", "XL"]},
                 "specifications": {
                     "Merek": "Tidak ada merek",
                     "Bahan": ["Katun", "Bulu Domba"],
@@ -65,11 +64,11 @@ class InventoryAPITest(APITestCase):
                 "height": 3,
                 "variants": [
                     {
-                        "variant_values": {"warna": "navy", "size": "l"},
+                        "variant_values": {"warna": "Navy", "size": "L"},
                         "base_price": 180000,
                     },
                     {
-                        "variant_values": {"warna": "navy", "size": "xl"},
+                        "variant_values": {"warna": "Navy", "size": "XL"},
                         "base_price": 185000,
                     },
                 ],
@@ -96,10 +95,7 @@ class InventoryAPITest(APITestCase):
                 "category_id": str(self.category.id),
                 "name": "Kemeja Batik Pria Premium B",
                 "description": "Batik Slimfit bahan katun halus, nyaman untuk kerja maupun acara formal.",
-                "variant_options": [
-                    {"id": "warna", "name": "Warna", "order": 1, "values": [{"id": "blue", "label": "Blue"}]},
-                    {"id": "size", "name": "Size", "order": 2, "values": [{"id": "l", "label": "L"}, {"id": "xl", "label": "XL"}]},
-                ],
+                "variant_options": {"warna": ["Blue"], "size": ["L", "XL"]},
                 "specifications": {
                     "Merek": "Tidak ada merek",
                     "Bahan": ["Katun", "Bulu Domba"],
@@ -112,11 +108,11 @@ class InventoryAPITest(APITestCase):
                 "height": 3,
                 "variants": [
                     {
-                        "variant_values": {"warna": "blue", "size": "l"},
+                        "variant_values": {"warna": "Blue", "size": "L"},
                         "base_price": 180000,
                     },
                     {
-                        "variant_values": {"warna": "blue", "size": "xl"},
+                        "variant_values": {"warna": "Blue", "size": "XL"},
                         "base_price": 185000,
                     },
                 ],
@@ -160,10 +156,7 @@ class InventoryAPITest(APITestCase):
                 "category_id": str(self.category.id),
                 "name": "Kemeja Batik Pria Premium B",
                 "description": "Batik Slimfit bahan katun halus, nyaman untuk kerja maupun acara formal.",
-                "variant_options": [
-                    {"id": "warna", "name": "Warna", "order": 1, "values": [{"id": "blue", "label": "Blue"}]},
-                    {"id": "size", "name": "Size", "order": 2, "values": [{"id": "l", "label": "L"}, {"id": "xl", "label": "XL"}]},
-                ],
+                "variant_options": {"warna": ["Blue"], "size": ["L", "XL"]},
                 "specifications": {
                     "Merek": "Tidak ada merek",
                     "Bahan": ["Katun", "Bulu Domba"],
@@ -176,11 +169,11 @@ class InventoryAPITest(APITestCase):
                 "height": 3,
                 "variants": [
                     {
-                        "variant_values": {"warna": "blue", "size": "l"},
+                        "variant_values": {"warna": "Blue", "size": "L"},
                         "base_price": 180000,
                     },
                     {
-                        "variant_values": {"warna": "blue", "size": "xl"},
+                        "variant_values": {"warna": "Blue", "size": "XL"},
                         "base_price": 185000,
                     },
                 ],
@@ -210,12 +203,10 @@ class InventoryAPITest(APITestCase):
             "category_id": str(self.category.id),
             "name": "Test Product Quick",
             "description": "Test Product Quick (created via PO - update description later)",
-            "variant_options": [
-                {"id": "color", "name": "Color", "order": 1, "values": [{"id": "blue", "label": "Blue"}]},
-            ],
+            "variant_options": {"color": ["Blue"]},
             "variants": [
                 {
-                    "variant_values": {"color": "blue"},
+                    "variant_values": {"color": "Blue"},
                     "sku_variant_code": "TSH-001-BLU-M",
                     "base_price": 50000,
                 }
@@ -1469,6 +1460,18 @@ class CompanyScopedViewsTest(APITestCase):
         self.assertIn(str(self.product_a.id), ids)
         self.assertNotIn(str(self.product_b.id), ids)
 
+    def test_product_list_includes_inactive(self):
+        """Inactive products are visible in the list so staff can reactivate them"""
+        inactive = ProductFactory(
+            company=self.company_a, category=self.category_a,
+            is_active=False, description="A" * 25
+        )
+        self.client.force_authenticate(user=self.user_a)
+        resp = self.client.get("/product/")
+        self.assertEqual(resp.status_code, 200)
+        ids = [p["id"] for p in resp.data["results"]]
+        self.assertIn(str(inactive.id), ids)
+
     def test_variant_stock_list_scoped_by_company(self):
         self.client.force_authenticate(user=self.user_a)
         response = self.client.get("/product-variants/")
@@ -2140,37 +2143,13 @@ class UpdateVariantPriceTest(APITestCase):
 
 
 class SupplierLinkTest(TestCase):
-    """Tests for supplier_link field on Product model."""
+    """Tests for product_supplier_link field on ProductVariantStockSerializer."""
 
     def setUp(self):
         self.company = CompanyFactory()
         self.category = CategoryFactory(company=self.company)
 
-    def test_product_supplier_link_field_exists(self):
-        product = ProductFactory(
-            company=self.company,
-            category=self.category,
-            supplier_link="https://example.com/supplier/product-123",
-        )
-        product.refresh_from_db()
-        self.assertEqual(product.supplier_link, "https://example.com/supplier/product-123")
-
     def test_variant_stock_serializer_includes_product_supplier_link(self):
-        from apps.inventory.serializers import ProductVariantStockSerializer
-
-        product = ProductFactory(
-            company=self.company,
-            category=self.category,
-            supplier_link="https://example.com/supplier/product-456",
-        )
-        variant = ProductVariantFactory(product=product)
-        serializer = ProductVariantStockSerializer(variant)
-        self.assertIn("product_supplier_link", serializer.data)
-        self.assertEqual(
-            serializer.data["product_supplier_link"], "https://example.com/supplier/product-456"
-        )
-
-    def test_variant_stock_serializer_supplier_link_null_when_not_set(self):
         from apps.inventory.serializers import ProductVariantStockSerializer
 
         product = ProductFactory(
@@ -2417,12 +2396,10 @@ class SaveVariantsTest(APITestCase):
     def test_save_variants_creates_new_variants(self):
         """POST save_variants with no id → creates new variants, returns created=2"""
         payload = {
-            "variant_options": [
-                {"id": "color", "name": "Color", "order": 1, "values": [{"id": "red", "label": "Red"}, {"id": "blue", "label": "Blue"}]}
-            ],
+            "variant_options": {"color": ["Red", "Blue"]},
             "variants": [
-                {"variant_values": {"color": "red"}, "sku_variant_code": "", "base_price": 100000},
-                {"variant_values": {"color": "blue"}, "sku_variant_code": "", "base_price": 110000},
+                {"variant_values": {"color": "Red"}, "sku_variant_code": "", "base_price": 100000},
+                {"variant_values": {"color": "Blue"}, "sku_variant_code": "", "base_price": 110000},
             ],
         }
         resp = self.client.post(self._url(self.product.id), payload, format="json")
@@ -2436,13 +2413,11 @@ class SaveVariantsTest(APITestCase):
 
     def test_save_variants_updates_existing_variant(self):
         """POST save_variants with existing variant id → updates base_price"""
-        variant = ProductVariantFactory(product=self.product, company=self.company, variant_values={"color": "red"})
+        variant = ProductVariantFactory(product=self.product, company=self.company, variant_values={"color": "Red"})
         payload = {
-            "variant_options": [
-                {"id": "color", "name": "Color", "order": 1, "values": [{"id": "red", "label": "Red"}]}
-            ],
+            "variant_options": {"color": ["Red"]},
             "variants": [
-                {"id": str(variant.id), "variant_values": {"color": "red"}, "base_price": 999000},
+                {"id": str(variant.id), "variant_values": {"color": "Red"}, "base_price": 999000},
             ],
         }
         resp = self.client.post(self._url(self.product.id), payload, format="json")
@@ -2453,14 +2428,12 @@ class SaveVariantsTest(APITestCase):
 
     def test_save_variants_deactivates_stale_without_stock(self):
         """Variants not in payload with no stock → deactivated"""
-        v1 = ProductVariantFactory(product=self.product, company=self.company, variant_values={"color": "red"})
-        v2 = ProductVariantFactory(product=self.product, company=self.company, variant_values={"color": "blue"})
+        v1 = ProductVariantFactory(product=self.product, company=self.company, variant_values={"color": "Red"})
+        v2 = ProductVariantFactory(product=self.product, company=self.company, variant_values={"color": "Blue"})
         payload = {
-            "variant_options": [
-                {"id": "color", "name": "Color", "order": 1, "values": [{"id": "red", "label": "Red"}, {"id": "blue", "label": "Blue"}]}
-            ],
+            "variant_options": {"color": ["Red", "Blue"]},
             "variants": [
-                {"id": str(v1.id), "variant_values": {"color": "red"}, "base_price": 100000},
+                {"id": str(v1.id), "variant_values": {"color": "Red"}, "base_price": 100000},
             ],
         }
         resp = self.client.post(self._url(self.product.id), payload, format="json")
@@ -2471,19 +2444,17 @@ class SaveVariantsTest(APITestCase):
 
     def test_save_variants_keeps_stale_with_stock(self):
         """Variants not in payload WITH stock → kept active, in kept_with_stock"""
-        v1 = ProductVariantFactory(product=self.product, company=self.company, variant_values={"color": "red"})
+        v1 = ProductVariantFactory(product=self.product, company=self.company, variant_values={"color": "Red"})
         v2 = ProductVariantFactory(
             product=self.product, company=self.company,
-            variant_values={"color": "blue"},
+            variant_values={"color": "Blue"},
         )
         ProductVariant.objects.filter(id=v2.id).update(total_incoming_qty=10, total_available_qty=5)
         v2.refresh_from_db()
         payload = {
-            "variant_options": [
-                {"id": "color", "name": "Color", "order": 1, "values": [{"id": "red", "label": "Red"}, {"id": "blue", "label": "Blue"}]}
-            ],
+            "variant_options": {"color": ["Red", "Blue"]},
             "variants": [
-                {"id": str(v1.id), "variant_values": {"color": "red"}, "base_price": 100000},
+                {"id": str(v1.id), "variant_values": {"color": "Red"}, "base_price": 100000},
             ],
         }
         resp = self.client.post(self._url(self.product.id), payload, format="json")
@@ -2494,7 +2465,7 @@ class SaveVariantsTest(APITestCase):
 
     def test_save_variants_updates_variant_options(self):
         """variant_options is persisted on the product"""
-        opts = [{"id": "size", "name": "Size", "order": 1, "values": [{"id": "s", "label": "S"}]}]
+        opts = {"size": ["S"]}
         payload = {"variant_options": opts, "variants": []}
         self.client.post(self._url(self.product.id), payload, format="json")
         self.product.refresh_from_db()
@@ -2515,15 +2486,15 @@ class SaveVariantsTest(APITestCase):
 
 
 class TestVariantFilterBySupplier(APITestCase):
-    """Tests for filtering variants by supplier"""
+    """Tests for filtering variants by supplier via ProductSupplier"""
 
     def setUp(self):
-        from apps.inventory.factories import SupplierFactory
         self.company = CompanyFactory()
         self.category = CategoryFactory(company=self.company)
-        self.product = ProductFactory(category=self.category, company=self.company)
-        self.variant_a = ProductVariantFactory(product=self.product, company=self.company)
-        self.variant_b = ProductVariantFactory(product=self.product, company=self.company)
+        self.product_a = ProductFactory(category=self.category, company=self.company)
+        self.product_b = ProductFactory(category=self.category, company=self.company)
+        self.variant_a = ProductVariantFactory(product=self.product_a, company=self.company)
+        self.variant_b = ProductVariantFactory(product=self.product_b, company=self.company)
         self.supplier_a = SupplierFactory(company=self.company)
         self.supplier_b = SupplierFactory(company=self.company)
         self.user = User.objects.create_user(
@@ -2532,22 +2503,8 @@ class TestVariantFilterBySupplier(APITestCase):
         from core.models import UserProfile
         UserProfile.objects.create(user=self.user, company=self.company, role="admin")
         self.client.force_authenticate(user=self.user)
-        self.client.post(
-            "/variant-suppliers/",
-            {
-                "product_variant_id": str(self.variant_a.id),
-                "supplier_id": str(self.supplier_a.id),
-            },
-            format="json",
-        )
-        self.client.post(
-            "/variant-suppliers/",
-            {
-                "product_variant_id": str(self.variant_b.id),
-                "supplier_id": str(self.supplier_b.id),
-            },
-            format="json",
-        )
+        ProductSupplierFactory(product=self.product_a, supplier=self.supplier_a, company=self.company)
+        ProductSupplierFactory(product=self.product_b, supplier=self.supplier_b, company=self.company)
 
     def test_filter_variants_by_supplier(self):
         response = self.client.get(
@@ -2557,3 +2514,85 @@ class TestVariantFilterBySupplier(APITestCase):
         ids = [v["id"] for v in response.data["results"]]
         self.assertIn(str(self.variant_a.id), ids)
         self.assertNotIn(str(self.variant_b.id), ids)
+
+
+class ProductDetailAPITest(APITestCase):
+    """Tests for GET /product/{id}/ — variant detail fields"""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(category=self.category, company=self.company)
+        self.variant = ProductVariantFactory(
+            product=self.product,
+            company=self.company,
+            current_cogs=50000,
+            total_available_qty=120,
+            total_incoming_qty=30,
+        )
+        self.user = User.objects.create_user(
+            username="detail_test", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def test_product_detail_includes_variant_cogs_and_stock_fields(self):
+        response = self.client.get(f"/product/{self.product.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        variants = response.data.get("variants", [])
+        self.assertGreater(len(variants), 0)
+        variant_data = variants[0]
+        self.assertIn("current_cogs", variant_data)
+        self.assertIn("total_available_qty", variant_data)
+        self.assertIn("total_incoming_qty", variant_data)
+        self.assertEqual(variant_data["current_cogs"], 50000)
+        self.assertEqual(variant_data["total_available_qty"], 120)
+        self.assertEqual(variant_data["total_incoming_qty"], 30)
+
+
+class ProductSupplierTest(APITestCase):
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(company=self.company, category=self.category, description="A" * 25)
+        self.supplier = SupplierFactory(company=self.company)
+        self.user = User.objects.create_user(username="ps_test", password="pw", is_staff=True)
+        from core.models import UserProfile
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def test_create_product_supplier(self):
+        resp = self.client.post("/product-suppliers/", {
+            "product_id": str(self.product.id),
+            "supplier_id": str(self.supplier.id),
+            "supplier_link": "https://supplier.com/product-x",
+        }, format="json")
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["supplier_name"], self.supplier.name)
+        self.assertEqual(resp.data["supplier_link"], "https://supplier.com/product-x")
+
+    def test_list_by_product(self):
+        ProductSupplierFactory(product=self.product, supplier=self.supplier, company=self.company)
+        resp = self.client.get("/product-suppliers/", {"product_id": str(self.product.id)})
+        self.assertEqual(resp.status_code, 200)
+        results = resp.data.get("results", resp.data)
+        self.assertEqual(len(results), 1)
+
+    def test_delete_product_supplier(self):
+        ps = ProductSupplierFactory(product=self.product, supplier=self.supplier, company=self.company)
+        resp = self.client.delete(f"/product-suppliers/{ps.id}/")
+        self.assertEqual(resp.status_code, 204)
+
+    def test_variant_filter_by_supplier_via_product(self):
+        """GET /product-variants/?supplier_id=X returns variants whose product is linked to supplier"""
+        variant = ProductVariantFactory(product=self.product, company=self.company)
+        other_product = ProductFactory(company=self.company, category=self.category, description="B" * 25)
+        other_variant = ProductVariantFactory(product=other_product, company=self.company)
+        ProductSupplierFactory(product=self.product, supplier=self.supplier, company=self.company)
+        resp = self.client.get("/product-variants/", {"supplier_id": str(self.supplier.id)})
+        self.assertEqual(resp.status_code, 200)
+        ids = [v["id"] for v in resp.data["results"]]
+        self.assertIn(str(variant.id), ids)
+        self.assertNotIn(str(other_variant.id), ids)

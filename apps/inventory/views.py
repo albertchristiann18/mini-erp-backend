@@ -17,6 +17,7 @@ from apps.inventory.models import (
     Category,
     Product,
     ProductPhoto,
+    ProductSupplier,
     ProductVariant,
     ProductVariantSupplier,
     StockMovement,
@@ -28,6 +29,7 @@ from apps.inventory.serializers import (
     ProductCreateSerializer,
     ProductPhotoSerializer,
     ProductSerializer,
+    ProductSupplierSerializer,
     ProductVariantStockSerializer,
     ProductVariantSupplierSerializer,
     StockMovementSerializer,
@@ -52,7 +54,7 @@ class ProductViewSet(viewsets.ModelViewSet):
     def get_queryset(self) -> QuerySet[Product]:
         if not self.request.user.is_authenticated:
             return Product.objects.none()
-        qs = Product.objects.filter(is_active=True, company=self.request.user.profile.company)
+        qs = Product.objects.filter(company=self.request.user.profile.company)
         search = self.request.query_params.get("search")
         if search:
             qs = qs.filter(models.Q(name__icontains=search) | models.Q(sku_code__icontains=search))
@@ -280,7 +282,7 @@ class ProductVariantStockViewSet(viewsets.ReadOnlyModelViewSet):
             )
         supplier_id = self.request.query_params.get("supplier_id")
         if supplier_id:
-            qs = qs.filter(variant_suppliers__supplier__id=supplier_id)
+            qs = qs.filter(product__product_suppliers__supplier__id=supplier_id).distinct()
         return qs.order_by("product__name", "name")
 
 
@@ -561,6 +563,23 @@ class ProductVariantSupplierViewSet(viewsets.ModelViewSet):
         supplier_id = self.request.query_params.get("supplier_id")
         if variant_id:
             qs = qs.filter(product_variant__id=variant_id)
+        if supplier_id:
+            qs = qs.filter(supplier__id=supplier_id)
+        return qs
+
+
+class ProductSupplierViewSet(viewsets.ModelViewSet):
+    serializer_class = ProductSupplierSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self) -> QuerySet["ProductSupplier"]:
+        qs = ProductSupplier.objects.filter(
+            company=self.request.user.profile.company
+        ).select_related("supplier", "product")
+        product_id = self.request.query_params.get("product_id")
+        supplier_id = self.request.query_params.get("supplier_id")
+        if product_id:
+            qs = qs.filter(product__id=product_id)
         if supplier_id:
             qs = qs.filter(supplier__id=supplier_id)
         return qs

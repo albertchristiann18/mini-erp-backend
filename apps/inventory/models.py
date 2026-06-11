@@ -50,8 +50,6 @@ class Product(DefaultModel):
     width = models.IntegerField(default=0)
     height = models.IntegerField(default=0)
     is_active = models.BooleanField(default=True)
-    supplier_link = models.URLField(max_length=500, blank=True, null=True)
-
     shipping_config = models.JSONField(
         default=get_default_shipping_config,
         blank=True,
@@ -310,3 +308,16 @@ class ProductVariantSupplier(DefaultModel):
                 product_variant=self.product_variant, is_primary=True
             ).exclude(pk=self.pk).update(is_primary=False)
         super().save(*args, **kwargs)
+
+
+class ProductSupplier(DefaultModel):
+    id = ULIDField(primary_key=True, default=generate_ulid, editable=False, db_column="product_supplier_id")
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="product_suppliers")
+    supplier = models.ForeignKey(Supplier, on_delete=models.CASCADE, related_name="product_suppliers")
+    supplier_link = models.URLField(max_length=500, blank=True, null=True, help_text="URL to this product on the supplier's site")
+
+    class Meta:
+        unique_together = ["product", "supplier"]
+
+    def __str__(self) -> str:
+        return f"{self.product} — {self.supplier}"
