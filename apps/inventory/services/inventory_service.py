@@ -847,8 +847,23 @@ class InventoryService:
         Skips rows where SKU cell is empty or None.
         Returns [] if no valid SKU/stock columns found -- caller should handle this.
         """
+        import io
+        import re
+        import zipfile
+
         import openpyxl
-        wb = openpyxl.load_workbook(file_obj, read_only=True, data_only=True)
+
+        raw = file_obj.read()
+        buf = io.BytesIO(raw)
+        patched = io.BytesIO()
+        with zipfile.ZipFile(buf, "r") as zin, zipfile.ZipFile(patched, "w") as zout:
+            for info in zin.infolist():
+                data = zin.read(info.filename)
+                if info.filename.startswith("xl/worksheets/") and info.filename.endswith(".xml"):
+                    data = re.sub(rb' activePane="[^"]*"', b"", data)
+                zout.writestr(info, data)
+        patched.seek(0)
+        wb = openpyxl.load_workbook(patched, data_only=True)
         ws = wb.active
 
         SKU_ALIASES = {"sku reference no.", "seller sku", "sku", "sku_variant_code"}

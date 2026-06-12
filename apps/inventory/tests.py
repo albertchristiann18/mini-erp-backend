@@ -3127,6 +3127,39 @@ class MarketplaceReconcileTest(APITestCase):
         self.assertEqual(result[0]["qty"], 10)
         self.assertEqual(result[1]["qty"], 20)
 
+    def test_parse_marketplace_xlsx_invalid_activepane(self):
+        """Shopee xlsx with invalid activePane attribute is handled gracefully."""
+        import openpyxl
+        import zipfile
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["SKU", "Stock"])
+        ws.append(["SKU-001", "50"])
+        ws.append(["SKU-002", "30"])
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        raw = buf.getvalue()
+
+        corrupted = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(raw), "r") as zin, zipfile.ZipFile(corrupted, "w") as zout:
+            for info in zin.infolist():
+                data = zin.read(info.filename)
+                if info.filename.startswith("xl/worksheets/") and info.filename.endswith(".xml"):
+                    data = data.replace(
+                        b'</worksheet>',
+                        b' activePane="invalid" rest of the junk</worksheet>',
+                        1,
+                    )
+                zout.writestr(info, data)
+        corrupted.seek(0)
+
+        result = InventoryService.parse_marketplace_xlsx(corrupted)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0], {"sku": "SKU-001", "qty": 50})
+        self.assertEqual(result[1], {"sku": "SKU-002", "qty": 30})
+
     # --- Service tests ---
 
     def test_reconcile_same_stock_skipped(self):
