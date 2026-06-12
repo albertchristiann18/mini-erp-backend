@@ -5,6 +5,7 @@ import factory
 from apps.inventory.models import (
     BusinessEntity,
     Category,
+    CompanyMarketplace,
     Product,
     ProductBusinessEntity,
     ProductCogs,
@@ -139,13 +140,22 @@ class ProductSupplierFactory(factory.django.DjangoModelFactory):
     supplier_link = None
 
 
+class CompanyMarketplaceFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = CompanyMarketplace
+
+    name = factory.Sequence(lambda n: f"Marketplace {n}")
+    company = factory.SubFactory(CompanyFactory)
+    is_active = True
+
+
 class BusinessEntityFactory(factory.django.DjangoModelFactory):
     class Meta:
         model = BusinessEntity
 
     name = factory.Sequence(lambda n: f"Business Entity {n}")
     company = factory.SubFactory(CompanyFactory)
-    marketplace = factory.SubFactory(MarketplaceFactory)
+    marketplace = factory.SubFactory(CompanyMarketplaceFactory)
     is_active = True
 
 

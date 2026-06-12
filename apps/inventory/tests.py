@@ -2590,16 +2590,19 @@ class TestBusinessEntityService(TestCase):
     """Tests for BusinessEntityService — service-level business logic."""
 
     def setUp(self):
-        from apps.inventory.factories import BusinessEntityFactory, ProductFactory
+        from apps.inventory.factories import (
+            BusinessEntityFactory,
+            CompanyMarketplaceFactory,
+            ProductFactory,
+        )
         from apps.inventory.models import ProductBusinessEntity
         from apps.inventory.services.business_entity_service import BusinessEntityService
-        from core.factories import MarketplaceFactory
 
         self.ProductBusinessEntity = ProductBusinessEntity
         self.service = BusinessEntityService()
         self.company = CompanyFactory()
-        self.marketplace_shopee = MarketplaceFactory(name="Shopee")
-        self.marketplace_tiktok = MarketplaceFactory(name="TikTok")
+        self.marketplace_shopee = CompanyMarketplaceFactory(company=self.company, name="Shopee")
+        self.marketplace_tiktok = CompanyMarketplaceFactory(company=self.company, name="TikTok")
 
         self.product = ProductFactory(company=self.company, category__company=self.company)
 
@@ -2729,11 +2732,127 @@ class TestBusinessEntityService(TestCase):
             )
 
 
+class TestCompanyMarketplaceService(TestCase):
+    """Tests for BusinessEntityService.get_or_seed_company_marketplaces."""
+
+    def setUp(self):
+        from apps.inventory.services.business_entity_service import BusinessEntityService
+        self.service = BusinessEntityService()
+        self.company = CompanyFactory()
+
+    def test_get_or_seed_creates_defaults(self):
+        """Company with no CompanyMarketplace records seeds Shopee+TikTok."""
+        result = self.service.get_or_seed_company_marketplaces(str(self.company.id))
+        names = sorted(m.name for m in result)
+        self.assertEqual(names, ["Shopee", "TikTok"])
+        self.assertEqual(len(result), 2)
+
+    def test_get_or_seed_idempotent(self):
+        """Company already has records — calling again returns same, no duplicates."""
+        from apps.inventory.factories import CompanyMarketplaceFactory
+        CompanyMarketplaceFactory(company=self.company, name="Shopee")
+        CompanyMarketplaceFactory(company=self.company, name="TikTok")
+        result = self.service.get_or_seed_company_marketplaces(str(self.company.id))
+        self.assertEqual(len(result), 2)
+
+    def test_get_or_seed_returns_existing_custom(self):
+        """Company has Shopee, TikTok, Lazada — returns all 3, no new ones."""
+        from apps.inventory.factories import CompanyMarketplaceFactory
+        CompanyMarketplaceFactory(company=self.company, name="Shopee")
+        CompanyMarketplaceFactory(company=self.company, name="TikTok")
+        CompanyMarketplaceFactory(company=self.company, name="Lazada")
+        result = self.service.get_or_seed_company_marketplaces(str(self.company.id))
+        self.assertEqual(len(result), 3)
+        names = sorted(m.name for m in result)
+        self.assertEqual(names, ["Lazada", "Shopee", "TikTok"])
+
+
+class TestCompanyMarketplaceAPI(APITestCase):
+    """Tests for CompanyMarketplace API endpoints."""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.other_company = CompanyFactory()
+        self.user = User.objects.create_user(
+            username="cm_test_user", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def test_list_auto_seeds(self):
+        """GET /company-marketplaces/ — auto-seeds Shopee+TikTok for new company."""
+        response = self.client.get("/company-marketplaces/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 2)
+        names = sorted(m["name"] for m in response.data["results"])
+        self.assertEqual(names, ["Shopee", "TikTok"])
+
+    def test_list_company_isolation(self):
+        """Company A only sees their own marketplaces."""
+        from apps.inventory.factories import CompanyMarketplaceFactory
+        CompanyMarketplaceFactory(company=self.company, name="Shopee")
+        CompanyMarketplaceFactory(company=self.other_company, name="TikTok")
+        response = self.client.get("/company-marketplaces/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        names = [m["name"] for m in response.data["results"]]
+        self.assertIn("Shopee", names)
+        self.assertNotIn("TikTok", names)
+
+    def test_create_custom(self):
+        """POST /company-marketplaces/ — creates a custom marketplace."""
+        response = self.client.post(
+            "/company-marketplaces/",
+            {"name": "Lazada"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["name"], "Lazada")
+
+    def test_create_duplicate_name_fails(self):
+        """POST with duplicate name — 400."""
+        from apps.inventory.factories import CompanyMarketplaceFactory
+        CompanyMarketplaceFactory(company=self.company, name="Lazada")
+        response = self.client.post(
+            "/company-marketplaces/",
+            {"name": "Lazada"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_partial_update(self):
+        """PATCH /company-marketplaces/{id}/ — updates is_active."""
+        from apps.inventory.factories import CompanyMarketplaceFactory
+        cm = CompanyMarketplaceFactory(company=self.company, name="Shopee")
+        response = self.client.patch(
+            f"/company-marketplaces/{cm.id}/",
+            {"is_active": False},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["is_active"])
+
+    def test_delete_success(self):
+        """DELETE /company-marketplaces/{id}/ — 204 when no BEs reference it."""
+        from apps.inventory.factories import CompanyMarketplaceFactory
+        cm = CompanyMarketplaceFactory(company=self.company, name="Shopee")
+        response = self.client.delete(f"/company-marketplaces/{cm.id}/")
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+    def test_delete_blocked_by_business_entity(self):
+        """DELETE when BusinessEntity references it — 409."""
+        from apps.inventory.factories import BusinessEntityFactory, CompanyMarketplaceFactory
+        cm = CompanyMarketplaceFactory(company=self.company, name="Shopee")
+        BusinessEntityFactory(company=self.company, marketplace=cm)
+        response = self.client.delete(f"/company-marketplaces/{cm.id}/")
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+
+
 class TestBusinessEntityAPI(APITestCase):
     """Tests for BusinessEntity and ProductBusinessEntity API endpoints."""
 
     def setUp(self):
-        from core.factories import MarketplaceFactory
+        from apps.inventory.factories import CompanyMarketplaceFactory
 
         self.company = CompanyFactory()
         self.other_company = CompanyFactory()
@@ -2744,9 +2863,9 @@ class TestBusinessEntityAPI(APITestCase):
         UserProfile.objects.create(user=self.user, company=self.company, role="admin")
         self.client.force_authenticate(user=self.user)
 
-        self.marketplace_shopee = MarketplaceFactory(name="Shopee")
-        self.marketplace_tiktok = MarketplaceFactory(name="TikTok")
-        self.inactive_marketplace = MarketplaceFactory(name="Inactive", is_active=False)
+        self.marketplace_shopee = CompanyMarketplaceFactory(company=self.company, name="Shopee")
+        self.marketplace_tiktok = CompanyMarketplaceFactory(company=self.company, name="TikTok")
+        self.inactive_marketplace = CompanyMarketplaceFactory(company=self.company, name="Inactive", is_active=False)
 
     def test_list_business_entities(self):
         """GET /business-entities/ returns only the company's BEs."""

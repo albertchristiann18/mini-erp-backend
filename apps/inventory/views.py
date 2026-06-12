@@ -16,6 +16,7 @@ from apps.inventory.constants.categories import MASTER_CATEGORY
 from apps.inventory.models import (
     BusinessEntity,
     Category,
+    CompanyMarketplace,
     Product,
     ProductBusinessEntity,
     ProductPhoto,
@@ -29,6 +30,8 @@ from apps.inventory.serializers import (
     BusinessEntitySerializer,
     BusinessEntityWriteSerializer,
     CategorySerializer,
+    CompanyMarketplaceSerializer,
+    CompanyMarketplaceWriteSerializer,
     ProductBusinessEntitySerializer,
     ProductCreateSerializer,
     ProductPhotoSerializer,
@@ -597,6 +600,64 @@ class ProductSupplierViewSet(viewsets.ModelViewSet):
         return qs
 
 
+class CompanyMarketplaceViewSet(viewsets.ViewSet):
+    permission_classes = [IsAuthenticated]
+
+    def list(self, request: Request) -> Response:
+        """GET — returns company's channels, auto-seeds Shopee+TikTok on first call."""
+        company_id = str(request.user.profile.company_id)
+        marketplaces = BusinessEntityService().get_or_seed_company_marketplaces(company_id)
+        search = request.query_params.get("search")
+        if search:
+            marketplaces = [m for m in marketplaces if search.lower() in m.name.lower()]
+        serializer = CompanyMarketplaceSerializer(marketplaces, many=True)
+        return Response({"count": len(serializer.data), "results": serializer.data})
+
+    def create(self, request: Request) -> Response:
+        """POST — create a new company marketplace."""
+        serializer = CompanyMarketplaceWriteSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        company = request.user.profile.company
+        name = serializer.validated_data["name"].strip()
+        is_active = serializer.validated_data.get("is_active", True)
+        if CompanyMarketplace.objects.filter(company=company, name=name).exists():
+            return Response(
+                {"error": f"Marketplace '{name}' already exists"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        obj = CompanyMarketplace.objects.create(company=company, name=name, is_active=is_active)
+        return Response(CompanyMarketplaceSerializer(obj).data, status=status.HTTP_201_CREATED)
+
+    def partial_update(self, request: Request, pk: str | None = None) -> Response:
+        """PATCH — update name or is_active."""
+        try:
+            obj = CompanyMarketplace.objects.get(id=pk, company=request.user.profile.company)
+        except CompanyMarketplace.DoesNotExist:
+            return Response({"error": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+        serializer = CompanyMarketplaceWriteSerializer(data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        for attr, value in serializer.validated_data.items():
+            setattr(obj, attr, value)
+        obj.save()
+        return Response(CompanyMarketplaceSerializer(obj).data)
+
+    def destroy(self, request: Request, pk: str | None = None) -> Response:
+        """DELETE — only allowed if no BusinessEntities use this marketplace."""
+        try:
+            obj = CompanyMarketplace.objects.get(id=pk, company=request.user.profile.company)
+        except CompanyMarketplace.DoesNotExist:
+            return Response({"error": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+        if obj.business_entities.exists():
+            return Response(
+                {"error": "Cannot delete — business entities are using this marketplace"},
+                status=status.HTTP_409_CONFLICT,
+            )
+        obj.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 class BusinessEntityViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
@@ -617,22 +678,29 @@ class BusinessEntityViewSet(viewsets.ModelViewSet):
         return qs
 
     def perform_create(self, serializer: BusinessEntityWriteSerializer) -> None:
-        from core.models import Marketplace
+        company = self.request.user.profile.company
         marketplace_id = serializer.validated_data.pop("marketplace_id")
-        marketplace = Marketplace.objects.get(id=marketplace_id)
-        serializer.save(
-            company=self.request.user.profile.company,
-            marketplace=marketplace,
-        )
+        try:
+            marketplace = CompanyMarketplace.objects.get(id=marketplace_id, company=company)
+        except CompanyMarketplace.DoesNotExist:
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({"marketplace_id": "Marketplace not found or does not belong to your company"})
+        serializer.save(company=company, marketplace=marketplace)
 
     def perform_update(self, serializer: BusinessEntityWriteSerializer) -> None:
-        from core.models import Marketplace
+        company = self.request.user.profile.company
         marketplace_id = serializer.validated_data.pop("marketplace_id", None)
         if marketplace_id:
-            marketplace = Marketplace.objects.get(id=marketplace_id)
+            try:
+                marketplace = CompanyMarketplace.objects.get(id=marketplace_id, company=company)
+            except CompanyMarketplace.DoesNotExist:
+                from rest_framework.exceptions import ValidationError
+                raise ValidationError({"marketplace_id": "Marketplace not found"})
             serializer.save(marketplace=marketplace)
         else:
             serializer.save()
+        read_serializer = BusinessEntitySerializer(serializer.instance)
+        return read_serializer.data
 
     def create(self, request: Request, *args: Any, **kwargs: Any) -> Response:
         from django.db import IntegrityError

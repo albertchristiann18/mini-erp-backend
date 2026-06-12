@@ -1,6 +1,12 @@
 from django.contrib import admin
 
-from apps.inventory.models import BusinessEntity, ProductBusinessEntity
+from apps.inventory.models import BusinessEntity, CompanyMarketplace, ProductBusinessEntity
+
+
+@admin.register(CompanyMarketplace)
+class CompanyMarketplaceAdmin(admin.ModelAdmin):
+    list_display = ["name", "company", "is_active"]
+    list_filter = ["is_active"]
 
 
 @admin.register(BusinessEntity)

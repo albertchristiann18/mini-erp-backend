@@ -304,11 +304,28 @@ class ProductSupplier(DefaultModel):
         return f"{self.product} — {self.supplier}"
 
 
+class CompanyMarketplace(DefaultModel):
+    """Company-scoped sales channel. Each company owns their own list."""
+
+    id = ULIDField(
+        primary_key=True, default=generate_ulid, editable=False,
+        db_column="company_marketplace_id"
+    )
+    name = models.CharField(max_length=255)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        unique_together = [("company", "name")]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.company.name})"
+
+
 class BusinessEntity(DefaultModel):
     id = ULIDField(primary_key=True, default=generate_ulid, editable=False, db_column="business_entity_id")
     name = models.CharField(max_length=255)
     marketplace = models.ForeignKey(
-        Marketplace,
+        CompanyMarketplace,
         on_delete=models.PROTECT,
         related_name="business_entities",
     )

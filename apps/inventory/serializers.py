@@ -5,6 +5,7 @@ from rest_framework import serializers
 from apps.inventory.models import (
     BusinessEntity,
     Category,
+    CompanyMarketplace,
     Product,
     ProductBusinessEntity,
     ProductPhoto,
@@ -294,6 +295,20 @@ class ProductSupplierSerializer(serializers.ModelSerializer):
         return ProductSupplier.objects.create(company=company, **validated_data)
 
 
+class CompanyMarketplaceSerializer(serializers.ModelSerializer):
+    company_id = serializers.CharField(source="company.id", read_only=True)
+
+    class Meta:
+        model = CompanyMarketplace
+        fields = ["id", "company_id", "name", "is_active", "cdate", "udate"]
+        read_only_fields = ["id", "company_id", "cdate", "udate"]
+
+
+class CompanyMarketplaceWriteSerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=255)
+    is_active = serializers.BooleanField(default=True)
+
+
 class BusinessEntitySerializer(serializers.ModelSerializer):
     company_id = serializers.CharField(source="company.id", read_only=True)
     marketplace_id = serializers.CharField(source="marketplace.id", read_only=True)
@@ -317,9 +332,8 @@ class BusinessEntityWriteSerializer(serializers.ModelSerializer):
         fields = ["name", "marketplace_id", "is_active"]
 
     def validate_marketplace_id(self, value: str) -> str:
-        from core.models import Marketplace
-        if not Marketplace.objects.filter(id=value, is_active=True).exists():
-            raise serializers.ValidationError("Marketplace not found or inactive")
+        if not value:
+            raise serializers.ValidationError("marketplace_id is required")
         return value
 
 

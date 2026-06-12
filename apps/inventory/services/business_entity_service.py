@@ -1,7 +1,27 @@
 from django.db import transaction
 
+DEFAULT_MARKETPLACES = ["Shopee", "TikTok"]
+
 
 class BusinessEntityService:
+
+    def get_or_seed_company_marketplaces(self, company_id: str) -> list:
+        """
+        Returns all CompanyMarketplace records for the company.
+        If none exist yet, seeds Shopee and TikTok as defaults.
+        """
+        from apps.inventory.models import CompanyMarketplace
+        from core.models import Company
+
+        qs = CompanyMarketplace.objects.filter(company_id=company_id)
+        if not qs.exists():
+            company = Company.objects.get(id=company_id)
+            CompanyMarketplace.objects.bulk_create([
+                CompanyMarketplace(company=company, name=name, is_active=True)
+                for name in DEFAULT_MARKETPLACES
+            ])
+            qs = CompanyMarketplace.objects.filter(company_id=company_id)
+        return list(qs.order_by("name"))
 
     @transaction.atomic
     def attach_product(self, product_id: str, business_entity_id: str, company_id: str) -> dict:
