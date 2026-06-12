@@ -745,7 +745,7 @@ class ProductBusinessEntityViewSet(viewsets.ViewSet):
         if product_id:
             qs = qs.filter(product_id=product_id)
         serializer = ProductBusinessEntitySerializer(qs, many=True)
-        return Response(serializer.data)
+        return Response({"count": len(serializer.data), "next": None, "previous": None, "results": serializer.data})
 
     def create(self, request: Request) -> Response:
         """POST /api/inventory/product-business-entities/
