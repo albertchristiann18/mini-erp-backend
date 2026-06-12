@@ -90,6 +90,13 @@ class ProductViewSet(viewsets.ModelViewSet):
         search = self.request.query_params.get("search")
         if search:
             qs = qs.filter(models.Q(name__icontains=search) | models.Q(sku_code__icontains=search))
+        category_id = self.request.query_params.get("category")
+        if category_id:
+            qs = qs.filter(category_id=category_id)
+        ordering = self.request.query_params.get("ordering")
+        ALLOWED_ORDERINGS = {"name", "-name", "sku_code", "-sku_code"}
+        if ordering and ordering in ALLOWED_ORDERINGS:
+            qs = qs.order_by(ordering)
         return qs
 
     def get_serializer_class(self) -> Type[Serializer]:

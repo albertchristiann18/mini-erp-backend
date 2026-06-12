@@ -1473,6 +1473,41 @@ class CompanyScopedViewsTest(APITestCase):
         ids = [p["id"] for p in resp.data["results"]]
         self.assertIn(str(inactive.id), ids)
 
+    def test_product_list_filter_by_category(self):
+        self.client.force_authenticate(user=self.user_a)
+        cat_other = CategoryFactory(company=self.company_a)
+        p_other = ProductFactory(company=self.company_a, category=cat_other)
+        resp = self.client.get("/product/", {"category": self.category_a.id})
+        self.assertEqual(resp.status_code, 200)
+        ids = [p["id"] for p in resp.data["results"]]
+        self.assertIn(str(self.product_a.id), ids)
+        self.assertNotIn(str(p_other.id), ids)
+
+    def test_product_list_ordering_name(self):
+        self.client.force_authenticate(user=self.user_a)
+        ProductFactory(company=self.company_a, category=self.category_a, name="B")
+        ProductFactory(company=self.company_a, category=self.category_a, name="A")
+        ProductFactory(company=self.company_a, category=self.category_a, name="C")
+        resp = self.client.get("/product/", {"ordering": "name"})
+        self.assertEqual(resp.status_code, 200)
+        names = [p["name"] for p in resp.data["results"]]
+        self.assertEqual(names, sorted(names))
+
+    def test_product_list_ordering_sku_code(self):
+        self.client.force_authenticate(user=self.user_a)
+        ProductFactory(company=self.company_a, category=self.category_a)
+        ProductFactory(company=self.company_a, category=self.category_a)
+        resp = self.client.get("/product/", {"ordering": "sku_code"})
+        self.assertEqual(resp.status_code, 200)
+        codes = [p["sku_code"] for p in resp.data["results"]]
+        self.assertEqual(codes, sorted(codes))
+
+    def test_product_list_ordering_invalid_ignored(self):
+        self.client.force_authenticate(user=self.user_a)
+        ProductFactory(company=self.company_a, category=self.category_a)
+        resp = self.client.get("/product/", {"ordering": "malicious; DROP TABLE"})
+        self.assertEqual(resp.status_code, 200)
+
     def test_variant_stock_list_scoped_by_company(self):
         self.client.force_authenticate(user=self.user_a)
         response = self.client.get("/product-variants/")
