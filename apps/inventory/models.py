@@ -302,3 +302,40 @@ class ProductSupplier(DefaultModel):
 
     def __str__(self) -> str:
         return f"{self.product} — {self.supplier}"
+
+
+class BusinessEntity(DefaultModel):
+    id = ULIDField(primary_key=True, default=generate_ulid, editable=False, db_column="business_entity_id")
+    name = models.CharField(max_length=255)
+    marketplace = models.ForeignKey(
+        Marketplace,
+        on_delete=models.PROTECT,
+        related_name="business_entities",
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        unique_together = [("company", "name")]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.marketplace.name})"
+
+
+class ProductBusinessEntity(DefaultModel):
+    id = ULIDField(primary_key=True, default=generate_ulid, editable=False, db_column="product_business_entity_id")
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.CASCADE,
+        related_name="business_entities",
+    )
+    business_entity = models.ForeignKey(
+        BusinessEntity,
+        on_delete=models.CASCADE,
+        related_name="product_assignments",
+    )
+
+    class Meta:
+        unique_together = [("product", "business_entity")]
+
+    def __str__(self) -> str:
+        return f"{self.product.sku_code} → {self.business_entity.name}"

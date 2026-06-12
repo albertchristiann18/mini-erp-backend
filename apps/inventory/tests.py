@@ -25,6 +25,7 @@ from apps.inventory.factories import (
     SupplierFactory,
 )
 from apps.inventory.models import (
+    Category,
     Product,
     ProductCogs,
     ProductPhoto,
@@ -2492,3 +2493,387 @@ class ProductSupplierTest(APITestCase):
         ids = [v["id"] for v in resp.data["results"]]
         self.assertIn(str(variant.id), ids)
         self.assertNotIn(str(other_variant.id), ids)
+
+
+class CategoryDeleteTest(APITestCase):
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.category = CategoryFactory(company=self.company)
+        self.staff_user = User.objects.create_user(
+            username="cat_staff", password="password", is_staff=True
+        )
+        self.non_staff_user = User.objects.create_user(
+            username="cat_user", password="password", is_staff=False
+        )
+        from core.models import UserProfile
+
+        UserProfile.objects.create(user=self.staff_user, company=self.company, role="admin")
+        UserProfile.objects.create(user=self.non_staff_user, company=self.company, role="viewer")
+
+    def test_delete_category_no_products_succeeds(self):
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.delete(f"/category/{self.category.id}/")
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Category.objects.filter(id=self.category.id).exists())
+
+    def test_delete_category_with_products_returns_409(self):
+        ProductFactory.create_batch(2, category=self.category, company=self.company)
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.delete(f"/category/{self.category.id}/")
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertIn("products", response.data)
+        self.assertEqual(len(response.data["products"]), 2)
+        for product in response.data["products"]:
+            self.assertIn("name", product)
+            self.assertIn("sku_code", product)
+        self.assertIn(
+            response.data["products"][0]["sku_code"],
+            [product.sku_code for product in Product.objects.filter(category=self.category)],
+        )
+        self.assertIn(
+            response.data["products"][1]["sku_code"],
+            [product.sku_code for product in Product.objects.filter(category=self.category)],
+        )
+        self.assertTrue(Category.objects.filter(id=self.category.id).exists())
+
+    def test_delete_category_non_staff_forbidden(self):
+        with patch.object(StaffPerm, "has_permission", _real_staff_perm):
+            self.client.force_authenticate(user=self.non_staff_user)
+            response = self.client.delete(f"/category/{self.category.id}/")
+            self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(Category.objects.filter(id=self.category.id).exists())
+
+
+class CategoryCompanyScopeTest(APITestCase):
+    def setUp(self):
+        self.company_a = CompanyFactory()
+        self.company_b = CompanyFactory()
+        self.category_a1 = CategoryFactory(company=self.company_a)
+        self.category_a2 = CategoryFactory(company=self.company_a)
+        self.category_b1 = CategoryFactory(company=self.company_b)
+        self.category_b2 = CategoryFactory(company=self.company_b)
+        self.staff_user = User.objects.create_user(
+            username="cat_scope_staff", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+        UserProfile.objects.create(user=self.staff_user, company=self.company_a, role="admin")
+
+    def test_category_list_only_returns_own_company(self):
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.get("/category/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["results"]), 2)
+
+    def test_category_create_stamps_company(self):
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.post(
+            "/category/",
+            {"name": "New Cat", "category_code": "NC01", "description": "test"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        category = Category.objects.get(id=response.data["id"])
+        self.assertEqual(category.company, self.company_a)
+
+    def test_category_delete_own_company_succeeds(self):
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.delete(f"/category/{self.category_a1.id}/")
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+    def test_category_delete_other_company_returns_404(self):
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.delete(f"/category/{self.category_b1.id}/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class TestBusinessEntityService(TestCase):
+    """Tests for BusinessEntityService — service-level business logic."""
+
+    def setUp(self):
+        from apps.inventory.factories import BusinessEntityFactory, ProductFactory
+        from apps.inventory.models import ProductBusinessEntity
+        from apps.inventory.services.business_entity_service import BusinessEntityService
+        from core.factories import MarketplaceFactory
+
+        self.ProductBusinessEntity = ProductBusinessEntity
+        self.service = BusinessEntityService()
+        self.company = CompanyFactory()
+        self.marketplace_shopee = MarketplaceFactory(name="Shopee")
+        self.marketplace_tiktok = MarketplaceFactory(name="TikTok")
+
+        self.product = ProductFactory(company=self.company, category__company=self.company)
+
+        self.be_shopee_a = BusinessEntityFactory(
+            company=self.company, marketplace=self.marketplace_shopee
+        )
+        self.be_shopee_b = BusinessEntityFactory(
+            company=self.company, marketplace=self.marketplace_shopee
+        )
+        self.be_tiktok = BusinessEntityFactory(
+            company=self.company, marketplace=self.marketplace_tiktok
+        )
+
+    def test_attach_product_success(self):
+        """Attach product to two BEs with DIFFERENT marketplaces — both succeed."""
+        r1 = self.service.attach_product(
+            product_id=str(self.product.id),
+            business_entity_id=str(self.be_shopee_a.id),
+            company_id=str(self.company.id),
+        )
+        self.assertTrue(r1["created"])
+
+        r2 = self.service.attach_product(
+            product_id=str(self.product.id),
+            business_entity_id=str(self.be_tiktok.id),
+            company_id=str(self.company.id),
+        )
+        self.assertTrue(r2["created"])
+
+        count = self.ProductBusinessEntity.objects.filter(product=self.product).count()
+        self.assertEqual(count, 2)
+
+    def test_attach_product_same_marketplace_conflict(self):
+        """Attach second BE with SAME marketplace — raises ValueError."""
+        self.service.attach_product(
+            product_id=str(self.product.id),
+            business_entity_id=str(self.be_shopee_a.id),
+            company_id=str(self.company.id),
+        )
+
+        with self.assertRaises(ValueError) as ctx:
+            self.service.attach_product(
+                product_id=str(self.product.id),
+                business_entity_id=str(self.be_shopee_b.id),
+                company_id=str(self.company.id),
+            )
+        self.assertIn("same marketplace", str(ctx.exception))
+
+    def test_attach_product_different_marketplace_allowed(self):
+        """Attach BE_A (shopee) then BE_B (tiktok) — both succeed, no conflict."""
+        r1 = self.service.attach_product(
+            product_id=str(self.product.id),
+            business_entity_id=str(self.be_shopee_a.id),
+            company_id=str(self.company.id),
+        )
+        self.assertTrue(r1["created"])
+
+        r2 = self.service.attach_product(
+            product_id=str(self.product.id),
+            business_entity_id=str(self.be_tiktok.id),
+            company_id=str(self.company.id),
+        )
+        self.assertTrue(r2["created"])
+
+    def test_attach_product_idempotent(self):
+        """Attach same (product, business_entity) pair twice — idempotent."""
+        r1 = self.service.attach_product(
+            product_id=str(self.product.id),
+            business_entity_id=str(self.be_shopee_a.id),
+            company_id=str(self.company.id),
+        )
+        self.assertTrue(r1["created"])
+
+        r2 = self.service.attach_product(
+            product_id=str(self.product.id),
+            business_entity_id=str(self.be_shopee_a.id),
+            company_id=str(self.company.id),
+        )
+        self.assertFalse(r2["created"])
+
+        count = self.ProductBusinessEntity.objects.filter(
+            product=self.product, business_entity=self.be_shopee_a
+        ).count()
+        self.assertEqual(count, 1)
+
+    def test_detach_product_success(self):
+        """Detach an existing assignment — row is deleted."""
+        from apps.inventory.factories import ProductBusinessEntityFactory
+
+        assignment = ProductBusinessEntityFactory(
+            product=self.product,
+            business_entity=self.be_shopee_a,
+            company=self.company,
+        )
+        self.service.detach_product(
+            product_business_entity_id=str(assignment.id),
+            company_id=str(self.company.id),
+        )
+        self.assertFalse(
+            self.ProductBusinessEntity.objects.filter(id=assignment.id).exists()
+        )
+
+    def test_detach_product_wrong_company(self):
+        """Detach with wrong company — raises ValueError."""
+        from apps.inventory.factories import ProductBusinessEntityFactory
+
+        other_company = CompanyFactory()
+        assignment = ProductBusinessEntityFactory(
+            product=self.product,
+            business_entity=self.be_shopee_a,
+            company=self.company,
+        )
+        with self.assertRaises(ValueError):
+            self.service.detach_product(
+                product_business_entity_id=str(assignment.id),
+                company_id=str(other_company.id),
+            )
+
+    def test_attach_wrong_company_product(self):
+        """Product belongs to different company — raises Product.DoesNotExist."""
+        other_company = CompanyFactory()
+        with self.assertRaises(Product.DoesNotExist):
+            self.service.attach_product(
+                product_id=str(self.product.id),
+                business_entity_id=str(self.be_shopee_a.id),
+                company_id=str(other_company.id),
+            )
+
+
+class TestBusinessEntityAPI(APITestCase):
+    """Tests for BusinessEntity and ProductBusinessEntity API endpoints."""
+
+    def setUp(self):
+        from core.factories import MarketplaceFactory
+
+        self.company = CompanyFactory()
+        self.other_company = CompanyFactory()
+        self.user = User.objects.create_user(
+            username="be_test_user", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+        self.marketplace_shopee = MarketplaceFactory(name="Shopee")
+        self.marketplace_tiktok = MarketplaceFactory(name="TikTok")
+        self.inactive_marketplace = MarketplaceFactory(name="Inactive", is_active=False)
+
+    def test_list_business_entities(self):
+        """GET /business-entities/ returns only the company's BEs."""
+        from apps.inventory.factories import BusinessEntityFactory
+
+        BusinessEntityFactory(company=self.company, marketplace=self.marketplace_shopee)
+        BusinessEntityFactory(company=self.company, marketplace=self.marketplace_tiktok)
+        BusinessEntityFactory(company=self.other_company, marketplace=self.marketplace_shopee)
+
+        response = self.client.get("/business-entities/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["results"]), 2)
+
+    def test_create_business_entity(self):
+        """POST /business-entities/ with name + marketplace_id — 201."""
+        response = self.client.post(
+            "/business-entities/",
+            {"name": "CV A", "marketplace_id": str(self.marketplace_shopee.id)},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["marketplace_name"], "Shopee")
+
+    def test_create_duplicate_name_same_company_fails(self):
+        """POST with duplicate name for same company — 400."""
+        self.client.post(
+            "/business-entities/",
+            {"name": "CV A", "marketplace_id": str(self.marketplace_shopee.id)},
+            format="json",
+        )
+        response = self.client.post(
+            "/business-entities/",
+            {"name": "CV A", "marketplace_id": str(self.marketplace_tiktok.id)},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_update_business_entity(self):
+        """PATCH /business-entities/{id}/ — updates name."""
+        from apps.inventory.factories import BusinessEntityFactory
+
+        be = BusinessEntityFactory(company=self.company, marketplace=self.marketplace_shopee)
+        response = self.client.patch(
+            f"/business-entities/{be.id}/",
+            {"name": "Updated Name"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["name"], "Updated Name")
+
+    def test_list_product_business_entities_filtered(self):
+        """GET /product-business-entities/?product_id=X — filtered."""
+        from apps.inventory.factories import (
+            BusinessEntityFactory,
+            ProductBusinessEntityFactory,
+            ProductFactory,
+        )
+
+        product_a = ProductFactory(company=self.company, category__company=self.company)
+        product_b = ProductFactory(company=self.company, category__company=self.company)
+        be = BusinessEntityFactory(company=self.company, marketplace=self.marketplace_shopee)
+
+        ProductBusinessEntityFactory(product=product_a, business_entity=be, company=self.company)
+        ProductBusinessEntityFactory(product=product_b, business_entity=be, company=self.company)
+
+        response = self.client.get(
+            f"/product-business-entities/?product_id={product_a.id}"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+
+    def test_attach_success(self):
+        """POST /product-business-entities/ — 201."""
+        from apps.inventory.factories import BusinessEntityFactory, ProductFactory
+
+        product = ProductFactory(company=self.company, category__company=self.company)
+        be = BusinessEntityFactory(company=self.company, marketplace=self.marketplace_shopee)
+
+        response = self.client.post(
+            "/product-business-entities/",
+            {"product_id": str(product.id), "business_entity_id": str(be.id)},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(response.data["created"])
+
+    def test_attach_conflict_returns_400(self):
+        """Attach product to two BEs with same marketplace — 400."""
+        from apps.inventory.factories import BusinessEntityFactory, ProductFactory
+
+        product = ProductFactory(company=self.company, category__company=self.company)
+        be_a = BusinessEntityFactory(company=self.company, marketplace=self.marketplace_shopee)
+        be_b = BusinessEntityFactory(company=self.company, marketplace=self.marketplace_shopee)
+
+        self.client.post(
+            "/product-business-entities/",
+            {"product_id": str(product.id), "business_entity_id": str(be_a.id)},
+            format="json",
+        )
+        response = self.client.post(
+            "/product-business-entities/",
+            {"product_id": str(product.id), "business_entity_id": str(be_b.id)},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("same marketplace", str(response.data["error"]))
+
+    def test_detach_success(self):
+        """DELETE /product-business-entities/{id}/ — 204."""
+        from apps.inventory.factories import (
+            BusinessEntityFactory,
+            ProductBusinessEntityFactory,
+            ProductFactory,
+        )
+
+        product = ProductFactory(company=self.company, category__company=self.company)
+        be = BusinessEntityFactory(company=self.company, marketplace=self.marketplace_shopee)
+        assignment = ProductBusinessEntityFactory(
+            product=product, business_entity=be, company=self.company
+        )
+
+        response = self.client.delete(f"/product-business-entities/{assignment.id}/")
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+    def test_detach_not_found(self):
+        """DELETE /product-business-entities/{unknown}/ — 404."""
+        response = self.client.delete(
+            "/product-business-entities/00000000-0000-0000-0000-000000000000/"
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)

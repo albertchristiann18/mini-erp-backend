@@ -3,8 +3,10 @@ from typing import Any
 from rest_framework import serializers
 
 from apps.inventory.models import (
+    BusinessEntity,
     Category,
     Product,
+    ProductBusinessEntity,
     ProductPhoto,
     ProductSupplier,
     ProductVariant,
@@ -290,3 +292,52 @@ class ProductSupplierSerializer(serializers.ModelSerializer):
     def create(self, validated_data: dict) -> "ProductSupplier":
         company = self.context["request"].user.profile.company
         return ProductSupplier.objects.create(company=company, **validated_data)
+
+
+class BusinessEntitySerializer(serializers.ModelSerializer):
+    company_id = serializers.CharField(source="company.id", read_only=True)
+    marketplace_id = serializers.CharField(source="marketplace.id", read_only=True)
+    marketplace_name = serializers.CharField(source="marketplace.name", read_only=True)
+
+    class Meta:
+        model = BusinessEntity
+        fields = [
+            "id", "company_id", "name",
+            "marketplace_id", "marketplace_name",
+            "is_active", "cdate", "udate",
+        ]
+        read_only_fields = ["id", "company_id", "cdate", "udate"]
+
+
+class BusinessEntityWriteSerializer(serializers.ModelSerializer):
+    marketplace_id = serializers.CharField(write_only=True)
+
+    class Meta:
+        model = BusinessEntity
+        fields = ["name", "marketplace_id", "is_active"]
+
+    def validate_marketplace_id(self, value: str) -> str:
+        from core.models import Marketplace
+        if not Marketplace.objects.filter(id=value, is_active=True).exists():
+            raise serializers.ValidationError("Marketplace not found or inactive")
+        return value
+
+
+class ProductBusinessEntitySerializer(serializers.ModelSerializer):
+    product_id = serializers.CharField(source="product.id", read_only=True)
+    product_name = serializers.CharField(source="product.name", read_only=True)
+    product_sku = serializers.CharField(source="product.sku_code", read_only=True)
+    business_entity_id = serializers.CharField(source="business_entity.id", read_only=True)
+    business_entity_name = serializers.CharField(source="business_entity.name", read_only=True)
+    marketplace_id = serializers.CharField(source="business_entity.marketplace.id", read_only=True)
+    marketplace_name = serializers.CharField(source="business_entity.marketplace.name", read_only=True)
+
+    class Meta:
+        model = ProductBusinessEntity
+        fields = [
+            "id", "product_id", "product_name", "product_sku",
+            "business_entity_id", "business_entity_name",
+            "marketplace_id", "marketplace_name",
+            "cdate",
+        ]
+        read_only_fields = fields

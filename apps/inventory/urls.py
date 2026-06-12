@@ -9,7 +9,7 @@ urlpatterns = [
 ]
 
 router = DefaultRouter()
-router.register(r"category", views.CategoryViewSet)
+router.register(r"category", views.CategoryViewSet, basename="category")
 router.register(r"product", views.ProductViewSet)
 router.register(
     r"product-variants", views.ProductVariantStockViewSet, basename="product-variant-stock"
@@ -20,5 +20,7 @@ router.register(r"inventory", views.InventoryBulkViewSet, basename="inventory-bu
 router.register(r"stock-movements", views.StockMovementViewSet, basename="stock-movement")
 router.register(r"suppliers", views.SupplierViewSet, basename="supplier")
 router.register(r"product-suppliers", views.ProductSupplierViewSet, basename="product-supplier")
+router.register(r"business-entities", views.BusinessEntityViewSet, basename="business-entity")
+router.register(r"product-business-entities", views.ProductBusinessEntityViewSet, basename="product-business-entity")
 
 urlpatterns += router.urls

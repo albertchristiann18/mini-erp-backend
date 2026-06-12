@@ -3,8 +3,10 @@ from decimal import Decimal
 import factory
 
 from apps.inventory.models import (
+    BusinessEntity,
     Category,
     Product,
+    ProductBusinessEntity,
     ProductCogs,
     ProductSupplier,
     ProductVariant,
@@ -135,3 +137,22 @@ class ProductSupplierFactory(factory.django.DjangoModelFactory):
     supplier = factory.SubFactory(SupplierFactory)
     company = factory.LazyAttribute(lambda o: o.product.company)
     supplier_link = None
+
+
+class BusinessEntityFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = BusinessEntity
+
+    name = factory.Sequence(lambda n: f"Business Entity {n}")
+    company = factory.SubFactory(CompanyFactory)
+    marketplace = factory.SubFactory(MarketplaceFactory)
+    is_active = True
+
+
+class ProductBusinessEntityFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = ProductBusinessEntity
+
+    product = factory.SubFactory(ProductFactory)
+    business_entity = factory.SubFactory(BusinessEntityFactory)
+    company = factory.LazyAttribute(lambda o: o.product.company)
