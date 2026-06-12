@@ -948,7 +948,7 @@ class InventoryService:
             sku_variant_code__in=skus,
             company_id=company_id,
             is_active=True,
-        ).select_related("company")
+        ).select_related("company", "product")
         variant_map: dict[str, ProductVariant] = {v.sku_variant_code: v for v in variants_qs}
 
         variant_ids = [v.id for v in variants_qs]
@@ -991,7 +991,7 @@ class InventoryService:
 
             current_qty = pvw.physical_qty
             if current_qty == target_qty:
-                skipped.append({"sku": sku, "qty": target_qty})
+                skipped.append({"sku": sku, "qty": target_qty, "product_name": variant.product.name, "variant_name": variant.name})
                 continue
 
             delta = target_qty - current_qty
@@ -1011,6 +1011,8 @@ class InventoryService:
                 "before": current_qty,
                 "after": target_qty,
                 "delta": delta,
+                "product_name": variant.product.name,
+                "variant_name": variant.name,
             })
 
         if not dry_run:

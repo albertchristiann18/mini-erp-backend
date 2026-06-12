@@ -3180,6 +3180,8 @@ class MarketplaceReconcileTest(APITestCase):
         self.assertEqual(result["summary"]["skipped"], 1)
         self.assertEqual(result["summary"]["reconciled"], 0)
         self.assertEqual(StockMovement.objects.count(), 0)
+        self.assertEqual(result["skipped"][0]["product_name"], "Test Product")
+        self.assertEqual(result["skipped"][0]["variant_name"], "Test Product Variant")
 
     def test_reconcile_different_stock_creates_movement(self):
         """Variant where stock differs creates a MARKETPLACE_SYNC movement."""
@@ -3204,6 +3206,8 @@ class MarketplaceReconcileTest(APITestCase):
         self.assertEqual(movement.balance_before, 50)
         self.assertEqual(movement.balance_after, 80)
         self.assertEqual(movement.quantity, 30)
+        self.assertEqual(result["reconciled"][0]["product_name"], "Test Product")
+        self.assertEqual(result["reconciled"][0]["variant_name"], "Test Product Variant")
 
     def test_reconcile_not_found_sku(self):
         """SKU not matching any variant appears in not_found."""
