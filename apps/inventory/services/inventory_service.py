@@ -852,7 +852,7 @@ class InventoryService:
         ws = wb.active
 
         SKU_ALIASES = {"sku reference no.", "seller sku", "sku", "sku_variant_code"}
-        STOCK_ALIASES = {"current stock", "normal stock", "available stock", "stock", "quantity", "qty"}
+        STOCK_ALIASES = {"current stock", "normal stock", "available stock", "stock", "quantity", "qty", "stok"}
 
         rows = list(ws.iter_rows(values_only=True))
 
