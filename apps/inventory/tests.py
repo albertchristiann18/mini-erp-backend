@@ -1,4 +1,5 @@
 # apps/inventory/tests/test_api.py
+import io
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -3032,3 +3033,272 @@ class TestBusinessEntityAPI(APITestCase):
             "/product-business-entities/00000000-0000-0000-0000-000000000000/"
         )
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class MarketplaceReconcileTest(APITestCase):
+    """Tests for marketplace stock reconciliation from xlsx file upload."""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(category=self.category, company=self.company)
+        self.variant = ProductVariantFactory(
+            product=self.product,
+            company=self.company,
+            sku_variant_code="SKU-TEST-001",
+            is_active=True,
+        )
+        self.service = InventoryService()
+        self.user = User.objects.create_user(
+            username="reconcile_user", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    @staticmethod
+    def _make_xlsx(headers: list, data_rows: list[list]) -> io.BytesIO:
+        import openpyxl
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(headers)
+        for row in data_rows:
+            ws.append(row)
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return buf
+
+    # --- Parser tests ---
+
+    def test_parse_marketplace_xlsx_shopee_format(self):
+        """Row 1 = metadata, row 2 = headers, row 3+ = data."""
+        rows = [
+            ["Shopee Export Report", None, None],
+            ["SKU Reference No.", "Current Stock", "Product Name"],
+            ["SKU-001", "50", "Product A"],
+            ["SKU-002", "30", "Product B"],
+        ]
+        buf = self._make_xlsx(rows[0], rows[1:])
+        # first row is metadata with no matching headers, so header is row 2
+        result = InventoryService.parse_marketplace_xlsx(buf)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0], {"sku": "SKU-001", "qty": 50})
+        self.assertEqual(result[1], {"sku": "SKU-002", "qty": 30})
+
+    def test_parse_marketplace_xlsx_simple_format(self):
+        """Headers in row 1 = ["SKU", "Stock"]."""
+        buf = self._make_xlsx(
+            ["SKU", "Stock"],
+            [["VAR-A", "10"], ["VAR-B", "20"]],
+        )
+        result = InventoryService.parse_marketplace_xlsx(buf)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0], {"sku": "VAR-A", "qty": 10})
+        self.assertEqual(result[1], {"sku": "VAR-B", "qty": 20})
+
+    def test_parse_marketplace_xlsx_no_valid_columns(self):
+        """Unrecognized headers return []."""
+        buf = self._make_xlsx(
+            ["Product", "Price"],
+            [["A", "100"], ["B", "200"]],
+        )
+        result = InventoryService.parse_marketplace_xlsx(buf)
+        self.assertEqual(result, [])
+
+    def test_parse_marketplace_xlsx_skips_empty_sku(self):
+        """Rows with empty SKU are skipped."""
+        buf = self._make_xlsx(
+            ["SKU", "Stock"],
+            [["VAR-A", "10"], ["", "20"], [None, "30"]],
+        )
+        result = InventoryService.parse_marketplace_xlsx(buf)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0], {"sku": "VAR-A", "qty": 10})
+
+    def test_parse_marketplace_xlsx_handles_float_qty(self):
+        """Stock values that are floats are converted to int."""
+        buf = self._make_xlsx(
+            ["SKU", "Stock"],
+            [["VAR-A", 10.0], ["VAR-B", 20.7]],
+        )
+        result = InventoryService.parse_marketplace_xlsx(buf)
+        self.assertEqual(result[0]["qty"], 10)
+        self.assertEqual(result[1]["qty"], 20)
+
+    # --- Service tests ---
+
+    def test_reconcile_same_stock_skipped(self):
+        """Variant where stock matches current is skipped, no StockMovement."""
+        ProductVariantWarehouseFactory(
+            product_variant=self.variant,
+            warehouse=self.warehouse,
+            company=self.company,
+            physical_qty=50,
+        )
+        rows = [{"sku": "SKU-TEST-001", "qty": 50}]
+        result = self.service.reconcile_marketplace_stock(
+            rows=rows,
+            warehouse_id=str(self.warehouse.id),
+            company_id=str(self.company.id),
+            marketplace_name="Shopee",
+        )
+        self.assertEqual(result["summary"]["skipped"], 1)
+        self.assertEqual(result["summary"]["reconciled"], 0)
+        self.assertEqual(StockMovement.objects.count(), 0)
+
+    def test_reconcile_different_stock_creates_movement(self):
+        """Variant where stock differs creates a MARKETPLACE_SYNC movement."""
+        ProductVariantWarehouseFactory(
+            product_variant=self.variant,
+            warehouse=self.warehouse,
+            company=self.company,
+            physical_qty=50,
+        )
+        rows = [{"sku": "SKU-TEST-001", "qty": 80}]
+        result = self.service.reconcile_marketplace_stock(
+            rows=rows,
+            warehouse_id=str(self.warehouse.id),
+            company_id=str(self.company.id),
+            marketplace_name="Shopee",
+        )
+        self.assertEqual(result["summary"]["reconciled"], 1)
+        self.assertEqual(result["summary"]["skipped"], 0)
+        movement = StockMovement.objects.last()
+        self.assertIsNotNone(movement)
+        self.assertEqual(movement.movement_type, StockMovement.MovementType.MARKETPLACE_SYNC)
+        self.assertEqual(movement.balance_before, 50)
+        self.assertEqual(movement.balance_after, 80)
+        self.assertEqual(movement.quantity, 30)
+
+    def test_reconcile_not_found_sku(self):
+        """SKU not matching any variant appears in not_found."""
+        rows = [{"sku": "SKU-NONEXIST", "qty": 10}]
+        result = self.service.reconcile_marketplace_stock(
+            rows=rows,
+            warehouse_id=str(self.warehouse.id),
+            company_id=str(self.company.id),
+            marketplace_name="Shopee",
+        )
+        self.assertEqual(result["summary"]["not_found"], 1)
+        self.assertIn("SKU-NONEXIST", result["not_found"])
+
+    def test_reconcile_dry_run(self):
+        """dry_run=True returns reconciled list but creates no StockMovement."""
+        ProductVariantWarehouseFactory(
+            product_variant=self.variant,
+            warehouse=self.warehouse,
+            company=self.company,
+            physical_qty=50,
+        )
+        rows = [{"sku": "SKU-TEST-001", "qty": 100}]
+        result = self.service.reconcile_marketplace_stock(
+            rows=rows,
+            warehouse_id=str(self.warehouse.id),
+            company_id=str(self.company.id),
+            marketplace_name="Shopee",
+            dry_run=True,
+        )
+        self.assertEqual(result["summary"]["reconciled"], 1)
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(StockMovement.objects.count(), 0)
+
+    def test_reconcile_creates_new_pvw(self):
+        """Variant with no PVW gets one created during reconciliation."""
+        rows = [{"sku": "SKU-TEST-001", "qty": 25}]
+        result = self.service.reconcile_marketplace_stock(
+            rows=rows,
+            warehouse_id=str(self.warehouse.id),
+            company_id=str(self.company.id),
+            marketplace_name="Tokopedia",
+        )
+        self.assertEqual(result["summary"]["reconciled"], 1)
+        pvw = ProductVariantWarehouse.objects.get(
+            product_variant=self.variant,
+            warehouse=self.warehouse,
+        )
+        self.assertEqual(pvw.physical_qty, 25)
+
+    def test_reconcile_empty_rows(self):
+        """Empty rows returns empty summary."""
+        result = self.service.reconcile_marketplace_stock(
+            rows=[],
+            warehouse_id=str(self.warehouse.id),
+            company_id=str(self.company.id),
+            marketplace_name="Shopee",
+        )
+        self.assertEqual(result["summary"]["total"], 0)
+
+    # --- Endpoint tests ---
+
+    def test_reconcile_endpoint_no_file(self):
+        """POST without file returns 400."""
+        response = self.client.post(
+            "/inventory/marketplace_reconcile/",
+            {"warehouse_id": str(self.warehouse.id)},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("error", response.data)
+
+    def test_reconcile_endpoint_no_warehouse(self):
+        """POST without warehouse_id returns 400."""
+        buf = self._make_xlsx(["SKU", "Stock"], [["A", "10"]])
+        response = self.client.post(
+            "/inventory/marketplace_reconcile/",
+            {"file": buf},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("error", response.data)
+
+    def test_reconcile_endpoint_success(self):
+        """POST with valid file and warehouse reconciles stock."""
+        ProductVariantWarehouseFactory(
+            product_variant=self.variant,
+            warehouse=self.warehouse,
+            company=self.company,
+            physical_qty=50,
+        )
+        buf = self._make_xlsx(
+            ["SKU", "Stock"],
+            [["SKU-TEST-001", "75"]],
+        )
+        response = self.client.post(
+            "/inventory/marketplace_reconcile/",
+            {
+                "file": buf,
+                "warehouse_id": str(self.warehouse.id),
+            },
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["summary"]["reconciled"], 1)
+        self.assertEqual(response.data["reconciled"][0]["before"], 50)
+        self.assertEqual(response.data["reconciled"][0]["after"], 75)
+
+    def test_reconcile_endpoint_dry_run(self):
+        """POST with dry_run=true does not create StockMovement."""
+        ProductVariantWarehouseFactory(
+            product_variant=self.variant,
+            warehouse=self.warehouse,
+            company=self.company,
+            physical_qty=50,
+        )
+        buf = self._make_xlsx(
+            ["SKU", "Stock"],
+            [["SKU-TEST-001", "100"]],
+        )
+        response = self.client.post(
+            "/inventory/marketplace_reconcile/",
+            {
+                "file": buf,
+                "warehouse_id": str(self.warehouse.id),
+                "dry_run": "true",
+            },
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["dry_run"])
+        self.assertEqual(StockMovement.objects.count(), 0)

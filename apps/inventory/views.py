@@ -373,6 +373,50 @@ class InventoryBulkViewSet(viewsets.ViewSet):
         )
         return Response(result, status=200)
 
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="marketplace_reconcile",
+        parser_classes=[MultiPartParser, FormParser],
+    )
+    def marketplace_reconcile(self, request: Request) -> Response:
+        file_obj = request.FILES.get("file")
+        marketplace_id = request.data.get("marketplace_id", "")
+        warehouse_id = request.data.get("warehouse_id")
+        dry_run_raw = request.data.get("dry_run", "false")
+        dry_run = str(dry_run_raw).lower() in ("true", "1", "yes")
+
+        if not file_obj:
+            return Response({"error": "file is required"}, status=400)
+        if not warehouse_id:
+            return Response({"error": "warehouse_id is required"}, status=400)
+
+        from apps.inventory.models import CompanyMarketplace
+        marketplace_name = marketplace_id
+        if marketplace_id:
+            cm = CompanyMarketplace.objects.filter(
+                id=marketplace_id,
+                company=request.user.profile.company,
+            ).first()
+            if cm:
+                marketplace_name = cm.name
+
+        rows = InventoryService.parse_marketplace_xlsx(file_obj)
+        if not rows:
+            return Response(
+                {"error": "Could not parse file. Ensure it has SKU and stock columns in the first 5 rows."},
+                status=400,
+            )
+
+        result = InventoryService().reconcile_marketplace_stock(
+            rows=rows,
+            warehouse_id=warehouse_id,
+            company_id=str(request.user.profile.company_id),
+            marketplace_name=marketplace_name,
+            dry_run=dry_run,
+        )
+        return Response(result, status=200)
+
 
 class AvgSalesView(APIView):
     """

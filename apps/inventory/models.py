@@ -259,6 +259,7 @@ class StockMovement(DefaultModel):
         ADJUSTMENT = "ADJ", "Stock Adjustment (Manual)"
         TRANSFER = "TRF", "Warehouse Transfer"
         RETURN = "RET", "Customer Return"
+        MARKETPLACE_SYNC = "MPS", "Marketplace Stock Reconciliation"
 
     id = ULIDField(
         primary_key=True, default=generate_ulid, editable=False, db_column="stock_movement_id"
