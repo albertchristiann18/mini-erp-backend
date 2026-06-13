@@ -33,7 +33,7 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
     product_id = serializers.CharField(source="product_variant.product.id", read_only=True)
     product_name = serializers.CharField(source="product_variant.product.name", read_only=True)
     product_supplier_link = serializers.CharField(
-        source="product_variant.product.supplier_link", read_only=True, allow_null=True
+        source="supplier_link", read_only=True, allow_null=True
     )
     product_photo_url = serializers.SerializerMethodField()
     updated_qty = serializers.IntegerField(read_only=True)
@@ -474,7 +474,7 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
 
         locked_violations = []
         for field, value in attrs.items():
-            if field in ("status", "order_details", "warehouse_id", "_purchase_order"):
+            if field in ("status", "order_details", "warehouse_id", "_purchase_order", "supplier"):
                 continue
             if value is not None and field not in editable_header_set:
                 locked_violations.append(field)

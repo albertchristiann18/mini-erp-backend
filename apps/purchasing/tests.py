@@ -3237,12 +3237,13 @@ class PurchaseOrderDetailSerializerProductFieldsTest(TestCase):
         self.product = ProductFactory(
             company=self.company,
             category=self.category,
-            supplier_link="https://example.com/supplier/product-789",
         )
         self.product_variant = ProductVariantFactory(product=self.product)
         self.po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
         self.detail = PurchaseOrderDetailFactory(
-            purchase_order=self.po, product_variant=self.product_variant
+            purchase_order=self.po,
+            product_variant=self.product_variant,
+            supplier_link="https://example.com/supplier/product-789",
         )
 
     def test_po_detail_serializer_includes_product_fields(self):
