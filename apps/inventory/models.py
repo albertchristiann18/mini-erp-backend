@@ -50,8 +50,6 @@ class Product(DefaultModel):
     width = models.IntegerField(default=0)
     height = models.IntegerField(default=0)
     is_active = models.BooleanField(default=True)
-    supplier_link = models.URLField(max_length=500, blank=True, null=True)
-
     shipping_config = models.JSONField(
         default=get_default_shipping_config,
         blank=True,
@@ -261,6 +259,7 @@ class StockMovement(DefaultModel):
         ADJUSTMENT = "ADJ", "Stock Adjustment (Manual)"
         TRANSFER = "TRF", "Warehouse Transfer"
         RETURN = "RET", "Customer Return"
+        MARKETPLACE_SYNC = "MPS", "Marketplace Stock Reconciliation"
 
     id = ULIDField(
         primary_key=True, default=generate_ulid, editable=False, db_column="stock_movement_id"
@@ -277,3 +276,99 @@ class StockMovement(DefaultModel):
 
     class Meta:
         ordering = ["-cdate"]
+
+
+class Supplier(DefaultModel):
+    id = ULIDField(primary_key=True, default=generate_ulid, editable=False, db_column="supplier_id")
+    name = models.CharField(max_length=255)
+    contact_name = models.CharField(max_length=255, blank=True, null=True)
+    phone = models.CharField(max_length=50, blank=True, null=True)
+    country = models.CharField(max_length=100, blank=True, null=True)
+    notes = models.TextField(blank=True, null=True)
+    supplier_link = models.URLField(max_length=500, blank=True, null=True)
+    is_active = models.BooleanField(default=True)
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class ProductSupplier(DefaultModel):
+    id = ULIDField(
+        primary_key=True, default=generate_ulid, editable=False, db_column="product_supplier_id"
+    )
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="product_suppliers")
+    supplier = models.ForeignKey(
+        Supplier, on_delete=models.CASCADE, related_name="product_suppliers"
+    )
+    supplier_link = models.URLField(
+        max_length=500,
+        blank=True,
+        null=True,
+        help_text="URL to this product on the supplier's site",
+    )
+
+    class Meta:
+        unique_together = ["product", "supplier"]
+
+    def __str__(self) -> str:
+        return f"{self.product} — {self.supplier}"
+
+
+class CompanyMarketplace(DefaultModel):
+    """Company-scoped sales channel. Each company owns their own list."""
+
+    id = ULIDField(
+        primary_key=True, default=generate_ulid, editable=False, db_column="company_marketplace_id"
+    )
+    name = models.CharField(max_length=255)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        unique_together = [("company", "name")]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.company.name})"
+
+
+class BusinessEntity(DefaultModel):
+    id = ULIDField(
+        primary_key=True, default=generate_ulid, editable=False, db_column="business_entity_id"
+    )
+    name = models.CharField(max_length=255)
+    marketplace = models.ForeignKey(
+        CompanyMarketplace,
+        on_delete=models.PROTECT,
+        related_name="business_entities",
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        unique_together = [("company", "name")]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.marketplace.name})"
+
+
+class ProductBusinessEntity(DefaultModel):
+    id = ULIDField(
+        primary_key=True,
+        default=generate_ulid,
+        editable=False,
+        db_column="product_business_entity_id",
+    )
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.CASCADE,
+        related_name="business_entities",
+    )
+    business_entity = models.ForeignKey(
+        BusinessEntity,
+        on_delete=models.CASCADE,
+        related_name="product_assignments",
+    )
+
+    class Meta:
+        unique_together = [("product", "business_entity")]
+
+    def __str__(self) -> str:
+        return f"{self.product.sku_code} → {self.business_entity.name}"

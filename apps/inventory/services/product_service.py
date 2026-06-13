@@ -1,14 +1,18 @@
 import logging
+from typing import Any
 
 from django.db import transaction
 
 from apps.inventory.models import (
     Product,
     ProductVariant,
-    ProductVariantMarketplace,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _build_variant_name(variant_values: dict[str, str]) -> str:
+    return " / ".join(v for v in variant_values.values() if v) or "Default"
 
 
 class ProductService:
@@ -27,6 +31,7 @@ class ProductService:
                 category_id=data.get("category_id", ""),
                 name=data.get("name", ""),
                 description=data.get("description", ""),
+                variant_options=data.get("variant_options", []),
                 specifications=data.get("specifications", {}),
                 weight=data.get("weight", 0),
                 length=data.get("length", 0),
@@ -36,72 +41,138 @@ class ProductService:
             for data in data_list
         ]
         created_products = Product.objects.bulk_create(products, batch_size=100)
-
         product_index_map = {i: obj.id for i, obj in enumerate(created_products)}
 
         variant_product_map: list[int] = []
-        listings_data_tupple = []
-        variants = []
-        variant_index = 0
-        for i in range(len(data_list)):
-            data = data_list[i]
-            variants_data = data.pop("variants")
+        variants: list[ProductVariant] = []
+        for i, data in enumerate(data_list):
+            variants_data = data.pop("variants", [])
             for variant_data in variants_data:
-                for listing_data in variant_data.get("marketplace_listings", []):
-                    listings_data_tupple.append((variant_index, listing_data))
-
+                variant_values = variant_data.get("variant_values", {})
                 variants.append(
                     ProductVariant(
                         product_id=product_index_map[i],
                         company_id=company_id,
-                        name=variant_data.get("name", ""),
+                        name=_build_variant_name(variant_values),
                         sku_variant_code=variant_data.get("sku_variant_code", ""),
-                        variant_values=variant_data.get("variant_values", {}),
+                        variant_values=variant_values,
                         base_price=variant_data.get("base_price", 0),
                     )
                 )
                 variant_product_map.append(i)
-                variant_index += 1
 
         created_variants = ProductVariant.objects.bulk_create(variants, batch_size=100)
-        variant_index_map = {i: obj.id for i, obj in enumerate(created_variants)}
-        create_listing_data = []
-        for i, listing_data in listings_data_tupple:
-            create_listing_data.append(
-                ProductVariantMarketplace(
-                    product_variant_id=variant_index_map[i],
-                    company_id=company_id,
-                    marketplace_id=listing_data["marketplace_id"],
-                    selling_price=listing_data["selling_price"],
-                    discounted_price=listing_data.get("discounted_price"),
-                )
-            )
-        ProductVariantMarketplace.objects.bulk_create(create_listing_data, batch_size=100)
 
         created_variants_by_product: dict[int, list[ProductVariant]] = {
             i: [] for i in range(len(data_list))
         }
         for j, variant in enumerate(created_variants):
-            product_idx = variant_product_map[j]
-            created_variants_by_product[product_idx].append(variant)
+            created_variants_by_product[variant_product_map[j]].append(variant)
 
-        result = []
-        for i, product in enumerate(created_products):
-            result.append(
-                {
-                    "id": str(product.id),
-                    "name": product.name,
-                    "variants": [
-                        {
-                            "id": str(v.id),
-                            "name": v.name,
-                            "sku_variant_code": v.sku_variant_code,
-                        }
-                        for v in created_variants_by_product[i]
-                    ],
-                }
-            )
-        return result
+        return [
+            {
+                "id": str(product.id),
+                "name": product.name,
+                "variants": [
+                    {
+                        "id": str(v.id),
+                        "name": v.name,
+                        "sku_variant_code": v.sku_variant_code,
+                    }
+                    for v in created_variants_by_product[i]
+                ],
+            }
+            for i, product in enumerate(created_products)
+        ]
+
+    @transaction.atomic
+    def save_variants(
+        self,
+        product_id: str,
+        company_id: str,
+        variant_options: dict[str, list[str]],
+        variants: list[dict],
+    ) -> dict[str, Any]:
+        product = Product.objects.select_for_update().get(id=product_id, company_id=company_id)
+        product.variant_options = variant_options
+        product.save(update_fields=["variant_options", "udate"])
+
+        incoming_ids: set[str] = set()
+        created_count = 0
+        updated_count = 0
+
+        for v_data in variants:
+            variant_id = (v_data.get("id") or "").strip()
+            variant_values = v_data.get("variant_values", {})
+            sku_variant_code = v_data.get("sku_variant_code", "")
+            base_price = v_data.get("base_price", 0)
+            name = _build_variant_name(variant_values)
+
+            if variant_id:
+                try:
+                    variant = ProductVariant.objects.select_for_update().get(
+                        id=variant_id, product_id=product_id, company_id=company_id
+                    )
+                    variant.name = name
+                    variant.base_price = base_price
+                    if sku_variant_code:
+                        variant.sku_variant_code = sku_variant_code
+                    variant.is_active = True
+                    variant.save(
+                        update_fields=[
+                            "name",
+                            "base_price",
+                            "sku_variant_code",
+                            "is_active",
+                            "udate",
+                        ]
+                    )
+                    incoming_ids.add(str(variant.id))
+                    updated_count += 1
+                except ProductVariant.DoesNotExist:
+                    new_variant = ProductVariant.objects.create(
+                        product_id=product_id,
+                        company_id=company_id,
+                        name=name,
+                        variant_values=variant_values,
+                        sku_variant_code=sku_variant_code,
+                        base_price=base_price,
+                    )
+                    incoming_ids.add(str(new_variant.id))
+                    created_count += 1
+            else:
+                new_variant = ProductVariant.objects.create(
+                    product_id=product_id,
+                    company_id=company_id,
+                    name=name,
+                    variant_values=variant_values,
+                    sku_variant_code=sku_variant_code,
+                    base_price=base_price,
+                )
+                incoming_ids.add(str(new_variant.id))
+                created_count += 1
+
+        stale_qs = ProductVariant.objects.filter(
+            product_id=product_id, company_id=company_id, is_active=True
+        ).exclude(id__in=list(incoming_ids))
+
+        deactivated: list[str] = []
+        kept_with_stock: list[str] = []
+        for v in stale_qs.select_for_update():
+            if v.total_incoming_qty == 0 and v.total_available_qty == 0:
+                v.is_active = False
+                v.save(update_fields=["is_active", "udate"])
+                deactivated.append(str(v.id))
+            else:
+                kept_with_stock.append(str(v.id))
+
+        return {
+            "product_id": str(product.id),
+            "created": created_count,
+            "updated": updated_count,
+            "deactivated": deactivated,
+            "kept_with_stock": kept_with_stock,
+        }
 
     def _trigger_shopee_product_update(self, product_id: str) -> None:
         from apps.inventory.models import Product

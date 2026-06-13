@@ -1,4 +1,5 @@
 # apps/inventory/tests/test_api.py
+import io
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -18,23 +19,25 @@ from apps.inventory.factories import (
     CategoryFactory,
     ProductCogsFactory,
     ProductFactory,
+    ProductSupplierFactory,
     ProductVariantFactory,
     ProductVariantWarehouseFactory,
     StockMovementFactory,
+    SupplierFactory,
 )
 from apps.inventory.models import (
+    Category,
     Product,
     ProductCogs,
     ProductPhoto,
     ProductVariant,
-    ProductVariantMarketplace,
     ProductVariantWarehouse,
     StockMovement,
 )
 from apps.inventory.services.inventory_service import InventoryService
 from apps.purchasing.factories import PurchaseOrderFactory
 from apps.purchasing.models import PurchaseOrder
-from core.factories import CompanyFactory, MarketplaceFactory, WarehouseFactory
+from core.factories import CompanyFactory, WarehouseFactory
 from core.permissions import IsStaffOrReadOnly as StaffPerm
 
 _real_staff_perm = StaffPerm.has_permission
@@ -44,14 +47,13 @@ class InventoryAPITest(APITestCase):
     def setUp(self):
         self.company = CompanyFactory()
         self.category = CategoryFactory(company=self.company)
-        self.marketplace = MarketplaceFactory()
         self.base_payload = [
             {
                 "company_id": str(self.company.id),
                 "category_id": str(self.category.id),
                 "name": "Kemeja Batik Pria Premium",
                 "description": "Batik Slimfit bahan katun halus, nyaman untuk kerja maupun acara formal.",
-                "variant_options": [{"name": "Warna", "order": 1}, {"name": "Size", "order": 2}],
+                "variant_options": {"warna": ["Navy"], "size": ["L", "XL"]},
                 "specifications": {
                     "Merek": "Tidak ada merek",
                     "Bahan": ["Katun", "Bulu Domba"],
@@ -64,29 +66,12 @@ class InventoryAPITest(APITestCase):
                 "height": 3,
                 "variants": [
                     {
-                        "name": "Batik Premium - Navy - L",
-                        # "sku_variant_code": "1",
-                        "variant_values": {"1": "Navy", "2": "L"},
+                        "variant_values": {"warna": "Navy", "size": "L"},
                         "base_price": 180000,
-                        "marketplace_listings": [
-                            {
-                                "marketplace_id": str(self.marketplace.id),
-                                "selling_price": 210000,
-                                "discounted_price": 195000,
-                            }
-                        ],
                     },
                     {
-                        "name": "Batik Premium - Navy - XL",
-                        # "sku_variant_code": "2",
-                        "variant_values": {"1": "Navy", "2": "XL"},
+                        "variant_values": {"warna": "Navy", "size": "XL"},
                         "base_price": 185000,
-                        "marketplace_listings": [
-                            {
-                                "marketplace_id": str(self.marketplace.id),
-                                "selling_price": 215000,
-                            }
-                        ],
                     },
                 ],
             }
@@ -112,7 +97,7 @@ class InventoryAPITest(APITestCase):
                 "category_id": str(self.category.id),
                 "name": "Kemeja Batik Pria Premium B",
                 "description": "Batik Slimfit bahan katun halus, nyaman untuk kerja maupun acara formal.",
-                "variant_options": [{"name": "Warna", "order": 1}, {"name": "Size", "order": 2}],
+                "variant_options": {"warna": ["Blue"], "size": ["L", "XL"]},
                 "specifications": {
                     "Merek": "Tidak ada merek",
                     "Bahan": ["Katun", "Bulu Domba"],
@@ -125,29 +110,12 @@ class InventoryAPITest(APITestCase):
                 "height": 3,
                 "variants": [
                     {
-                        "name": "Batik Premium B - Blue - L",
-                        # "sku_variant_code": "1",
-                        "variant_values": {"1": "Blue", "2": "L"},
+                        "variant_values": {"warna": "Blue", "size": "L"},
                         "base_price": 180000,
-                        "marketplace_listings": [
-                            {
-                                "marketplace_id": str(self.marketplace.id),
-                                "selling_price": 210000,
-                                "discounted_price": 195000,
-                            }
-                        ],
                     },
                     {
-                        "name": "Batik Premium B - Blue - XL",
-                        # "sku_variant_code": "2",
-                        "variant_values": {"1": "Blue", "2": "XL"},
+                        "variant_values": {"warna": "Blue", "size": "XL"},
                         "base_price": 185000,
-                        "marketplace_listings": [
-                            {
-                                "marketplace_id": str(self.marketplace.id),
-                                "selling_price": 215000,
-                            }
-                        ],
                     },
                 ],
             }
@@ -159,10 +127,6 @@ class InventoryAPITest(APITestCase):
         # 1. Verify Database Counts (The most important bulk check)
         self.assertEqual(Product.objects.count(), 2)
         self.assertEqual(ProductVariant.objects.count(), 4)
-        # Verify 4 listings (2 per product in your payload)
-        from apps.inventory.models import ProductVariantMarketplace
-
-        self.assertEqual(ProductVariantMarketplace.objects.count(), 4)
 
         # 2. Verify First Product Relationship
         product_a = Product.objects.get(name="Kemeja Batik Pria Premium")
@@ -184,7 +148,7 @@ class InventoryAPITest(APITestCase):
 
     def test_create_multiple_products_with_nested_variants_and_listings(self):
         """
-        Tests that 2 products with multiple variants and listings
+        Tests that 2 products with multiple variants
         are correctly mapped and saved in bulk.
         """
         # setup_data would be a fixture or dictionary containing your payload
@@ -194,7 +158,7 @@ class InventoryAPITest(APITestCase):
                 "category_id": str(self.category.id),
                 "name": "Kemeja Batik Pria Premium B",
                 "description": "Batik Slimfit bahan katun halus, nyaman untuk kerja maupun acara formal.",
-                "variant_options": [{"name": "Warna", "order": 1}, {"name": "Size", "order": 2}],
+                "variant_options": {"warna": ["Blue"], "size": ["L", "XL"]},
                 "specifications": {
                     "Merek": "Tidak ada merek",
                     "Bahan": ["Katun", "Bulu Domba"],
@@ -207,43 +171,22 @@ class InventoryAPITest(APITestCase):
                 "height": 3,
                 "variants": [
                     {
-                        "name": "Batik Premium B - Blue - L",
-                        # "sku_variant_code": "1",
-                        "variant_values": {"1": "Blue", "2": "L"},
+                        "variant_values": {"warna": "Blue", "size": "L"},
                         "base_price": 180000,
-                        "marketplace_listings": [
-                            {
-                                "marketplace_id": str(self.marketplace.id),
-                                "selling_price": 210000,
-                                "discounted_price": 195000,
-                            }
-                        ],
                     },
                     {
-                        "name": "Batik Premium B - Blue - XL",
-                        # "sku_variant_code": "2",
-                        "variant_values": {"1": "Blue", "2": "XL"},
+                        "variant_values": {"warna": "Blue", "size": "XL"},
                         "base_price": 185000,
-                        "marketplace_listings": [
-                            {
-                                "marketplace_id": str(self.marketplace.id),
-                                "selling_price": 215000,
-                            }
-                        ],
                     },
                 ],
             }
         ]
-
         response = self.client.post("/product/", payload, format="json")
-
         # 1. Basic Response Check
         assert response.status_code == 201
-
         # 2. Verify Database Integrity (Counts)
         assert Product.objects.count() == 2
         assert ProductVariant.objects.count() == 4
-        assert ProductVariantMarketplace.objects.count() == 4
 
         # 3. Verify Specific Mapping (Global Indexing Check)
         # Fetch the second product to ensure it didn't get Product A's variants
@@ -255,22 +198,6 @@ class InventoryAPITest(APITestCase):
             # Verify the variant names match the 'Blue' logic in payload B
             assert "Blue" in variant.name
 
-            # Verify Marketplace Listings are linked to these specific variants
-            listings = ProductVariantMarketplace.objects.filter(product_variant=variant)
-            assert listings.exists()
-            assert listings.count() == 1
-
-    def test_atomic_rollback_on_failure(self):
-        """
-        Tests that if data is partially corrupt (e.g., missing marketplace_id),
-        NO products are created (Transaction Rollback).
-        """
-        payload = self.base_payload
-        payload[0]["variants"][1]["marketplace_listings"][0]["marketplace_id"] = None
-
-        self.client.post("/product/", payload, format="json")
-        assert Product.objects.count() == 0
-
     def test_create_product_returns_id_and_variant_ids(self):
         """POST /product/ returns {id, name, variants: [{id, name, sku_variant_code}]}"""
         payload = {
@@ -278,12 +205,12 @@ class InventoryAPITest(APITestCase):
             "category_id": str(self.category.id),
             "name": "Test Product Quick",
             "description": "Test Product Quick (created via PO - update description later)",
+            "variant_options": {"color": ["Blue"]},
             "variants": [
                 {
-                    "name": "Blue / M",
+                    "variant_values": {"color": "Blue"},
                     "sku_variant_code": "TSH-001-BLU-M",
                     "base_price": 50000,
-                    "marketplace_listings": [],
                 }
             ],
         }
@@ -292,7 +219,7 @@ class InventoryAPITest(APITestCase):
         self.assertIn("id", response.data)
         self.assertEqual(len(response.data["variants"]), 1)
         self.assertEqual(response.data["variants"][0]["sku_variant_code"], "TSH-001-BLU-M")
-        self.assertEqual(response.data["variants"][0]["name"], "Blue / M")
+        self.assertEqual(response.data["variants"][0]["name"], "Blue")
 
     def test_create_product_sets_sku_variant_code_in_db(self):
         """sku_variant_code from request is saved to the ProductVariant record."""
@@ -303,10 +230,9 @@ class InventoryAPITest(APITestCase):
             "description": "SKU Test Product (created via PO - update description later)",
             "variants": [
                 {
-                    "name": "Red / L",
+                    "variant_values": {"color": "red"},
                     "sku_variant_code": "SKU-001-RED-L",
                     "base_price": 75000,
-                    "marketplace_listings": [],
                 }
             ],
         }
@@ -1536,6 +1462,52 @@ class CompanyScopedViewsTest(APITestCase):
         self.assertIn(str(self.product_a.id), ids)
         self.assertNotIn(str(self.product_b.id), ids)
 
+    def test_product_list_includes_inactive(self):
+        """Inactive products are visible in the list so staff can reactivate them"""
+        inactive = ProductFactory(
+            company=self.company_a, category=self.category_a, is_active=False, description="A" * 25
+        )
+        self.client.force_authenticate(user=self.user_a)
+        resp = self.client.get("/product/")
+        self.assertEqual(resp.status_code, 200)
+        ids = [p["id"] for p in resp.data["results"]]
+        self.assertIn(str(inactive.id), ids)
+
+    def test_product_list_filter_by_category(self):
+        self.client.force_authenticate(user=self.user_a)
+        cat_other = CategoryFactory(company=self.company_a)
+        p_other = ProductFactory(company=self.company_a, category=cat_other)
+        resp = self.client.get("/product/", {"category": self.category_a.id})
+        self.assertEqual(resp.status_code, 200)
+        ids = [p["id"] for p in resp.data["results"]]
+        self.assertIn(str(self.product_a.id), ids)
+        self.assertNotIn(str(p_other.id), ids)
+
+    def test_product_list_ordering_name(self):
+        self.client.force_authenticate(user=self.user_a)
+        ProductFactory(company=self.company_a, category=self.category_a, name="B")
+        ProductFactory(company=self.company_a, category=self.category_a, name="A")
+        ProductFactory(company=self.company_a, category=self.category_a, name="C")
+        resp = self.client.get("/product/", {"ordering": "name"})
+        self.assertEqual(resp.status_code, 200)
+        names = [p["name"] for p in resp.data["results"]]
+        self.assertEqual(names, sorted(names))
+
+    def test_product_list_ordering_sku_code(self):
+        self.client.force_authenticate(user=self.user_a)
+        ProductFactory(company=self.company_a, category=self.category_a)
+        ProductFactory(company=self.company_a, category=self.category_a)
+        resp = self.client.get("/product/", {"ordering": "sku_code"})
+        self.assertEqual(resp.status_code, 200)
+        codes = [p["sku_code"] for p in resp.data["results"]]
+        self.assertEqual(codes, sorted(codes))
+
+    def test_product_list_ordering_invalid_ignored(self):
+        self.client.force_authenticate(user=self.user_a)
+        ProductFactory(company=self.company_a, category=self.category_a)
+        resp = self.client.get("/product/", {"ordering": "malicious; DROP TABLE"})
+        self.assertEqual(resp.status_code, 200)
+
     def test_variant_stock_list_scoped_by_company(self):
         self.client.force_authenticate(user=self.user_a)
         response = self.client.get("/product-variants/")
@@ -2207,37 +2179,13 @@ class UpdateVariantPriceTest(APITestCase):
 
 
 class SupplierLinkTest(TestCase):
-    """Tests for supplier_link field on Product model."""
+    """Tests for product_supplier_link field on ProductVariantStockSerializer."""
 
     def setUp(self):
         self.company = CompanyFactory()
         self.category = CategoryFactory(company=self.company)
 
-    def test_product_supplier_link_field_exists(self):
-        product = ProductFactory(
-            company=self.company,
-            category=self.category,
-            supplier_link="https://example.com/supplier/product-123",
-        )
-        product.refresh_from_db()
-        self.assertEqual(product.supplier_link, "https://example.com/supplier/product-123")
-
     def test_variant_stock_serializer_includes_product_supplier_link(self):
-        from apps.inventory.serializers import ProductVariantStockSerializer
-
-        product = ProductFactory(
-            company=self.company,
-            category=self.category,
-            supplier_link="https://example.com/supplier/product-456",
-        )
-        variant = ProductVariantFactory(product=product)
-        serializer = ProductVariantStockSerializer(variant)
-        self.assertIn("product_supplier_link", serializer.data)
-        self.assertEqual(
-            serializer.data["product_supplier_link"], "https://example.com/supplier/product-456"
-        )
-
-    def test_variant_stock_serializer_supplier_link_null_when_not_set(self):
         from apps.inventory.serializers import ProductVariantStockSerializer
 
         product = ProductFactory(
@@ -2260,3 +2208,1368 @@ class SupplierLinkTest(TestCase):
         variant = ProductVariantFactory(product=product)
         serializer = ProductVariantStockSerializer(variant)
         self.assertIn("product_photo_url", serializer.data)
+
+
+class TestSupplierCRUD(APITestCase):
+    """Tests for Supplier CRUD endpoints"""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.user = User.objects.create_user(
+            username="supplier_test_user", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def test_create_supplier(self):
+        response = self.client.post(
+            "/suppliers/",
+            {"name": "PT Supplier A", "contact_name": "Budi", "country": "Indonesia"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIn("id", response.data)
+
+    def test_list_suppliers(self):
+        from apps.inventory.factories import SupplierFactory
+
+        SupplierFactory(company=self.company)
+        response = self.client.get("/suppliers/", {"company_id": self.company.id}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        results = response.data.get("results", response.data)
+        self.assertGreaterEqual(len(results), 1)
+
+    def test_update_supplier(self):
+        from apps.inventory.factories import SupplierFactory
+
+        supplier = SupplierFactory(company=self.company)
+        response = self.client.patch(
+            f"/suppliers/{supplier.id}/",
+            {"name": "PT Supplier B"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        response = self.client.get(f"/suppliers/{supplier.id}/", format="json")
+        self.assertEqual(response.data["name"], "PT Supplier B")
+
+    def test_deactivate_supplier(self):
+        from apps.inventory.factories import SupplierFactory
+
+        supplier = SupplierFactory(company=self.company, is_active=True)
+        response = self.client.patch(
+            f"/suppliers/{supplier.id}/",
+            {"is_active": False},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        response = self.client.get(
+            "/suppliers/", {"company_id": self.company.id, "active_only": "true"}, format="json"
+        )
+        results = response.data.get("results", response.data)
+        ids = [s["id"] for s in results]
+        self.assertNotIn(str(supplier.id), ids)
+
+    def test_search_supplier(self):
+        from apps.inventory.factories import SupplierFactory
+
+        SupplierFactory(company=self.company, name="Alpha Supplier")
+        SupplierFactory(company=self.company, name="Beta Trading")
+        response = self.client.get(
+            "/suppliers/", {"search": "Alpha", "company_id": self.company.id}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        results = response.data.get("results", response.data)
+        names = [s["name"] for s in results]
+        self.assertIn("Alpha Supplier", names)
+        self.assertNotIn("Beta Trading", names)
+
+    def test_create_supplier_with_link(self):
+        response = self.client.post(
+            "/suppliers/",
+            {"name": "PT Supplier Link", "supplier_link": "https://shop.example.com/store/abc"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["supplier_link"], "https://shop.example.com/store/abc")
+
+    def test_update_supplier_link(self):
+        from apps.inventory.factories import SupplierFactory
+
+        supplier = SupplierFactory(company=self.company)
+        response = self.client.patch(
+            f"/suppliers/{supplier.id}/",
+            {"supplier_link": "https://new-link.com"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["supplier_link"], "https://new-link.com")
+
+    def test_supplier_link_optional(self):
+        response = self.client.post(
+            "/suppliers/",
+            {"name": "PT Supplier No Link"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIsNone(response.data["supplier_link"])
+
+
+class SaveVariantsTest(APITestCase):
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(
+            company=self.company, category=self.category, description="A" * 25
+        )
+        self.user = User.objects.create_user(
+            username="savevars_user", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def _url(self, pk):
+        return f"/product/{pk}/save_variants/"
+
+    def test_save_variants_creates_new_variants(self):
+        """POST save_variants with no id → creates new variants, returns created=2"""
+        payload = {
+            "variant_options": {"color": ["Red", "Blue"]},
+            "variants": [
+                {"variant_values": {"color": "Red"}, "sku_variant_code": "", "base_price": 100000},
+                {"variant_values": {"color": "Blue"}, "sku_variant_code": "", "base_price": 110000},
+            ],
+        }
+        resp = self.client.post(self._url(self.product.id), payload, format="json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["created"], 2)
+        self.assertEqual(resp.data["updated"], 0)
+        self.assertEqual(
+            ProductVariant.objects.filter(product=self.product, is_active=True).count(), 2
+        )
+        variants = ProductVariant.objects.filter(product=self.product, is_active=True).order_by(
+            "base_price"
+        )
+        self.assertEqual(variants[0].name, "Red")
+        self.assertEqual(variants[1].name, "Blue")
+
+    def test_save_variants_updates_existing_variant(self):
+        """POST save_variants with existing variant id → updates base_price"""
+        variant = ProductVariantFactory(
+            product=self.product, company=self.company, variant_values={"color": "Red"}
+        )
+        payload = {
+            "variant_options": {"color": ["Red"]},
+            "variants": [
+                {"id": str(variant.id), "variant_values": {"color": "Red"}, "base_price": 999000},
+            ],
+        }
+        resp = self.client.post(self._url(self.product.id), payload, format="json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["updated"], 1)
+        variant.refresh_from_db()
+        self.assertEqual(variant.base_price, 999000)
+
+    def test_save_variants_deactivates_stale_without_stock(self):
+        """Variants not in payload with no stock → deactivated"""
+        v1 = ProductVariantFactory(
+            product=self.product, company=self.company, variant_values={"color": "Red"}
+        )
+        v2 = ProductVariantFactory(
+            product=self.product, company=self.company, variant_values={"color": "Blue"}
+        )
+        payload = {
+            "variant_options": {"color": ["Red", "Blue"]},
+            "variants": [
+                {"id": str(v1.id), "variant_values": {"color": "Red"}, "base_price": 100000},
+            ],
+        }
+        resp = self.client.post(self._url(self.product.id), payload, format="json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(str(v2.id), resp.data["deactivated"])
+        v2.refresh_from_db()
+        self.assertFalse(v2.is_active)
+
+    def test_save_variants_keeps_stale_with_stock(self):
+        """Variants not in payload WITH stock → kept active, in kept_with_stock"""
+        v1 = ProductVariantFactory(
+            product=self.product, company=self.company, variant_values={"color": "Red"}
+        )
+        v2 = ProductVariantFactory(
+            product=self.product,
+            company=self.company,
+            variant_values={"color": "Blue"},
+        )
+        ProductVariant.objects.filter(id=v2.id).update(total_incoming_qty=10, total_available_qty=5)
+        v2.refresh_from_db()
+        payload = {
+            "variant_options": {"color": ["Red", "Blue"]},
+            "variants": [
+                {"id": str(v1.id), "variant_values": {"color": "Red"}, "base_price": 100000},
+            ],
+        }
+        resp = self.client.post(self._url(self.product.id), payload, format="json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(str(v2.id), resp.data["kept_with_stock"])
+        v2.refresh_from_db()
+        self.assertTrue(v2.is_active)
+
+    def test_save_variants_updates_variant_options(self):
+        """variant_options is persisted on the product"""
+        opts = {"size": ["S"]}
+        payload = {"variant_options": opts, "variants": []}
+        self.client.post(self._url(self.product.id), payload, format="json")
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.variant_options, opts)
+
+    def test_create_product_without_variants(self):
+        """POST /product/ with variants=[] returns 201"""
+        payload = {
+            "company_id": str(self.company.id),
+            "category_id": str(self.category.id),
+            "name": "No Variant Product",
+            "description": "A" * 25,
+            "variants": [],
+        }
+        resp = self.client.post("/product/", payload, format="json")
+        self.assertEqual(resp.status_code, 201)
+        self.assertTrue(Product.objects.filter(name="No Variant Product").exists())
+
+
+class TestVariantFilterBySupplier(APITestCase):
+    """Tests for filtering variants by supplier via ProductSupplier"""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.category = CategoryFactory(company=self.company)
+        self.product_a = ProductFactory(category=self.category, company=self.company)
+        self.product_b = ProductFactory(category=self.category, company=self.company)
+        self.variant_a = ProductVariantFactory(product=self.product_a, company=self.company)
+        self.variant_b = ProductVariantFactory(product=self.product_b, company=self.company)
+        self.supplier_a = SupplierFactory(company=self.company)
+        self.supplier_b = SupplierFactory(company=self.company)
+        self.user = User.objects.create_user(
+            username="vfilter_test_user", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+        ProductSupplierFactory(
+            product=self.product_a, supplier=self.supplier_a, company=self.company
+        )
+        ProductSupplierFactory(
+            product=self.product_b, supplier=self.supplier_b, company=self.company
+        )
+
+    def test_filter_variants_by_supplier(self):
+        response = self.client.get(
+            "/product-variants/", {"supplier_id": self.supplier_a.id}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [v["id"] for v in response.data["results"]]
+        self.assertIn(str(self.variant_a.id), ids)
+        self.assertNotIn(str(self.variant_b.id), ids)
+
+
+class ProductDetailAPITest(APITestCase):
+    """Tests for GET /product/{id}/ — variant detail fields"""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(category=self.category, company=self.company)
+        self.variant = ProductVariantFactory(
+            product=self.product,
+            company=self.company,
+            current_cogs=50000,
+            total_available_qty=120,
+            total_incoming_qty=30,
+        )
+        self.user = User.objects.create_user(
+            username="detail_test", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def test_product_detail_includes_variant_cogs_and_stock_fields(self):
+        response = self.client.get(f"/product/{self.product.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        variants = response.data.get("variants", [])
+        self.assertGreater(len(variants), 0)
+        variant_data = variants[0]
+        self.assertIn("current_cogs", variant_data)
+        self.assertIn("total_available_qty", variant_data)
+        self.assertIn("total_incoming_qty", variant_data)
+        self.assertEqual(variant_data["current_cogs"], 50000)
+        self.assertEqual(variant_data["total_available_qty"], 120)
+        self.assertEqual(variant_data["total_incoming_qty"], 30)
+
+
+class ProductSupplierTest(APITestCase):
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(
+            company=self.company, category=self.category, description="A" * 25
+        )
+        self.supplier = SupplierFactory(company=self.company)
+        self.user = User.objects.create_user(username="ps_test", password="pw", is_staff=True)
+        from core.models import UserProfile
+
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def test_create_product_supplier(self):
+        resp = self.client.post(
+            "/product-suppliers/",
+            {
+                "product_id": str(self.product.id),
+                "supplier_id": str(self.supplier.id),
+                "supplier_link": "https://supplier.com/product-x",
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["supplier_name"], self.supplier.name)
+        self.assertEqual(resp.data["supplier_link"], "https://supplier.com/product-x")
+
+    def test_list_by_product(self):
+        ProductSupplierFactory(product=self.product, supplier=self.supplier, company=self.company)
+        resp = self.client.get("/product-suppliers/", {"product_id": str(self.product.id)})
+        self.assertEqual(resp.status_code, 200)
+        results = resp.data.get("results", resp.data)
+        self.assertEqual(len(results), 1)
+
+    def test_delete_product_supplier(self):
+        ps = ProductSupplierFactory(
+            product=self.product, supplier=self.supplier, company=self.company
+        )
+        resp = self.client.delete(f"/product-suppliers/{ps.id}/")
+        self.assertEqual(resp.status_code, 204)
+
+    def test_variant_filter_by_supplier_via_product(self):
+        """GET /product-variants/?supplier_id=X returns variants whose product is linked to supplier"""
+        variant = ProductVariantFactory(product=self.product, company=self.company)
+        other_product = ProductFactory(
+            company=self.company, category=self.category, description="B" * 25
+        )
+        other_variant = ProductVariantFactory(product=other_product, company=self.company)
+        ProductSupplierFactory(product=self.product, supplier=self.supplier, company=self.company)
+        resp = self.client.get("/product-variants/", {"supplier_id": str(self.supplier.id)})
+        self.assertEqual(resp.status_code, 200)
+        ids = [v["id"] for v in resp.data["results"]]
+        self.assertIn(str(variant.id), ids)
+        self.assertNotIn(str(other_variant.id), ids)
+
+
+class CategoryDeleteTest(APITestCase):
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.category = CategoryFactory(company=self.company)
+        self.staff_user = User.objects.create_user(
+            username="cat_staff", password="password", is_staff=True
+        )
+        self.non_staff_user = User.objects.create_user(
+            username="cat_user", password="password", is_staff=False
+        )
+        from core.models import UserProfile
+
+        UserProfile.objects.create(user=self.staff_user, company=self.company, role="admin")
+        UserProfile.objects.create(user=self.non_staff_user, company=self.company, role="viewer")
+
+    def test_delete_category_no_products_succeeds(self):
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.delete(f"/category/{self.category.id}/")
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Category.objects.filter(id=self.category.id).exists())
+
+    def test_delete_category_with_products_returns_409(self):
+        ProductFactory.create_batch(2, category=self.category, company=self.company)
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.delete(f"/category/{self.category.id}/")
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertIn("products", response.data)
+        self.assertEqual(len(response.data["products"]), 2)
+        for product in response.data["products"]:
+            self.assertIn("name", product)
+            self.assertIn("sku_code", product)
+        self.assertIn(
+            response.data["products"][0]["sku_code"],
+            [product.sku_code for product in Product.objects.filter(category=self.category)],
+        )
+        self.assertIn(
+            response.data["products"][1]["sku_code"],
+            [product.sku_code for product in Product.objects.filter(category=self.category)],
+        )
+        self.assertTrue(Category.objects.filter(id=self.category.id).exists())
+
+    def test_delete_category_non_staff_forbidden(self):
+        with patch.object(StaffPerm, "has_permission", _real_staff_perm):
+            self.client.force_authenticate(user=self.non_staff_user)
+            response = self.client.delete(f"/category/{self.category.id}/")
+            self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(Category.objects.filter(id=self.category.id).exists())
+
+
+class CategoryCompanyScopeTest(APITestCase):
+    def setUp(self):
+        self.company_a = CompanyFactory()
+        self.company_b = CompanyFactory()
+        self.category_a1 = CategoryFactory(company=self.company_a)
+        self.category_a2 = CategoryFactory(company=self.company_a)
+        self.category_b1 = CategoryFactory(company=self.company_b)
+        self.category_b2 = CategoryFactory(company=self.company_b)
+        self.staff_user = User.objects.create_user(
+            username="cat_scope_staff", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+
+        UserProfile.objects.create(user=self.staff_user, company=self.company_a, role="admin")
+
+    def test_category_list_only_returns_own_company(self):
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.get("/category/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["results"]), 2)
+
+    def test_category_create_stamps_company(self):
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.post(
+            "/category/",
+            {"name": "New Cat", "category_code": "NC01", "description": "test"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        category = Category.objects.get(id=response.data["id"])
+        self.assertEqual(category.company, self.company_a)
+
+    def test_category_delete_own_company_succeeds(self):
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.delete(f"/category/{self.category_a1.id}/")
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+    def test_category_delete_other_company_returns_404(self):
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.delete(f"/category/{self.category_b1.id}/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class TestBusinessEntityService(TestCase):
+    """Tests for BusinessEntityService — service-level business logic."""
+
+    def setUp(self):
+        from apps.inventory.factories import (
+            BusinessEntityFactory,
+            CompanyMarketplaceFactory,
+            ProductFactory,
+        )
+        from apps.inventory.models import ProductBusinessEntity
+        from apps.inventory.services.business_entity_service import BusinessEntityService
+
+        self.ProductBusinessEntity = ProductBusinessEntity
+        self.service = BusinessEntityService()
+        self.company = CompanyFactory()
+        self.marketplace_shopee = CompanyMarketplaceFactory(company=self.company, name="Shopee")
+        self.marketplace_tiktok = CompanyMarketplaceFactory(company=self.company, name="TikTok")
+
+        self.product = ProductFactory(company=self.company, category__company=self.company)
+
+        self.be_shopee_a = BusinessEntityFactory(
+            company=self.company, marketplace=self.marketplace_shopee
+        )
+        self.be_shopee_b = BusinessEntityFactory(
+            company=self.company, marketplace=self.marketplace_shopee
+        )
+        self.be_tiktok = BusinessEntityFactory(
+            company=self.company, marketplace=self.marketplace_tiktok
+        )
+
+    def test_attach_product_success(self):
+        """Attach product to two BEs with DIFFERENT marketplaces — both succeed."""
+        r1 = self.service.attach_product(
+            product_id=str(self.product.id),
+            business_entity_id=str(self.be_shopee_a.id),
+            company_id=str(self.company.id),
+        )
+        self.assertTrue(r1["created"])
+
+        r2 = self.service.attach_product(
+            product_id=str(self.product.id),
+            business_entity_id=str(self.be_tiktok.id),
+            company_id=str(self.company.id),
+        )
+        self.assertTrue(r2["created"])
+
+        count = self.ProductBusinessEntity.objects.filter(product=self.product).count()
+        self.assertEqual(count, 2)
+
+    def test_attach_product_same_marketplace_conflict(self):
+        """Attach second BE with SAME marketplace — raises ValueError."""
+        self.service.attach_product(
+            product_id=str(self.product.id),
+            business_entity_id=str(self.be_shopee_a.id),
+            company_id=str(self.company.id),
+        )
+
+        with self.assertRaises(ValueError) as ctx:
+            self.service.attach_product(
+                product_id=str(self.product.id),
+                business_entity_id=str(self.be_shopee_b.id),
+                company_id=str(self.company.id),
+            )
+        self.assertIn("same marketplace", str(ctx.exception))
+
+    def test_attach_product_different_marketplace_allowed(self):
+        """Attach BE_A (shopee) then BE_B (tiktok) — both succeed, no conflict."""
+        r1 = self.service.attach_product(
+            product_id=str(self.product.id),
+            business_entity_id=str(self.be_shopee_a.id),
+            company_id=str(self.company.id),
+        )
+        self.assertTrue(r1["created"])
+
+        r2 = self.service.attach_product(
+            product_id=str(self.product.id),
+            business_entity_id=str(self.be_tiktok.id),
+            company_id=str(self.company.id),
+        )
+        self.assertTrue(r2["created"])
+
+    def test_attach_product_idempotent(self):
+        """Attach same (product, business_entity) pair twice — idempotent."""
+        r1 = self.service.attach_product(
+            product_id=str(self.product.id),
+            business_entity_id=str(self.be_shopee_a.id),
+            company_id=str(self.company.id),
+        )
+        self.assertTrue(r1["created"])
+
+        r2 = self.service.attach_product(
+            product_id=str(self.product.id),
+            business_entity_id=str(self.be_shopee_a.id),
+            company_id=str(self.company.id),
+        )
+        self.assertFalse(r2["created"])
+
+        count = self.ProductBusinessEntity.objects.filter(
+            product=self.product, business_entity=self.be_shopee_a
+        ).count()
+        self.assertEqual(count, 1)
+
+    def test_detach_product_success(self):
+        """Detach an existing assignment — row is deleted."""
+        from apps.inventory.factories import ProductBusinessEntityFactory
+
+        assignment = ProductBusinessEntityFactory(
+            product=self.product,
+            business_entity=self.be_shopee_a,
+            company=self.company,
+        )
+        self.service.detach_product(
+            product_business_entity_id=str(assignment.id),
+            company_id=str(self.company.id),
+        )
+        self.assertFalse(self.ProductBusinessEntity.objects.filter(id=assignment.id).exists())
+
+    def test_detach_product_wrong_company(self):
+        """Detach with wrong company — raises ValueError."""
+        from apps.inventory.factories import ProductBusinessEntityFactory
+
+        other_company = CompanyFactory()
+        assignment = ProductBusinessEntityFactory(
+            product=self.product,
+            business_entity=self.be_shopee_a,
+            company=self.company,
+        )
+        with self.assertRaises(ValueError):
+            self.service.detach_product(
+                product_business_entity_id=str(assignment.id),
+                company_id=str(other_company.id),
+            )
+
+    def test_attach_wrong_company_product(self):
+        """Product belongs to different company — raises Product.DoesNotExist."""
+        other_company = CompanyFactory()
+        with self.assertRaises(Product.DoesNotExist):
+            self.service.attach_product(
+                product_id=str(self.product.id),
+                business_entity_id=str(self.be_shopee_a.id),
+                company_id=str(other_company.id),
+            )
+
+
+class TestCompanyMarketplaceService(TestCase):
+    """Tests for BusinessEntityService.get_or_seed_company_marketplaces."""
+
+    def setUp(self):
+        from apps.inventory.services.business_entity_service import BusinessEntityService
+
+        self.service = BusinessEntityService()
+        self.company = CompanyFactory()
+
+    def test_get_or_seed_creates_defaults(self):
+        """Company with no CompanyMarketplace records seeds Shopee+TikTok."""
+        result = self.service.get_or_seed_company_marketplaces(str(self.company.id))
+        names = sorted(m.name for m in result)
+        self.assertEqual(names, ["Shopee", "TikTok"])
+        self.assertEqual(len(result), 2)
+
+    def test_get_or_seed_idempotent(self):
+        """Company already has records — calling again returns same, no duplicates."""
+        from apps.inventory.factories import CompanyMarketplaceFactory
+
+        CompanyMarketplaceFactory(company=self.company, name="Shopee")
+        CompanyMarketplaceFactory(company=self.company, name="TikTok")
+        result = self.service.get_or_seed_company_marketplaces(str(self.company.id))
+        self.assertEqual(len(result), 2)
+
+    def test_get_or_seed_returns_existing_custom(self):
+        """Company has Shopee, TikTok, Lazada — returns all 3, no new ones."""
+        from apps.inventory.factories import CompanyMarketplaceFactory
+
+        CompanyMarketplaceFactory(company=self.company, name="Shopee")
+        CompanyMarketplaceFactory(company=self.company, name="TikTok")
+        CompanyMarketplaceFactory(company=self.company, name="Lazada")
+        result = self.service.get_or_seed_company_marketplaces(str(self.company.id))
+        self.assertEqual(len(result), 3)
+        names = sorted(m.name for m in result)
+        self.assertEqual(names, ["Lazada", "Shopee", "TikTok"])
+
+
+class TestCompanyMarketplaceAPI(APITestCase):
+    """Tests for CompanyMarketplace API endpoints."""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.other_company = CompanyFactory()
+        self.user = User.objects.create_user(
+            username="cm_test_user", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def test_list_auto_seeds(self):
+        """GET /company-marketplaces/ — auto-seeds Shopee+TikTok for new company."""
+        response = self.client.get("/company-marketplaces/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 2)
+        names = sorted(m["name"] for m in response.data["results"])
+        self.assertEqual(names, ["Shopee", "TikTok"])
+
+    def test_list_company_isolation(self):
+        """Company A only sees their own marketplaces."""
+        from apps.inventory.factories import CompanyMarketplaceFactory
+
+        CompanyMarketplaceFactory(company=self.company, name="Shopee")
+        CompanyMarketplaceFactory(company=self.other_company, name="TikTok")
+        response = self.client.get("/company-marketplaces/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        names = [m["name"] for m in response.data["results"]]
+        self.assertIn("Shopee", names)
+        self.assertNotIn("TikTok", names)
+
+    def test_create_custom(self):
+        """POST /company-marketplaces/ — creates a custom marketplace."""
+        response = self.client.post(
+            "/company-marketplaces/",
+            {"name": "Lazada"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["name"], "Lazada")
+
+    def test_create_duplicate_name_fails(self):
+        """POST with duplicate name — 400."""
+        from apps.inventory.factories import CompanyMarketplaceFactory
+
+        CompanyMarketplaceFactory(company=self.company, name="Lazada")
+        response = self.client.post(
+            "/company-marketplaces/",
+            {"name": "Lazada"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_partial_update(self):
+        """PATCH /company-marketplaces/{id}/ — updates is_active."""
+        from apps.inventory.factories import CompanyMarketplaceFactory
+
+        cm = CompanyMarketplaceFactory(company=self.company, name="Shopee")
+        response = self.client.patch(
+            f"/company-marketplaces/{cm.id}/",
+            {"is_active": False},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["is_active"])
+
+    def test_delete_success(self):
+        """DELETE /company-marketplaces/{id}/ — 204 when no BEs reference it."""
+        from apps.inventory.factories import CompanyMarketplaceFactory
+
+        cm = CompanyMarketplaceFactory(company=self.company, name="Shopee")
+        response = self.client.delete(f"/company-marketplaces/{cm.id}/")
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+    def test_delete_blocked_by_business_entity(self):
+        """DELETE when BusinessEntity references it — 409."""
+        from apps.inventory.factories import BusinessEntityFactory, CompanyMarketplaceFactory
+
+        cm = CompanyMarketplaceFactory(company=self.company, name="Shopee")
+        BusinessEntityFactory(company=self.company, marketplace=cm)
+        response = self.client.delete(f"/company-marketplaces/{cm.id}/")
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+
+
+class TestBusinessEntityAPI(APITestCase):
+    """Tests for BusinessEntity and ProductBusinessEntity API endpoints."""
+
+    def setUp(self):
+        from apps.inventory.factories import CompanyMarketplaceFactory
+
+        self.company = CompanyFactory()
+        self.other_company = CompanyFactory()
+        self.user = User.objects.create_user(
+            username="be_test_user", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+        self.marketplace_shopee = CompanyMarketplaceFactory(company=self.company, name="Shopee")
+        self.marketplace_tiktok = CompanyMarketplaceFactory(company=self.company, name="TikTok")
+        self.inactive_marketplace = CompanyMarketplaceFactory(
+            company=self.company, name="Inactive", is_active=False
+        )
+
+    def test_list_business_entities(self):
+        """GET /business-entities/ returns only the company's BEs."""
+        from apps.inventory.factories import BusinessEntityFactory
+
+        BusinessEntityFactory(company=self.company, marketplace=self.marketplace_shopee)
+        BusinessEntityFactory(company=self.company, marketplace=self.marketplace_tiktok)
+        BusinessEntityFactory(company=self.other_company, marketplace=self.marketplace_shopee)
+
+        response = self.client.get("/business-entities/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["results"]), 2)
+
+    def test_create_business_entity(self):
+        """POST /business-entities/ with name + marketplace_id — 201."""
+        response = self.client.post(
+            "/business-entities/",
+            {"name": "CV A", "marketplace_id": str(self.marketplace_shopee.id)},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["marketplace_name"], "Shopee")
+
+    def test_create_duplicate_name_same_company_fails(self):
+        """POST with duplicate name for same company — 400."""
+        self.client.post(
+            "/business-entities/",
+            {"name": "CV A", "marketplace_id": str(self.marketplace_shopee.id)},
+            format="json",
+        )
+        response = self.client.post(
+            "/business-entities/",
+            {"name": "CV A", "marketplace_id": str(self.marketplace_tiktok.id)},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_update_business_entity(self):
+        """PATCH /business-entities/{id}/ — updates name."""
+        from apps.inventory.factories import BusinessEntityFactory
+
+        be = BusinessEntityFactory(company=self.company, marketplace=self.marketplace_shopee)
+        response = self.client.patch(
+            f"/business-entities/{be.id}/",
+            {"name": "Updated Name"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["name"], "Updated Name")
+
+    def test_list_product_business_entities_filtered(self):
+        """GET /product-business-entities/?product_id=X — filtered."""
+        from apps.inventory.factories import (
+            BusinessEntityFactory,
+            ProductBusinessEntityFactory,
+            ProductFactory,
+        )
+
+        product_a = ProductFactory(company=self.company, category__company=self.company)
+        product_b = ProductFactory(company=self.company, category__company=self.company)
+        be = BusinessEntityFactory(company=self.company, marketplace=self.marketplace_shopee)
+
+        ProductBusinessEntityFactory(product=product_a, business_entity=be, company=self.company)
+        ProductBusinessEntityFactory(product=product_b, business_entity=be, company=self.company)
+
+        response = self.client.get(f"/product-business-entities/?product_id={product_a.id}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(len(response.data["results"]), 1)
+
+    def test_attach_success(self):
+        """POST /product-business-entities/ — 201."""
+        from apps.inventory.factories import BusinessEntityFactory, ProductFactory
+
+        product = ProductFactory(company=self.company, category__company=self.company)
+        be = BusinessEntityFactory(company=self.company, marketplace=self.marketplace_shopee)
+
+        response = self.client.post(
+            "/product-business-entities/",
+            {"product_id": str(product.id), "business_entity_id": str(be.id)},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(response.data["created"])
+
+    def test_attach_conflict_returns_400(self):
+        """Attach product to two BEs with same marketplace — 400."""
+        from apps.inventory.factories import BusinessEntityFactory, ProductFactory
+
+        product = ProductFactory(company=self.company, category__company=self.company)
+        be_a = BusinessEntityFactory(company=self.company, marketplace=self.marketplace_shopee)
+        be_b = BusinessEntityFactory(company=self.company, marketplace=self.marketplace_shopee)
+
+        self.client.post(
+            "/product-business-entities/",
+            {"product_id": str(product.id), "business_entity_id": str(be_a.id)},
+            format="json",
+        )
+        response = self.client.post(
+            "/product-business-entities/",
+            {"product_id": str(product.id), "business_entity_id": str(be_b.id)},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("same marketplace", str(response.data["error"]))
+
+    def test_detach_success(self):
+        """DELETE /product-business-entities/{id}/ — 204."""
+        from apps.inventory.factories import (
+            BusinessEntityFactory,
+            ProductBusinessEntityFactory,
+            ProductFactory,
+        )
+
+        product = ProductFactory(company=self.company, category__company=self.company)
+        be = BusinessEntityFactory(company=self.company, marketplace=self.marketplace_shopee)
+        assignment = ProductBusinessEntityFactory(
+            product=product, business_entity=be, company=self.company
+        )
+
+        response = self.client.delete(f"/product-business-entities/{assignment.id}/")
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+    def test_detach_not_found(self):
+        """DELETE /product-business-entities/{unknown}/ — 404."""
+        response = self.client.delete(
+            "/product-business-entities/00000000-0000-0000-0000-000000000000/"
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class MarketplaceReconcileTest(APITestCase):
+    """Tests for marketplace stock reconciliation from xlsx file upload."""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(category=self.category, company=self.company)
+        self.variant = ProductVariantFactory(
+            product=self.product,
+            company=self.company,
+            sku_variant_code="SKU-TEST-001",
+            is_active=True,
+        )
+        self.service = InventoryService()
+        self.user = User.objects.create_user(
+            username="reconcile_user", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    @staticmethod
+    def _make_xlsx(headers: list, data_rows: list[list]) -> io.BytesIO:
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(headers)
+        for row in data_rows:
+            ws.append(row)
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return buf
+
+    # --- Parser tests ---
+
+    def test_parse_marketplace_xlsx_shopee_format(self):
+        """Row 1 = metadata, row 2 = headers, row 3+ = data."""
+        rows = [
+            ["Shopee Export Report", None, None],
+            ["SKU Reference No.", "Current Stock", "Product Name"],
+            ["SKU-001", "50", "Product A"],
+            ["SKU-002", "30", "Product B"],
+        ]
+        buf = self._make_xlsx(rows[0], rows[1:])
+        # first row is metadata with no matching headers, so header is row 2
+        result = InventoryService.parse_marketplace_xlsx(buf)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(
+            result[0],
+            {
+                "sku": "SKU-001",
+                "qty": 50,
+                "file_product_name": "Product A",
+                "file_variant_name": "",
+            },
+        )
+        self.assertEqual(
+            result[1],
+            {
+                "sku": "SKU-002",
+                "qty": 30,
+                "file_product_name": "Product B",
+                "file_variant_name": "",
+            },
+        )
+
+    def test_parse_marketplace_xlsx_simple_format(self):
+        """Headers in row 1 = ["SKU", "Stock"]."""
+        buf = self._make_xlsx(
+            ["SKU", "Stock"],
+            [["VAR-A", "10"], ["VAR-B", "20"]],
+        )
+        result = InventoryService.parse_marketplace_xlsx(buf)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(
+            result[0], {"sku": "VAR-A", "qty": 10, "file_product_name": "", "file_variant_name": ""}
+        )
+        self.assertEqual(
+            result[1], {"sku": "VAR-B", "qty": 20, "file_product_name": "", "file_variant_name": ""}
+        )
+
+    def test_parse_marketplace_xlsx_no_valid_columns(self):
+        """Unrecognized headers return []."""
+        buf = self._make_xlsx(
+            ["Product", "Price"],
+            [["A", "100"], ["B", "200"]],
+        )
+        result = InventoryService.parse_marketplace_xlsx(buf)
+        self.assertEqual(result, [])
+
+    def test_parse_marketplace_xlsx_skips_empty_sku(self):
+        """Rows with empty SKU are skipped."""
+        buf = self._make_xlsx(
+            ["SKU", "Stock"],
+            [["VAR-A", "10"], ["", "20"], [None, "30"]],
+        )
+        result = InventoryService.parse_marketplace_xlsx(buf)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(
+            result[0], {"sku": "VAR-A", "qty": 10, "file_product_name": "", "file_variant_name": ""}
+        )
+
+    def test_parse_marketplace_xlsx_handles_float_qty(self):
+        """Stock values that are floats are converted to int."""
+        buf = self._make_xlsx(
+            ["SKU", "Stock"],
+            [["VAR-A", 10.0], ["VAR-B", 20.7]],
+        )
+        result = InventoryService.parse_marketplace_xlsx(buf)
+        self.assertEqual(result[0]["qty"], 10)
+        self.assertEqual(result[1]["qty"], 20)
+
+    def test_parse_marketplace_xlsx_invalid_activepane(self):
+        """Shopee xlsx with invalid activePane attribute is handled gracefully."""
+        import zipfile
+
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["SKU", "Stock"])
+        ws.append(["SKU-001", "50"])
+        ws.append(["SKU-002", "30"])
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        raw = buf.getvalue()
+
+        corrupted = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(raw), "r") as zin, zipfile.ZipFile(corrupted, "w") as zout:
+            for info in zin.infolist():
+                data = zin.read(info.filename)
+                if info.filename.startswith("xl/worksheets/") and info.filename.endswith(".xml"):
+                    data = data.replace(
+                        b"</worksheet>",
+                        b' activePane="invalid" rest of the junk</worksheet>',
+                        1,
+                    )
+                zout.writestr(info, data)
+        corrupted.seek(0)
+
+        result = InventoryService.parse_marketplace_xlsx(corrupted)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(
+            result[0],
+            {"sku": "SKU-001", "qty": 50, "file_product_name": "", "file_variant_name": ""},
+        )
+        self.assertEqual(
+            result[1],
+            {"sku": "SKU-002", "qty": 30, "file_product_name": "", "file_variant_name": ""},
+        )
+
+    # --- Service tests ---
+
+    def test_reconcile_same_stock_skipped(self):
+        """Variant where stock matches current is skipped, no StockMovement."""
+        ProductVariantWarehouseFactory(
+            product_variant=self.variant,
+            warehouse=self.warehouse,
+            company=self.company,
+            physical_qty=50,
+        )
+        rows = [{"sku": "SKU-TEST-001", "qty": 50}]
+        result = self.service.reconcile_marketplace_stock(
+            rows=rows,
+            warehouse_id=str(self.warehouse.id),
+            company_id=str(self.company.id),
+            marketplace_name="Shopee",
+        )
+        self.assertEqual(result["summary"]["skipped"], 1)
+        self.assertEqual(result["summary"]["reconciled"], 0)
+        self.assertEqual(StockMovement.objects.count(), 0)
+        self.assertEqual(result["skipped"][0]["product_name"], "Test Product")
+        self.assertEqual(result["skipped"][0]["variant_name"], "Test Product Variant")
+
+    def test_reconcile_different_stock_creates_movement(self):
+        """Variant where stock differs creates a MARKETPLACE_SYNC movement."""
+        ProductVariantWarehouseFactory(
+            product_variant=self.variant,
+            warehouse=self.warehouse,
+            company=self.company,
+            physical_qty=50,
+        )
+        rows = [{"sku": "SKU-TEST-001", "qty": 80}]
+        result = self.service.reconcile_marketplace_stock(
+            rows=rows,
+            warehouse_id=str(self.warehouse.id),
+            company_id=str(self.company.id),
+            marketplace_name="Shopee",
+        )
+        self.assertEqual(result["summary"]["reconciled"], 1)
+        self.assertEqual(result["summary"]["skipped"], 0)
+        movement = StockMovement.objects.last()
+        self.assertIsNotNone(movement)
+        self.assertEqual(movement.movement_type, StockMovement.MovementType.MARKETPLACE_SYNC)
+        self.assertEqual(movement.balance_before, 50)
+        self.assertEqual(movement.balance_after, 80)
+        self.assertEqual(movement.quantity, 30)
+        self.assertEqual(result["reconciled"][0]["product_name"], "Test Product")
+        self.assertEqual(result["reconciled"][0]["variant_name"], "Test Product Variant")
+
+    def test_reconcile_not_found_sku(self):
+        """SKU not matching any variant appears in not_found."""
+        rows = [{"sku": "SKU-NONEXIST", "qty": 10}]
+        result = self.service.reconcile_marketplace_stock(
+            rows=rows,
+            warehouse_id=str(self.warehouse.id),
+            company_id=str(self.company.id),
+            marketplace_name="Shopee",
+        )
+        self.assertEqual(result["summary"]["not_found"], 1)
+        self.assertEqual(
+            result["not_found"],
+            [{"sku": "SKU-NONEXIST", "file_product_name": "", "file_variant_name": ""}],
+        )
+
+    def test_reconcile_dry_run(self):
+        """dry_run=True returns reconciled list but creates no StockMovement."""
+        ProductVariantWarehouseFactory(
+            product_variant=self.variant,
+            warehouse=self.warehouse,
+            company=self.company,
+            physical_qty=50,
+        )
+        rows = [{"sku": "SKU-TEST-001", "qty": 100}]
+        result = self.service.reconcile_marketplace_stock(
+            rows=rows,
+            warehouse_id=str(self.warehouse.id),
+            company_id=str(self.company.id),
+            marketplace_name="Shopee",
+            dry_run=True,
+        )
+        self.assertEqual(result["summary"]["reconciled"], 1)
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(StockMovement.objects.count(), 0)
+
+    def test_reconcile_creates_new_pvw(self):
+        """Variant with no PVW gets one created during reconciliation."""
+        rows = [{"sku": "SKU-TEST-001", "qty": 25}]
+        result = self.service.reconcile_marketplace_stock(
+            rows=rows,
+            warehouse_id=str(self.warehouse.id),
+            company_id=str(self.company.id),
+            marketplace_name="Tokopedia",
+        )
+        self.assertEqual(result["summary"]["reconciled"], 1)
+        pvw = ProductVariantWarehouse.objects.get(
+            product_variant=self.variant,
+            warehouse=self.warehouse,
+        )
+        self.assertEqual(pvw.physical_qty, 25)
+
+    def test_reconcile_empty_rows(self):
+        """Empty rows returns empty summary."""
+        result = self.service.reconcile_marketplace_stock(
+            rows=[],
+            warehouse_id=str(self.warehouse.id),
+            company_id=str(self.company.id),
+            marketplace_name="Shopee",
+        )
+        self.assertEqual(result["summary"]["total"], 0)
+
+    # --- Endpoint tests ---
+
+    def test_reconcile_endpoint_no_file(self):
+        """POST without file returns 400."""
+        response = self.client.post(
+            "/inventory/marketplace_reconcile/",
+            {"warehouse_id": str(self.warehouse.id)},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("error", response.data)
+
+    def test_reconcile_endpoint_no_warehouse(self):
+        """POST without warehouse_id returns 400."""
+        buf = self._make_xlsx(["SKU", "Stock"], [["A", "10"]])
+        response = self.client.post(
+            "/inventory/marketplace_reconcile/",
+            {"file": buf},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("error", response.data)
+
+    def test_reconcile_endpoint_success(self):
+        """POST with valid file and warehouse reconciles stock."""
+        ProductVariantWarehouseFactory(
+            product_variant=self.variant,
+            warehouse=self.warehouse,
+            company=self.company,
+            physical_qty=50,
+        )
+        buf = self._make_xlsx(
+            ["SKU", "Stock"],
+            [["SKU-TEST-001", "75"]],
+        )
+        response = self.client.post(
+            "/inventory/marketplace_reconcile/",
+            {
+                "file": buf,
+                "warehouse_id": str(self.warehouse.id),
+            },
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["summary"]["reconciled"], 1)
+        self.assertEqual(response.data["reconciled"][0]["before"], 50)
+        self.assertEqual(response.data["reconciled"][0]["after"], 75)
+
+    def test_reconcile_endpoint_dry_run(self):
+        """POST with dry_run=true does not create StockMovement."""
+        ProductVariantWarehouseFactory(
+            product_variant=self.variant,
+            warehouse=self.warehouse,
+            company=self.company,
+            physical_qty=50,
+        )
+        buf = self._make_xlsx(
+            ["SKU", "Stock"],
+            [["SKU-TEST-001", "100"]],
+        )
+        response = self.client.post(
+            "/inventory/marketplace_reconcile/",
+            {
+                "file": buf,
+                "warehouse_id": str(self.warehouse.id),
+                "dry_run": "true",
+            },
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["dry_run"])
+        self.assertEqual(StockMovement.objects.count(), 0)
+
+
+class AdjustStockBatchServiceTest(TestCase):
+    """Tests for InventoryService.adjust_stock_batch"""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.product_variant = ProductVariantFactory(company=self.company)
+        self.pvw = ProductVariantWarehouseFactory(
+            product_variant=self.product_variant,
+            warehouse=self.warehouse,
+            company=self.company,
+            physical_qty=10,
+        )
+        self.service = InventoryService()
+
+    def test_add_increases_stock(self):
+        result = self.service.adjust_stock_batch(
+            [
+                {
+                    "variant_id": str(self.product_variant.id),
+                    "warehouse_id": str(self.warehouse.id),
+                    "type": "add",
+                    "qty": 5,
+                }
+            ]
+        )
+        self.pvw.refresh_from_db()
+        self.assertEqual(self.pvw.physical_qty, 15)
+        self.assertEqual(result["results"][0]["old_qty"], 10)
+        self.assertEqual(result["results"][0]["new_qty"], 15)
+
+    def test_min_decreases_stock(self):
+        result = self.service.adjust_stock_batch(
+            [
+                {
+                    "variant_id": str(self.product_variant.id),
+                    "warehouse_id": str(self.warehouse.id),
+                    "type": "min",
+                    "qty": 3,
+                }
+            ]
+        )
+        self.pvw.refresh_from_db()
+        self.assertEqual(self.pvw.physical_qty, 7)
+        self.assertEqual(result["results"][0]["old_qty"], 10)
+        self.assertEqual(result["results"][0]["new_qty"], 7)
+
+    def test_set_sets_absolute_qty(self):
+        result = self.service.adjust_stock_batch(
+            [
+                {
+                    "variant_id": str(self.product_variant.id),
+                    "warehouse_id": str(self.warehouse.id),
+                    "type": "set",
+                    "qty": 20,
+                }
+            ]
+        )
+        self.pvw.refresh_from_db()
+        self.assertEqual(self.pvw.physical_qty, 20)
+        self.assertEqual(result["results"][0]["old_qty"], 10)
+        self.assertEqual(result["results"][0]["new_qty"], 20)
+
+    def test_set_to_zero(self):
+        result = self.service.adjust_stock_batch(
+            [
+                {
+                    "variant_id": str(self.product_variant.id),
+                    "warehouse_id": str(self.warehouse.id),
+                    "type": "set",
+                    "qty": 0,
+                }
+            ]
+        )
+        self.pvw.refresh_from_db()
+        self.assertEqual(self.pvw.physical_qty, 0)
+        self.assertEqual(result["results"][0]["new_qty"], 0)
+
+    def test_min_insufficient_stock_returns_error(self):
+        result = self.service.adjust_stock_batch(
+            [
+                {
+                    "variant_id": str(self.product_variant.id),
+                    "warehouse_id": str(self.warehouse.id),
+                    "type": "min",
+                    "qty": 15,
+                }
+            ]
+        )
+        self.assertEqual(len(result["errors"]), 1)
+        self.pvw.refresh_from_db()
+        self.assertEqual(self.pvw.physical_qty, 10)
+
+    def test_set_negative_rejected(self):
+        result = self.service.adjust_stock_batch(
+            [
+                {
+                    "variant_id": str(self.product_variant.id),
+                    "warehouse_id": str(self.warehouse.id),
+                    "type": "set",
+                    "qty": -1,
+                }
+            ]
+        )
+        self.assertEqual(len(result["errors"]), 1)
+
+    def test_warehouse_ulid_id_no_crash(self):
+        result = self.service.adjust_stock_batch(
+            [
+                {
+                    "variant_id": str(self.product_variant.id),
+                    "warehouse_id": str(self.warehouse.id),
+                    "type": "add",
+                    "qty": 1,
+                }
+            ]
+        )
+        self.pvw.refresh_from_db()
+        self.assertEqual(self.pvw.physical_qty, 11)
+        self.assertEqual(len(result["results"]), 1)
+
+    def test_stock_movement_created_on_add(self):
+        self.service.adjust_stock_batch(
+            [
+                {
+                    "variant_id": str(self.product_variant.id),
+                    "warehouse_id": str(self.warehouse.id),
+                    "type": "add",
+                    "qty": 5,
+                }
+            ]
+        )
+        movement = StockMovement.objects.last()
+        self.assertIsNotNone(movement)
+        self.assertEqual(movement.movement_type, StockMovement.MovementType.ADJUSTMENT)
+        self.assertEqual(movement.quantity, 5)
+
+    def test_stock_movement_created_on_min(self):
+        self.service.adjust_stock_batch(
+            [
+                {
+                    "variant_id": str(self.product_variant.id),
+                    "warehouse_id": str(self.warehouse.id),
+                    "type": "min",
+                    "qty": 3,
+                }
+            ]
+        )
+        movement = StockMovement.objects.last()
+        self.assertIsNotNone(movement)
+        self.assertEqual(movement.movement_type, StockMovement.MovementType.ADJUSTMENT)
+        self.assertEqual(movement.quantity, -3)

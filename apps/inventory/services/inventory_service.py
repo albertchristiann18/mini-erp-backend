@@ -1,5 +1,6 @@
 import logging
 from decimal import Decimal
+from typing import Any
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
@@ -193,8 +194,8 @@ class InventoryService:
     @transaction.atomic
     def record_multiple_stock_movements(
         self,
-        warehouse_id: int,
-        company_id: int,
+        warehouse_id: str,
+        company_id: str,
         data: list[dict],
         map_product_variant: dict,
         reference_number: str | None = None,
@@ -461,6 +462,156 @@ class InventoryService:
             )
 
     @transaction.atomic
+    def adjust_stock_batch(self, updates: list[dict]) -> dict:
+        results: list[dict] = []
+        errors: list[dict] = []
+        pvws_to_update: list[ProductVariantWarehouse] = []
+        movements: list[dict] = []
+
+        if not updates:
+            return {
+                "results": results,
+                "errors": errors,
+                "summary": {"total": 0, "successful": 0, "failed": 0},
+            }
+
+        warehouse_id = updates[0]["warehouse_id"]
+        if any(str(u.get("warehouse_id")) != str(warehouse_id) for u in updates):
+            raise ValidationError("All items in a batch adjustment must target the same warehouse.")
+        variant_ids = [u.get("variant_id") for u in updates]
+
+        pvws = list(
+            ProductVariantWarehouse.objects.select_for_update()
+            .filter(
+                product_variant_id__in=variant_ids,
+                warehouse_id=warehouse_id,
+            )
+            .select_related("product_variant", "company", "warehouse")
+        )
+        pvw_map = {str(pvw.product_variant.id): pvw for pvw in pvws}
+
+        for update in updates:
+            variant_id = update.get("variant_id")
+            qty = int(update.get("qty", 0))
+            update_type = update.get("type", "replace")
+
+            pvw = pvw_map.get(str(variant_id))
+            if not pvw:
+                errors.append(
+                    {
+                        "variant_id": variant_id,
+                        "warehouse_id": warehouse_id,
+                        "error": "Stock record not found. Create a warehouse stock entry first.",
+                    }
+                )
+                continue
+
+            balance_before = pvw.physical_qty
+
+            if update_type in ("replace", "set"):
+                new_qty = qty
+                if new_qty < 0:
+                    errors.append(
+                        {
+                            "variant_id": variant_id,
+                            "warehouse_id": warehouse_id,
+                            "error": f"Result would be negative stock ({new_qty}). Operation rejected.",
+                        }
+                    )
+                    continue
+            elif update_type == "add":
+                new_qty = pvw.physical_qty + qty
+                if new_qty < 0:
+                    errors.append(
+                        {
+                            "variant_id": variant_id,
+                            "warehouse_id": warehouse_id,
+                            "error": f"Result would be negative stock ({new_qty}). Operation rejected.",
+                        }
+                    )
+                    continue
+            elif update_type == "min":
+                new_qty = pvw.physical_qty - qty
+                if new_qty < 0:
+                    errors.append(
+                        {
+                            "variant_id": variant_id,
+                            "warehouse_id": warehouse_id,
+                            "error": f"Insufficient stock. Current: {pvw.physical_qty}, requested reduction: {qty}",
+                        }
+                    )
+                    continue
+            else:
+                errors.append(
+                    {
+                        "variant_id": variant_id,
+                        "warehouse_id": warehouse_id,
+                        "error": f"Invalid type: {update_type}",
+                    }
+                )
+                continue
+
+            pvw.physical_qty = new_qty
+            pvws_to_update.append(pvw)
+
+            movements.append(
+                {
+                    "product_variant_id": variant_id,
+                    "qty": new_qty - balance_before,
+                    "field_change": "physical_qty",
+                    "qty_before": balance_before,
+                    "note": f"Bulk {update_type}: {qty}",
+                }
+            )
+
+            results.append(
+                {
+                    "variant_id": variant_id,
+                    "warehouse_id": warehouse_id,
+                    "old_qty": balance_before,
+                    "new_qty": new_qty,
+                }
+            )
+
+        if pvws_to_update:
+            ProductVariantWarehouse.objects.bulk_update(
+                pvws_to_update, ["physical_qty"], batch_size=100
+            )
+
+            variant_ids_str = [str(pvw.product_variant.id) for pvw in pvws_to_update]
+            variants = list(
+                ProductVariant.objects.select_for_update()
+                .filter(id__in=variant_ids_str)
+                .prefetch_related("warehouse_stocks")
+            )
+
+            for variant in variants:
+                variant.total_available_qty = sum(
+                    w.physical_qty - w.checkout_qty for w in variant.warehouse_stocks.all()
+                )
+
+            ProductVariant.objects.bulk_update(variants, ["total_available_qty"], batch_size=100)
+
+            map_product_variant = {str(v.id): v for v in variants}
+
+            if movements:
+                company_id = pvws_to_update[0].company.id
+                self.record_multiple_stock_movements(
+                    warehouse_id=warehouse_id,
+                    company_id=company_id,
+                    data=movements,
+                    map_product_variant=map_product_variant,
+                    reference_number="BULK_ADJ",
+                    movement_type=StockMovement.MovementType.ADJUSTMENT,
+                )
+
+        return {
+            "results": results,
+            "errors": errors,
+            "summary": {"total": len(updates), "successful": len(results), "failed": len(errors)},
+        }
+
+    @transaction.atomic
     def update_cogs_on_po(
         self,
         po: PurchaseOrder,
@@ -699,3 +850,301 @@ class InventoryService:
                 fields=["original_qty", "remaining_qty", "cogs_amount", "allocated_commission_fee"],
                 batch_size=100,
             )
+
+    @staticmethod
+    def parse_marketplace_xlsx(file_obj: Any) -> list[dict]:
+        """
+        Parse an xlsx file and return list of {"sku": str, "qty": int}.
+        Detects header row in first 5 rows.
+        SKU column names (case-insensitive): sku reference no., seller sku, sku, sku_variant_code
+        Stock column names (case-insensitive): current stock, normal stock, available stock, stock, quantity, qty
+        Skips rows where SKU cell is empty or None.
+        Returns [] if no valid SKU/stock columns found -- caller should handle this.
+        """
+        import io
+        import re
+        import zipfile
+
+        import openpyxl
+
+        raw = file_obj.read()
+        buf = io.BytesIO(raw)
+        patched = io.BytesIO()
+        with zipfile.ZipFile(buf, "r") as zin, zipfile.ZipFile(patched, "w") as zout:
+            for info in zin.infolist():
+                data = zin.read(info.filename)
+                if info.filename.startswith("xl/worksheets/") and info.filename.endswith(".xml"):
+                    data = re.sub(rb' activePane="[^"]*"', b"", data)
+                zout.writestr(info, data)
+        patched.seek(0)
+        wb = openpyxl.load_workbook(patched, data_only=True)
+        ws = wb.active
+
+        SKU_ALIASES = {"sku reference no.", "seller sku", "sku", "sku_variant_code"}
+        STOCK_ALIASES = {
+            "current stock",
+            "normal stock",
+            "available stock",
+            "stock",
+            "quantity",
+            "qty",
+            "stok",
+        }
+        PRODUCT_NAME_ALIASES = {"nama produk", "product name", "product", "nama"}
+        VARIANT_NAME_ALIASES = {"nama variasi", "variation name", "variasi", "variant name"}
+
+        rows = list(ws.iter_rows(values_only=True))
+
+        header_row_idx = None
+        sku_col_idx = None
+        stock_col_idx = None
+        product_name_col_idx = None
+        variant_name_col_idx = None
+        for i, row in enumerate(rows[:5]):
+            for j, cell in enumerate(row):
+                if cell is None:
+                    continue
+                cell_lower = str(cell).strip().lower()
+                if cell_lower in SKU_ALIASES and sku_col_idx is None:
+                    sku_col_idx = j
+                if cell_lower in STOCK_ALIASES and stock_col_idx is None:
+                    stock_col_idx = j
+                if cell_lower in PRODUCT_NAME_ALIASES and product_name_col_idx is None:
+                    product_name_col_idx = j
+                if cell_lower in VARIANT_NAME_ALIASES and variant_name_col_idx is None:
+                    variant_name_col_idx = j
+            if sku_col_idx is not None and stock_col_idx is not None:
+                header_row_idx = i
+                break
+
+        if header_row_idx is None or sku_col_idx is None or stock_col_idx is None:
+            return []
+
+        result = []
+        for row in rows[header_row_idx + 1 :]:
+            if not row or len(row) <= max(sku_col_idx, stock_col_idx):
+                continue
+            sku = row[sku_col_idx]
+            qty_raw = row[stock_col_idx]
+            if sku is None or str(sku).strip() == "":
+                continue
+            try:
+                qty = int(float(str(qty_raw))) if qty_raw is not None else 0
+            except (ValueError, TypeError):
+                continue
+            file_product_name = (
+                str(row[product_name_col_idx]).strip()
+                if product_name_col_idx is not None
+                and product_name_col_idx < len(row)
+                and row[product_name_col_idx] is not None
+                else ""
+            )
+            file_variant_name = (
+                str(row[variant_name_col_idx]).strip()
+                if variant_name_col_idx is not None
+                and variant_name_col_idx < len(row)
+                and row[variant_name_col_idx] is not None
+                else ""
+            )
+            result.append(
+                {
+                    "sku": str(sku).strip(),
+                    "qty": qty,
+                    "file_product_name": file_product_name,
+                    "file_variant_name": file_variant_name,
+                }
+            )
+
+        wb.close()
+        return result
+
+    @transaction.atomic
+    def reconcile_marketplace_stock(
+        self,
+        rows: list[dict],
+        warehouse_id: str,
+        company_id: str,
+        marketplace_name: str,
+        dry_run: bool = False,
+    ) -> dict:
+        """
+        Reconcile stock from a marketplace file.
+        rows: list of {"sku": str, "qty": int}
+        For each row:
+          - Find ProductVariant by sku_variant_code (company-scoped)
+          - If not found: add to not_found list
+          - If found: get or create ProductVariantWarehouse for the warehouse
+          - If current physical_qty == target qty: add to skipped
+          - If different: compute delta = target - current; update physical_qty; create MARKETPLACE_SYNC movement
+        dry_run=True: compute all results but do NOT save anything.
+        """
+        from apps.inventory.models import ProductVariant, ProductVariantWarehouse, StockMovement
+
+        reconciled = []
+        skipped = []
+        not_found = []
+        errors = []
+
+        if not rows:
+            return {
+                "reconciled": reconciled,
+                "skipped": skipped,
+                "not_found": not_found,
+                "errors": errors,
+                "summary": {"total": 0, "reconciled": 0, "skipped": 0, "not_found": 0},
+            }
+
+        skus = [r["sku"] for r in rows]
+        variants_qs = ProductVariant.objects.filter(
+            sku_variant_code__in=skus,
+            company_id=company_id,
+            is_active=True,
+        ).select_related("company", "product")
+        variant_map: dict[str, ProductVariant] = {v.sku_variant_code: v for v in variants_qs}
+
+        variant_ids = [v.id for v in variants_qs]
+        pvws_qs = ProductVariantWarehouse.objects.select_for_update().filter(
+            product_variant_id__in=variant_ids,
+            warehouse_id=warehouse_id,
+        )
+        pvw_map: dict[str, ProductVariantWarehouse] = {
+            str(pvw.product_variant_id): pvw  # type: ignore[attr-defined]
+            for pvw in pvws_qs
+        }
+
+        movements_data: list[dict] = []
+        pvws_to_update: list[ProductVariantWarehouse] = []
+        pvws_to_create: list[ProductVariantWarehouse] = []
+
+        reference_number = f"MKT-RECONCILE-{marketplace_name[:20].upper().replace(' ', '-')}"
+
+        for row in rows:
+            sku = row["sku"]
+            target_qty = row["qty"]
+            variant = variant_map.get(sku)
+
+            if not variant:
+                not_found.append(
+                    {
+                        "sku": sku,
+                        "file_product_name": row.get("file_product_name", ""),
+                        "file_variant_name": row.get("file_variant_name", ""),
+                    }
+                )
+                continue
+
+            variant_id_str = str(variant.id)
+            pvw = pvw_map.get(variant_id_str)
+
+            if pvw is None:
+                pvw = ProductVariantWarehouse(
+                    product_variant=variant,
+                    warehouse_id=warehouse_id,
+                    company_id=company_id,
+                    physical_qty=0,
+                    checkout_qty=0,
+                )
+                pvw_map[variant_id_str] = pvw
+                pvws_to_create.append(pvw)
+
+            current_qty = pvw.physical_qty
+            if current_qty == target_qty:
+                skipped.append(
+                    {
+                        "sku": sku,
+                        "qty": target_qty,
+                        "product_name": variant.product.name,
+                        "variant_name": variant.name,
+                    }
+                )
+                continue
+
+            delta = target_qty - current_qty
+            pvw.physical_qty = target_qty
+            pvws_to_update.append(pvw)
+
+            movements_data.append(
+                {
+                    "product_variant_id": str(variant.id),
+                    "qty": delta,
+                    "field_change": "physical_qty",
+                    "qty_before": current_qty,
+                    "note": f"Marketplace reconciliation: {marketplace_name}",
+                }
+            )
+            reconciled.append(
+                {
+                    "sku": sku,
+                    "variant_id": str(variant.id),
+                    "before": current_qty,
+                    "after": target_qty,
+                    "delta": delta,
+                    "product_name": variant.product.name,
+                    "variant_name": variant.name,
+                }
+            )
+
+        if not dry_run:
+            if pvws_to_create:
+                ProductVariantWarehouse.objects.bulk_create(pvws_to_create, ignore_conflicts=False)
+
+            if pvws_to_update:
+                changed_pvws = [p for p in pvws_to_update if p.pk]
+                if changed_pvws:
+                    ProductVariantWarehouse.objects.bulk_update(
+                        changed_pvws, ["physical_qty"], batch_size=100
+                    )
+
+            all_changed_pvws = pvws_to_create + pvws_to_update
+            if all_changed_pvws:
+                changed_variant_ids = [str(pvw.product_variant_id) for pvw in all_changed_pvws]  # type: ignore[attr-defined]
+                changed_variants = list(
+                    ProductVariant.objects.filter(id__in=changed_variant_ids).prefetch_related(
+                        "warehouse_stocks"
+                    )
+                )
+                for v in changed_variants:
+                    v.total_available_qty = sum(
+                        w.physical_qty - w.checkout_qty for w in v.warehouse_stocks.all()
+                    )
+                ProductVariant.objects.bulk_update(
+                    changed_variants, ["total_available_qty"], batch_size=100
+                )
+
+            if movements_data:
+                stock_movements = []
+                for item in movements_data:
+                    pv_id = item["product_variant_id"]
+                    delta = item["qty"]
+                    qty_before = item["qty_before"]
+                    stock_movements.append(
+                        StockMovement(
+                            company_id=company_id,
+                            product_variant_id=pv_id,
+                            warehouse_id=warehouse_id,
+                            quantity=delta,
+                            field_change=item["field_change"],
+                            movement_type=StockMovement.MovementType.MARKETPLACE_SYNC,
+                            balance_before=qty_before,
+                            balance_after=qty_before + delta,
+                            reference_number=reference_number,
+                            note=item["note"],
+                        )
+                    )
+                StockMovement.objects.bulk_create(stock_movements, batch_size=100)
+
+        summary = {
+            "total": len(rows),
+            "reconciled": len(reconciled),
+            "skipped": len(skipped),
+            "not_found": len(not_found),
+        }
+
+        return {
+            "reconciled": reconciled,
+            "skipped": skipped,
+            "not_found": not_found,
+            "errors": errors,
+            "summary": summary,
+            "dry_run": dry_run,
+        }

@@ -109,19 +109,28 @@ class ShopeeProductPushService:
                 return {"item_id": item_id, "models_pushed": 1, "errors": errors}
 
             else:
-                # Build tier_variation from variant_options + variant_values
-                option_names: list[str] = product.variant_options or []
-                tier_option_sets: list[list[str]] = [[] for _ in option_names]
+                # Build tier_variation from new variant_options schema
+                sorted_opts = sorted(product.variant_options, key=lambda o: o.get("order", 0))
+                tier_option_sets: list[list[str]] = [[] for _ in sorted_opts]
+
+                def _get_label(opt: dict, val_id: str) -> str:
+                    return next(
+                        (v["label"] for v in opt.get("values", []) if v["id"] == val_id),
+                        val_id,
+                    )
+
                 for listing in listings:
                     vv = listing.product_variant.variant_values or {}
-                    for i, _ in enumerate(option_names):
-                        val = str(vv.get(str(i + 1), "")).strip()
-                        if val and val not in tier_option_sets[i]:
-                            tier_option_sets[i].append(val)
+                    for i, opt in enumerate(sorted_opts):
+                        val_id = str(vv.get(opt["id"], "")).strip()
+                        if val_id:
+                            label = _get_label(opt, val_id)
+                            if label and label not in tier_option_sets[i]:
+                                tier_option_sets[i].append(label)
 
                 tier_variation = [
-                    {"name": name, "option_list": [{"option": v} for v in opts]}
-                    for name, opts in zip(option_names, tier_option_sets)
+                    {"name": opt["name"], "option_list": [{"option": v} for v in opts]}
+                    for opt, opts in zip(sorted_opts, tier_option_sets)
                     if opts
                 ]
 
@@ -143,14 +152,15 @@ class ShopeeProductPushService:
                     vv = listing.product_variant.variant_values or {}
                     tier_index: list[int] = []
                     valid = True
-                    for i, opts in enumerate(tier_option_sets):
-                        val = str(vv.get(str(i + 1), "")).strip()
-                        if val in opts:
-                            tier_index.append(opts.index(val))
+                    for i, (opt, opts) in enumerate(zip(sorted_opts, tier_option_sets)):
+                        val_id = str(vv.get(opt["id"], "")).strip()
+                        label = _get_label(opt, val_id) if val_id else ""
+                        if label in opts:
+                            tier_index.append(opts.index(label))
                         else:
                             valid = False
                             errors.append(
-                                f"Variant {listing.product_variant.sku_variant_code} missing option {i + 1}"
+                                f"Variant {listing.product_variant.sku_variant_code} missing option {opt['name']}"
                             )
                             break
                     if not valid:

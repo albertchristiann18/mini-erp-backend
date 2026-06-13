@@ -3,13 +3,18 @@ from decimal import Decimal
 import factory
 
 from apps.inventory.models import (
+    BusinessEntity,
     Category,
+    CompanyMarketplace,
     Product,
+    ProductBusinessEntity,
     ProductCogs,
+    ProductSupplier,
     ProductVariant,
     ProductVariantMarketplace,
     ProductVariantWarehouse,
     StockMovement,
+    Supplier,
 )
 from core.factories import CompanyFactory, MarketplaceFactory, WarehouseFactory
 
@@ -35,6 +40,7 @@ class ProductVariantFactory(factory.django.DjangoModelFactory):
     product = factory.SubFactory(ProductFactory)  # type: ignore[no-untyped-call]
     company = factory.LazyAttribute(lambda o: o.product.company if o.product else None)  # type: ignore[attr-defined,no-untyped-call]
     variant_values = {}
+    sku_variant_code = factory.Sequence(lambda n: f"SKU-VAR-{n:04d}")  # type: ignore[no-untyped-call]
 
 
 class CategoryFactory(factory.django.DjangoModelFactory):
@@ -110,3 +116,57 @@ class StockMovementFactory(factory.django.DjangoModelFactory):
     balance_after = 10
     reference_number = ""
     note = ""
+
+
+class SupplierFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = Supplier
+
+    name = factory.Sequence(lambda n: f"Test Supplier {n}")  # type: ignore[no-untyped-call]
+    contact_name = "Test Contact"
+    phone = "12345678"
+    country = "China"
+    is_active = True
+    company = factory.SubFactory(CompanyFactory)  # type: ignore[no-untyped-call]
+
+
+class ProductSupplierFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = ProductSupplier
+
+    product = factory.SubFactory(ProductFactory)  # type: ignore[no-untyped-call]
+    supplier = factory.SubFactory(SupplierFactory)  # type: ignore[no-untyped-call]
+    company = factory.LazyAttribute(  # type: ignore[attr-defined,no-untyped-call]
+        lambda o: o.product.company
+    )
+    supplier_link = None
+
+
+class CompanyMarketplaceFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = CompanyMarketplace
+
+    name = factory.Sequence(lambda n: f"Marketplace {n}")  # type: ignore[no-untyped-call]
+    company = factory.SubFactory(CompanyFactory)  # type: ignore[no-untyped-call]
+    is_active = True
+
+
+class BusinessEntityFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = BusinessEntity
+
+    name = factory.Sequence(lambda n: f"Business Entity {n}")  # type: ignore[no-untyped-call]
+    company = factory.SubFactory(CompanyFactory)  # type: ignore[no-untyped-call]
+    marketplace = factory.SubFactory(CompanyMarketplaceFactory)  # type: ignore[no-untyped-call]
+    is_active = True
+
+
+class ProductBusinessEntityFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = ProductBusinessEntity
+
+    product = factory.SubFactory(ProductFactory)  # type: ignore[no-untyped-call]
+    business_entity = factory.SubFactory(BusinessEntityFactory)  # type: ignore[no-untyped-call]
+    company = factory.LazyAttribute(  # type: ignore[attr-defined,no-untyped-call]
+        lambda o: o.product.company
+    )

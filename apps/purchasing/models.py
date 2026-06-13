@@ -49,6 +49,13 @@ class PurchaseOrder(DefaultModel):
         Warehouse, on_delete=models.CASCADE
     )  # delivered to which warehouse
     supplier_name = models.CharField(max_length=255, blank=True, null=True)
+    supplier = models.ForeignKey(
+        "inventory.Supplier",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="purchase_orders",
+    )
 
     forwarder_name = models.CharField(max_length=255, blank=True, null=True)
     shop_services = models.CharField(max_length=255, blank=True, null=True)  # jasa belanja

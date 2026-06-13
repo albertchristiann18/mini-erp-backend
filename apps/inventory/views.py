@@ -14,31 +14,70 @@ from rest_framework.views import APIView
 
 from apps.inventory.constants.categories import MASTER_CATEGORY
 from apps.inventory.models import (
+    BusinessEntity,
     Category,
+    CompanyMarketplace,
     Product,
+    ProductBusinessEntity,
     ProductPhoto,
+    ProductSupplier,
     ProductVariant,
     StockMovement,
+    Supplier,
     Warehouse,
 )
 from apps.inventory.serializers import (
+    BusinessEntitySerializer,
+    BusinessEntityWriteSerializer,
     CategorySerializer,
+    CompanyMarketplaceSerializer,
+    CompanyMarketplaceWriteSerializer,
+    ProductBusinessEntitySerializer,
     ProductCreateSerializer,
     ProductPhotoSerializer,
     ProductSerializer,
+    ProductSupplierSerializer,
     ProductVariantStockSerializer,
     StockMovementSerializer,
+    SupplierSerializer,
     WarehouseSerializer,
 )
 from apps.inventory.services import product_service
-from apps.inventory.services.bulk_inventory_service import BulkInventoryService
+from apps.inventory.services.business_entity_service import BusinessEntityService
+from apps.inventory.services.inventory_service import InventoryService
 from core.permissions import IsStaffOrReadOnly
 
 
 class CategoryViewSet(viewsets.ModelViewSet):
-    queryset = Category.objects.filter(is_active=True).all()
     serializer_class = CategorySerializer
     permission_classes = [IsStaffOrReadOnly]
+
+    def perform_create(self, serializer: Serializer) -> None:
+        serializer.save(company=self.request.user.profile.company)
+
+    def get_queryset(self) -> QuerySet["Category"]:
+        qs = Category.objects.filter(
+            company=self.request.user.profile.company,
+            is_active=True,
+        )
+        search = self.request.query_params.get("search")
+        if search:
+            qs = qs.filter(name__icontains=search)
+        return qs.order_by("name")
+
+    def destroy(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        instance = self.get_object()
+        linked_products = list(Product.objects.filter(category=instance).values("name", "sku_code"))
+        if linked_products:
+            return Response(
+                {
+                    "error": "Cannot delete category — products are linked",
+                    "products": linked_products,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        self.perform_destroy(instance)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class ProductViewSet(viewsets.ModelViewSet):
@@ -48,10 +87,17 @@ class ProductViewSet(viewsets.ModelViewSet):
     def get_queryset(self) -> QuerySet[Product]:
         if not self.request.user.is_authenticated:
             return Product.objects.none()
-        qs = Product.objects.filter(is_active=True, company=self.request.user.profile.company)
+        qs = Product.objects.filter(company=self.request.user.profile.company)
         search = self.request.query_params.get("search")
         if search:
             qs = qs.filter(models.Q(name__icontains=search) | models.Q(sku_code__icontains=search))
+        category_id = self.request.query_params.get("category")
+        if category_id:
+            qs = qs.filter(category_id=category_id)
+        ordering = self.request.query_params.get("ordering")
+        ALLOWED_ORDERINGS = {"name", "-name", "sku_code", "-sku_code"}
+        if ordering and ordering in ALLOWED_ORDERINGS:
+            qs = qs.order_by(ordering)
         return qs
 
     def get_serializer_class(self) -> Type[Serializer]:
@@ -157,6 +203,24 @@ class ProductViewSet(viewsets.ModelViewSet):
         result = ProductService().update_variant_base_price(str(variant.id), base_price)
         return Response(result, status=status.HTTP_200_OK)
 
+    @action(detail=True, methods=["post"], url_path="save_variants")
+    def save_variants(self, request: Request, pk: str | None = None) -> Response:
+        product = self.get_object()
+        from apps.inventory.serializers import SaveVariantsSerializer
+        from apps.inventory.services.product_service import ProductService
+
+        serializer = SaveVariantsSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        result = ProductService().save_variants(
+            product_id=str(product.id),
+            company_id=str(product.company_id),
+            variant_options=serializer.validated_data["variant_options"],
+            variants=list(serializer.validated_data["variants"]),
+        )
+        return Response(result, status=status.HTTP_200_OK)
+
     def create(self, request: Request, *args: Any, **kwargs: Any) -> Response:
         is_many = isinstance(request.data, list)
         serializer = self.get_serializer(data=request.data, many=is_many)
@@ -256,6 +320,9 @@ class ProductVariantStockViewSet(viewsets.ReadOnlyModelViewSet):
                 | db_models.Q(sku_variant_code__icontains=search)
                 | db_models.Q(product__name__icontains=search)
             )
+        supplier_id = self.request.query_params.get("supplier_id")
+        if supplier_id:
+            qs = qs.filter(product__product_suppliers__supplier__id=supplier_id).distinct()
         return qs.order_by("product__name", "name")
 
 
@@ -274,7 +341,7 @@ class InventoryBulkViewSet(viewsets.ViewSet):
         updates = request.data
         if not isinstance(updates, list):
             return Response({"error": "Expected JSON array"}, status=400)
-        result = BulkInventoryService.bulk_update(updates)
+        result = InventoryService().adjust_stock_batch(updates)
         return Response(result, status=200)
 
     @action(detail=False, methods=["post"], url_path="adjust")
@@ -295,7 +362,7 @@ class InventoryBulkViewSet(viewsets.ViewSet):
         if adj_type not in ("add", "min", "set"):
             return Response({"error": "type must be add, min, or set"}, status=400)
 
-        result = BulkInventoryService.bulk_update(
+        result = InventoryService().adjust_stock_batch(
             [
                 {
                     "variant_id": variant_id,
@@ -304,6 +371,53 @@ class InventoryBulkViewSet(viewsets.ViewSet):
                     "type": adj_type,
                 }
             ]
+        )
+        return Response(result, status=200)
+
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="marketplace_reconcile",
+        parser_classes=[MultiPartParser, FormParser],
+    )
+    def marketplace_reconcile(self, request: Request) -> Response:
+        file_obj = request.FILES.get("file")
+        marketplace_id = request.data.get("marketplace_id", "")
+        warehouse_id = request.data.get("warehouse_id")
+        dry_run_raw = request.data.get("dry_run", "false")
+        dry_run = str(dry_run_raw).lower() in ("true", "1", "yes")
+
+        if not file_obj:
+            return Response({"error": "file is required"}, status=400)
+        if not warehouse_id:
+            return Response({"error": "warehouse_id is required"}, status=400)
+
+        from apps.inventory.models import CompanyMarketplace
+
+        marketplace_name = marketplace_id
+        if marketplace_id:
+            cm = CompanyMarketplace.objects.filter(
+                id=marketplace_id,
+                company=request.user.profile.company,
+            ).first()
+            if cm:
+                marketplace_name = cm.name
+
+        rows = InventoryService.parse_marketplace_xlsx(file_obj)
+        if not rows:
+            return Response(
+                {
+                    "error": "Could not parse file. Ensure it has SKU and stock columns in the first 5 rows."
+                },
+                status=400,
+            )
+
+        result = InventoryService().reconcile_marketplace_stock(
+            rows=rows,
+            warehouse_id=warehouse_id,
+            company_id=str(request.user.profile.company_id),
+            marketplace_name=marketplace_name,
+            dry_run=dry_run,
         )
         return Response(result, status=200)
 
@@ -505,3 +619,230 @@ class WarehouseViewSet(viewsets.ModelViewSet):
         if not self.request.user.is_authenticated:
             return Warehouse.objects.none()
         return Warehouse.objects.filter(is_active=True, company=self.request.user.profile.company)
+
+
+class SupplierViewSet(viewsets.ModelViewSet):
+    serializer_class = SupplierSerializer
+    permission_classes = [IsAuthenticated]
+
+    def perform_create(self, serializer: Any) -> None:
+        serializer.save(company=self.request.user.profile.company)
+
+    def get_queryset(self) -> QuerySet["Supplier"]:
+        qs = Supplier.objects.filter(company=self.request.user.profile.company)
+        if self.request.query_params.get("active_only"):
+            qs = qs.filter(is_active=True)
+        search = self.request.query_params.get("search")
+        if search:
+            qs = qs.filter(name__icontains=search)
+        return qs.order_by("name")
+
+
+class ProductSupplierViewSet(viewsets.ModelViewSet):
+    serializer_class = ProductSupplierSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self) -> QuerySet["ProductSupplier"]:
+        qs = ProductSupplier.objects.filter(
+            company=self.request.user.profile.company
+        ).select_related("supplier", "product")
+        product_id = self.request.query_params.get("product_id")
+        supplier_id = self.request.query_params.get("supplier_id")
+        if product_id:
+            qs = qs.filter(product__id=product_id)
+        if supplier_id:
+            qs = qs.filter(supplier__id=supplier_id)
+        return qs
+
+
+class CompanyMarketplaceViewSet(viewsets.ViewSet):
+    permission_classes = [IsAuthenticated]
+
+    def list(self, request: Request) -> Response:
+        """GET — returns company's channels, auto-seeds Shopee+TikTok on first call."""
+        company_id = str(request.user.profile.company_id)
+        marketplaces = BusinessEntityService().get_or_seed_company_marketplaces(company_id)
+        search = request.query_params.get("search")
+        if search:
+            marketplaces = [m for m in marketplaces if search.lower() in m.name.lower()]
+        serializer = CompanyMarketplaceSerializer(marketplaces, many=True)
+        return Response({"count": len(serializer.data), "results": serializer.data})
+
+    def create(self, request: Request) -> Response:
+        """POST — create a new company marketplace."""
+        serializer = CompanyMarketplaceWriteSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        company = request.user.profile.company
+        name = serializer.validated_data["name"].strip()
+        is_active = serializer.validated_data.get("is_active", True)
+        if CompanyMarketplace.objects.filter(company=company, name=name).exists():
+            return Response(
+                {"error": f"Marketplace '{name}' already exists"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        obj = CompanyMarketplace.objects.create(company=company, name=name, is_active=is_active)
+        return Response(CompanyMarketplaceSerializer(obj).data, status=status.HTTP_201_CREATED)
+
+    def partial_update(self, request: Request, pk: str | None = None) -> Response:
+        """PATCH — update name or is_active."""
+        try:
+            obj = CompanyMarketplace.objects.get(id=pk, company=request.user.profile.company)
+        except CompanyMarketplace.DoesNotExist:
+            return Response({"error": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+        serializer = CompanyMarketplaceWriteSerializer(data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        for attr, value in serializer.validated_data.items():
+            setattr(obj, attr, value)
+        obj.save()
+        return Response(CompanyMarketplaceSerializer(obj).data)
+
+    def destroy(self, request: Request, pk: str | None = None) -> Response:
+        """DELETE — only allowed if no BusinessEntities use this marketplace."""
+        try:
+            obj = CompanyMarketplace.objects.get(id=pk, company=request.user.profile.company)
+        except CompanyMarketplace.DoesNotExist:
+            return Response({"error": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+        if obj.business_entities.exists():
+            return Response(
+                {"error": "Cannot delete — business entities are using this marketplace"},
+                status=status.HTTP_409_CONFLICT,
+            )
+        obj.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class BusinessEntityViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+
+    def get_serializer_class(self) -> Type[Serializer]:
+        if self.action in ("create", "update", "partial_update"):
+            return BusinessEntityWriteSerializer
+        return BusinessEntitySerializer
+
+    def get_queryset(self) -> QuerySet[BusinessEntity]:
+        if not self.request.user.is_authenticated:
+            return BusinessEntity.objects.none()
+        qs = (
+            BusinessEntity.objects.filter(company=self.request.user.profile.company)
+            .select_related("marketplace")
+            .order_by("name")
+        )
+        search = self.request.query_params.get("search")
+        if search:
+            qs = qs.filter(name__icontains=search)
+        return qs
+
+    def perform_create(self, serializer: BusinessEntityWriteSerializer) -> None:
+        company = self.request.user.profile.company
+        marketplace_id = serializer.validated_data.pop("marketplace_id")
+        try:
+            marketplace = CompanyMarketplace.objects.get(id=marketplace_id, company=company)
+        except CompanyMarketplace.DoesNotExist:
+            from rest_framework.exceptions import ValidationError
+
+            raise ValidationError(
+                {"marketplace_id": "Marketplace not found or does not belong to your company"}
+            )
+        serializer.save(company=company, marketplace=marketplace)
+
+    def perform_update(self, serializer: BusinessEntityWriteSerializer) -> None:
+        company = self.request.user.profile.company
+        marketplace_id = serializer.validated_data.pop("marketplace_id", None)
+        if marketplace_id:
+            try:
+                marketplace = CompanyMarketplace.objects.get(id=marketplace_id, company=company)
+            except CompanyMarketplace.DoesNotExist:
+                from rest_framework.exceptions import ValidationError
+
+                raise ValidationError({"marketplace_id": "Marketplace not found"})
+            serializer.save(marketplace=marketplace)
+        else:
+            serializer.save()
+
+    def create(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        from django.db import IntegrityError
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            self.perform_create(serializer)
+        except IntegrityError:
+            return Response(
+                {"error": "Business entity with this name already exists for this company"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        read_serializer = BusinessEntitySerializer(serializer.instance)
+        return Response(read_serializer.data, status=status.HTTP_201_CREATED)
+
+    def update(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        from django.db import IntegrityError
+
+        partial = kwargs.pop("partial", False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        try:
+            self.perform_update(serializer)
+        except IntegrityError:
+            return Response(
+                {"error": "Business entity with this name already exists for this company"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        read_serializer = BusinessEntitySerializer(serializer.instance)
+        return Response(read_serializer.data)
+
+
+class ProductBusinessEntityViewSet(viewsets.ViewSet):
+    permission_classes = [IsAuthenticated]
+
+    def list(self, request: Request) -> Response:
+        """GET /api/inventory/product-business-entities/?product_id=<id>"""
+        product_id = request.query_params.get("product_id")
+        qs = ProductBusinessEntity.objects.filter(
+            company=request.user.profile.company
+        ).select_related("product", "business_entity", "business_entity__marketplace")
+        if product_id:
+            qs = qs.filter(product_id=product_id)
+        serializer = ProductBusinessEntitySerializer(qs, many=True)
+        return Response(
+            {
+                "count": len(serializer.data),
+                "next": None,
+                "previous": None,
+                "results": serializer.data,
+            }
+        )
+
+    def create(self, request: Request) -> Response:
+        """POST /api/inventory/product-business-entities/
+        Body: { product_id: str, business_entity_id: str }
+        """
+        product_id = request.data.get("product_id")
+        business_entity_id = request.data.get("business_entity_id")
+        if not product_id or not business_entity_id:
+            return Response(
+                {"error": "product_id and business_entity_id are required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            result = BusinessEntityService().attach_product(
+                product_id=product_id,
+                business_entity_id=business_entity_id,
+                company_id=str(request.user.profile.company_id),
+            )
+        except (ValueError, Exception) as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(result, status=status.HTTP_201_CREATED)
+
+    def destroy(self, request: Request, pk: str | None = None) -> Response:
+        """DELETE /api/inventory/product-business-entities/{id}/"""
+        try:
+            BusinessEntityService().detach_product(
+                product_business_entity_id=pk or "",
+                company_id=str(request.user.profile.company_id),
+            )
+        except ValueError as e:
+            return Response({"error": str(e)}, status=status.HTTP_404_NOT_FOUND)
+        return Response(status=status.HTTP_204_NO_CONTENT)
