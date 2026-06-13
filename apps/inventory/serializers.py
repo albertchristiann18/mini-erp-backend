@@ -317,9 +317,14 @@ class BusinessEntitySerializer(serializers.ModelSerializer):
     class Meta:
         model = BusinessEntity
         fields = [
-            "id", "company_id", "name",
-            "marketplace_id", "marketplace_name",
-            "is_active", "cdate", "udate",
+            "id",
+            "company_id",
+            "name",
+            "marketplace_id",
+            "marketplace_name",
+            "is_active",
+            "cdate",
+            "udate",
         ]
         read_only_fields = ["id", "company_id", "cdate", "udate"]
 
@@ -344,14 +349,21 @@ class ProductBusinessEntitySerializer(serializers.ModelSerializer):
     business_entity_id = serializers.CharField(source="business_entity.id", read_only=True)
     business_entity_name = serializers.CharField(source="business_entity.name", read_only=True)
     marketplace_id = serializers.CharField(source="business_entity.marketplace.id", read_only=True)
-    marketplace_name = serializers.CharField(source="business_entity.marketplace.name", read_only=True)
+    marketplace_name = serializers.CharField(
+        source="business_entity.marketplace.name", read_only=True
+    )
 
     class Meta:
         model = ProductBusinessEntity
         fields = [
-            "id", "product_id", "product_name", "product_sku",
-            "business_entity_id", "business_entity_name",
-            "marketplace_id", "marketplace_name",
+            "id",
+            "product_id",
+            "product_name",
+            "product_sku",
+            "business_entity_id",
+            "business_entity_name",
+            "marketplace_id",
+            "marketplace_name",
             "cdate",
         ]
         read_only_fields = fields

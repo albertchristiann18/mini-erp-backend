@@ -595,7 +595,7 @@ class InventoryService:
             map_product_variant = {str(v.id): v for v in variants}
 
             if movements:
-                company_id = pvws_to_update[0].company_id
+                company_id = pvws_to_update[0].company.id
                 self.record_multiple_stock_movements(
                     warehouse_id=warehouse_id,
                     company_id=company_id,
@@ -1008,8 +1008,8 @@ class InventoryService:
             warehouse_id=warehouse_id,
         )
         pvw_map: dict[str, ProductVariantWarehouse] = {
-            str(pvw.product_variant_id): pvw
-            for pvw in pvws_qs  # type: ignore[attr-defined]
+            str(pvw.product_variant_id): pvw  # type: ignore[attr-defined]
+            for pvw in pvws_qs
         }
 
         movements_data: list[dict] = []

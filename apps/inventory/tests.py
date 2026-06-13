@@ -3199,8 +3199,9 @@ class MarketplaceReconcileTest(APITestCase):
 
     def test_parse_marketplace_xlsx_invalid_activepane(self):
         """Shopee xlsx with invalid activePane attribute is handled gracefully."""
-        import openpyxl
         import zipfile
+
+        import openpyxl
 
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -3436,120 +3437,138 @@ class AdjustStockBatchServiceTest(TestCase):
         self.service = InventoryService()
 
     def test_add_increases_stock(self):
-        result = self.service.adjust_stock_batch([
-            {
-                "variant_id": str(self.product_variant.id),
-                "warehouse_id": str(self.warehouse.id),
-                "type": "add",
-                "qty": 5,
-            }
-        ])
+        result = self.service.adjust_stock_batch(
+            [
+                {
+                    "variant_id": str(self.product_variant.id),
+                    "warehouse_id": str(self.warehouse.id),
+                    "type": "add",
+                    "qty": 5,
+                }
+            ]
+        )
         self.pvw.refresh_from_db()
         self.assertEqual(self.pvw.physical_qty, 15)
         self.assertEqual(result["results"][0]["old_qty"], 10)
         self.assertEqual(result["results"][0]["new_qty"], 15)
 
     def test_min_decreases_stock(self):
-        result = self.service.adjust_stock_batch([
-            {
-                "variant_id": str(self.product_variant.id),
-                "warehouse_id": str(self.warehouse.id),
-                "type": "min",
-                "qty": 3,
-            }
-        ])
+        result = self.service.adjust_stock_batch(
+            [
+                {
+                    "variant_id": str(self.product_variant.id),
+                    "warehouse_id": str(self.warehouse.id),
+                    "type": "min",
+                    "qty": 3,
+                }
+            ]
+        )
         self.pvw.refresh_from_db()
         self.assertEqual(self.pvw.physical_qty, 7)
         self.assertEqual(result["results"][0]["old_qty"], 10)
         self.assertEqual(result["results"][0]["new_qty"], 7)
 
     def test_set_sets_absolute_qty(self):
-        result = self.service.adjust_stock_batch([
-            {
-                "variant_id": str(self.product_variant.id),
-                "warehouse_id": str(self.warehouse.id),
-                "type": "set",
-                "qty": 20,
-            }
-        ])
+        result = self.service.adjust_stock_batch(
+            [
+                {
+                    "variant_id": str(self.product_variant.id),
+                    "warehouse_id": str(self.warehouse.id),
+                    "type": "set",
+                    "qty": 20,
+                }
+            ]
+        )
         self.pvw.refresh_from_db()
         self.assertEqual(self.pvw.physical_qty, 20)
         self.assertEqual(result["results"][0]["old_qty"], 10)
         self.assertEqual(result["results"][0]["new_qty"], 20)
 
     def test_set_to_zero(self):
-        result = self.service.adjust_stock_batch([
-            {
-                "variant_id": str(self.product_variant.id),
-                "warehouse_id": str(self.warehouse.id),
-                "type": "set",
-                "qty": 0,
-            }
-        ])
+        result = self.service.adjust_stock_batch(
+            [
+                {
+                    "variant_id": str(self.product_variant.id),
+                    "warehouse_id": str(self.warehouse.id),
+                    "type": "set",
+                    "qty": 0,
+                }
+            ]
+        )
         self.pvw.refresh_from_db()
         self.assertEqual(self.pvw.physical_qty, 0)
         self.assertEqual(result["results"][0]["new_qty"], 0)
 
     def test_min_insufficient_stock_returns_error(self):
-        result = self.service.adjust_stock_batch([
-            {
-                "variant_id": str(self.product_variant.id),
-                "warehouse_id": str(self.warehouse.id),
-                "type": "min",
-                "qty": 15,
-            }
-        ])
+        result = self.service.adjust_stock_batch(
+            [
+                {
+                    "variant_id": str(self.product_variant.id),
+                    "warehouse_id": str(self.warehouse.id),
+                    "type": "min",
+                    "qty": 15,
+                }
+            ]
+        )
         self.assertEqual(len(result["errors"]), 1)
         self.pvw.refresh_from_db()
         self.assertEqual(self.pvw.physical_qty, 10)
 
     def test_set_negative_rejected(self):
-        result = self.service.adjust_stock_batch([
-            {
-                "variant_id": str(self.product_variant.id),
-                "warehouse_id": str(self.warehouse.id),
-                "type": "set",
-                "qty": -1,
-            }
-        ])
+        result = self.service.adjust_stock_batch(
+            [
+                {
+                    "variant_id": str(self.product_variant.id),
+                    "warehouse_id": str(self.warehouse.id),
+                    "type": "set",
+                    "qty": -1,
+                }
+            ]
+        )
         self.assertEqual(len(result["errors"]), 1)
 
     def test_warehouse_ulid_id_no_crash(self):
-        result = self.service.adjust_stock_batch([
-            {
-                "variant_id": str(self.product_variant.id),
-                "warehouse_id": str(self.warehouse.id),
-                "type": "add",
-                "qty": 1,
-            }
-        ])
+        result = self.service.adjust_stock_batch(
+            [
+                {
+                    "variant_id": str(self.product_variant.id),
+                    "warehouse_id": str(self.warehouse.id),
+                    "type": "add",
+                    "qty": 1,
+                }
+            ]
+        )
         self.pvw.refresh_from_db()
         self.assertEqual(self.pvw.physical_qty, 11)
         self.assertEqual(len(result["results"]), 1)
 
     def test_stock_movement_created_on_add(self):
-        self.service.adjust_stock_batch([
-            {
-                "variant_id": str(self.product_variant.id),
-                "warehouse_id": str(self.warehouse.id),
-                "type": "add",
-                "qty": 5,
-            }
-        ])
+        self.service.adjust_stock_batch(
+            [
+                {
+                    "variant_id": str(self.product_variant.id),
+                    "warehouse_id": str(self.warehouse.id),
+                    "type": "add",
+                    "qty": 5,
+                }
+            ]
+        )
         movement = StockMovement.objects.last()
         self.assertIsNotNone(movement)
         self.assertEqual(movement.movement_type, StockMovement.MovementType.ADJUSTMENT)
         self.assertEqual(movement.quantity, 5)
 
     def test_stock_movement_created_on_min(self):
-        self.service.adjust_stock_batch([
-            {
-                "variant_id": str(self.product_variant.id),
-                "warehouse_id": str(self.warehouse.id),
-                "type": "min",
-                "qty": 3,
-            }
-        ])
+        self.service.adjust_stock_batch(
+            [
+                {
+                    "variant_id": str(self.product_variant.id),
+                    "warehouse_id": str(self.warehouse.id),
+                    "type": "min",
+                    "qty": 3,
+                }
+            ]
+        )
         movement = StockMovement.objects.last()
         self.assertIsNotNone(movement)
         self.assertEqual(movement.movement_type, StockMovement.MovementType.ADJUSTMENT)

@@ -257,6 +257,7 @@ class PurchaseOrderCreateSerializer(serializers.ModelSerializer):
         supplier_id = attrs.pop("supplier_id", None)
         if supplier_id:
             from apps.inventory.models import Supplier
+
             try:
                 supplier = Supplier.objects.get(id=supplier_id)
                 attrs["supplier"] = supplier
@@ -426,6 +427,7 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
         supplier_id = attrs.pop("supplier_id", None)
         if supplier_id is not None:
             from apps.inventory.models import Supplier
+
             try:
                 supplier = Supplier.objects.get(id=supplier_id)
                 attrs["supplier"] = supplier

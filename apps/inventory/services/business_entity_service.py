@@ -4,7 +4,6 @@ DEFAULT_MARKETPLACES = ["Shopee", "TikTok"]
 
 
 class BusinessEntityService:
-
     def get_or_seed_company_marketplaces(self, company_id: str) -> list:
         """
         Returns all CompanyMarketplace records for the company.
@@ -16,10 +15,12 @@ class BusinessEntityService:
         qs = CompanyMarketplace.objects.filter(company_id=company_id)
         if not qs.exists():
             company = Company.objects.get(id=company_id)
-            CompanyMarketplace.objects.bulk_create([
-                CompanyMarketplace(company=company, name=name, is_active=True)
-                for name in DEFAULT_MARKETPLACES
-            ])
+            CompanyMarketplace.objects.bulk_create(
+                [
+                    CompanyMarketplace(company=company, name=name, is_active=True)
+                    for name in DEFAULT_MARKETPLACES
+                ]
+            )
             qs = CompanyMarketplace.objects.filter(company_id=company_id)
         return list(qs.order_by("name"))
 
@@ -33,12 +34,15 @@ class BusinessEntityService:
         )
 
         # Marketplace conflict check (exclude the same business_entity for idempotency)
-        conflict = ProductBusinessEntity.objects.filter(
-            product=product,
-            business_entity__marketplace=business_entity.marketplace,
-        ).exclude(
-            business_entity=business_entity
-        ).select_related("business_entity").first()
+        conflict = (
+            ProductBusinessEntity.objects.filter(
+                product=product,
+                business_entity__marketplace=business_entity.marketplace,
+            )
+            .exclude(business_entity=business_entity)
+            .select_related("business_entity")
+            .first()
+        )
 
         if conflict:
             raise ValueError(

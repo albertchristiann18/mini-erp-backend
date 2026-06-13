@@ -2573,10 +2573,6 @@ class PaginationOrderingSummaryTest(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["upcoming_count"], 2)
-        expected_total_amount = (ordered_po.total_amount or 0) + (shipped_po.total_amount or 0)
-        expected_total_item_amount = (ordered_po.total_item_amount or 0) + (
-            shipped_po.total_item_amount or 0
-        )
         expected_procure_amount = (ordered_po.procure_amount or 0) + (
             shipped_po.procure_amount or 0
         )

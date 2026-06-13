@@ -67,12 +67,13 @@ class CategoryViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request: Request, *args: Any, **kwargs: Any) -> Response:
         instance = self.get_object()
-        linked_products = list(
-            Product.objects.filter(category=instance).values("name", "sku_code")
-        )
+        linked_products = list(Product.objects.filter(category=instance).values("name", "sku_code"))
         if linked_products:
             return Response(
-                {"error": "Cannot delete category — products are linked", "products": linked_products},
+                {
+                    "error": "Cannot delete category — products are linked",
+                    "products": linked_products,
+                },
                 status=status.HTTP_409_CONFLICT,
             )
         self.perform_destroy(instance)
@@ -392,6 +393,7 @@ class InventoryBulkViewSet(viewsets.ViewSet):
             return Response({"error": "warehouse_id is required"}, status=400)
 
         from apps.inventory.models import CompanyMarketplace
+
         marketplace_name = marketplace_id
         if marketplace_id:
             cm = CompanyMarketplace.objects.filter(
@@ -404,7 +406,9 @@ class InventoryBulkViewSet(viewsets.ViewSet):
         rows = InventoryService.parse_marketplace_xlsx(file_obj)
         if not rows:
             return Response(
-                {"error": "Could not parse file. Ensure it has SKU and stock columns in the first 5 rows."},
+                {
+                    "error": "Could not parse file. Ensure it has SKU and stock columns in the first 5 rows."
+                },
                 status=400,
             )
 
@@ -621,7 +625,7 @@ class SupplierViewSet(viewsets.ModelViewSet):
     serializer_class = SupplierSerializer
     permission_classes = [IsAuthenticated]
 
-    def perform_create(self, serializer) -> None:
+    def perform_create(self, serializer: Any) -> None:
         serializer.save(company=self.request.user.profile.company)
 
     def get_queryset(self) -> QuerySet["Supplier"]:
@@ -720,9 +724,11 @@ class BusinessEntityViewSet(viewsets.ModelViewSet):
     def get_queryset(self) -> QuerySet[BusinessEntity]:
         if not self.request.user.is_authenticated:
             return BusinessEntity.objects.none()
-        qs = BusinessEntity.objects.filter(
-            company=self.request.user.profile.company
-        ).select_related("marketplace").order_by("name")
+        qs = (
+            BusinessEntity.objects.filter(company=self.request.user.profile.company)
+            .select_related("marketplace")
+            .order_by("name")
+        )
         search = self.request.query_params.get("search")
         if search:
             qs = qs.filter(name__icontains=search)
@@ -735,7 +741,10 @@ class BusinessEntityViewSet(viewsets.ModelViewSet):
             marketplace = CompanyMarketplace.objects.get(id=marketplace_id, company=company)
         except CompanyMarketplace.DoesNotExist:
             from rest_framework.exceptions import ValidationError
-            raise ValidationError({"marketplace_id": "Marketplace not found or does not belong to your company"})
+
+            raise ValidationError(
+                {"marketplace_id": "Marketplace not found or does not belong to your company"}
+            )
         serializer.save(company=company, marketplace=marketplace)
 
     def perform_update(self, serializer: BusinessEntityWriteSerializer) -> None:
@@ -746,15 +755,15 @@ class BusinessEntityViewSet(viewsets.ModelViewSet):
                 marketplace = CompanyMarketplace.objects.get(id=marketplace_id, company=company)
             except CompanyMarketplace.DoesNotExist:
                 from rest_framework.exceptions import ValidationError
+
                 raise ValidationError({"marketplace_id": "Marketplace not found"})
             serializer.save(marketplace=marketplace)
         else:
             serializer.save()
-        read_serializer = BusinessEntitySerializer(serializer.instance)
-        return read_serializer.data
 
     def create(self, request: Request, *args: Any, **kwargs: Any) -> Response:
         from django.db import IntegrityError
+
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -769,6 +778,7 @@ class BusinessEntityViewSet(viewsets.ModelViewSet):
 
     def update(self, request: Request, *args: Any, **kwargs: Any) -> Response:
         from django.db import IntegrityError
+
         partial = kwargs.pop("partial", False)
         instance = self.get_object()
         serializer = self.get_serializer(instance, data=request.data, partial=partial)
@@ -796,7 +806,14 @@ class ProductBusinessEntityViewSet(viewsets.ViewSet):
         if product_id:
             qs = qs.filter(product_id=product_id)
         serializer = ProductBusinessEntitySerializer(qs, many=True)
-        return Response({"count": len(serializer.data), "next": None, "previous": None, "results": serializer.data})
+        return Response(
+            {
+                "count": len(serializer.data),
+                "next": None,
+                "previous": None,
+                "results": serializer.data,
+            }
+        )
 
     def create(self, request: Request) -> Response:
         """POST /api/inventory/product-business-entities/

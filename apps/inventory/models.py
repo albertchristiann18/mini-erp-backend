@@ -293,10 +293,19 @@ class Supplier(DefaultModel):
 
 
 class ProductSupplier(DefaultModel):
-    id = ULIDField(primary_key=True, default=generate_ulid, editable=False, db_column="product_supplier_id")
+    id = ULIDField(
+        primary_key=True, default=generate_ulid, editable=False, db_column="product_supplier_id"
+    )
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="product_suppliers")
-    supplier = models.ForeignKey(Supplier, on_delete=models.CASCADE, related_name="product_suppliers")
-    supplier_link = models.URLField(max_length=500, blank=True, null=True, help_text="URL to this product on the supplier's site")
+    supplier = models.ForeignKey(
+        Supplier, on_delete=models.CASCADE, related_name="product_suppliers"
+    )
+    supplier_link = models.URLField(
+        max_length=500,
+        blank=True,
+        null=True,
+        help_text="URL to this product on the supplier's site",
+    )
 
     class Meta:
         unique_together = ["product", "supplier"]
@@ -309,8 +318,7 @@ class CompanyMarketplace(DefaultModel):
     """Company-scoped sales channel. Each company owns their own list."""
 
     id = ULIDField(
-        primary_key=True, default=generate_ulid, editable=False,
-        db_column="company_marketplace_id"
+        primary_key=True, default=generate_ulid, editable=False, db_column="company_marketplace_id"
     )
     name = models.CharField(max_length=255)
     is_active = models.BooleanField(default=True)
@@ -323,7 +331,9 @@ class CompanyMarketplace(DefaultModel):
 
 
 class BusinessEntity(DefaultModel):
-    id = ULIDField(primary_key=True, default=generate_ulid, editable=False, db_column="business_entity_id")
+    id = ULIDField(
+        primary_key=True, default=generate_ulid, editable=False, db_column="business_entity_id"
+    )
     name = models.CharField(max_length=255)
     marketplace = models.ForeignKey(
         CompanyMarketplace,
@@ -340,7 +350,12 @@ class BusinessEntity(DefaultModel):
 
 
 class ProductBusinessEntity(DefaultModel):
-    id = ULIDField(primary_key=True, default=generate_ulid, editable=False, db_column="product_business_entity_id")
+    id = ULIDField(
+        primary_key=True,
+        default=generate_ulid,
+        editable=False,
+        db_column="product_business_entity_id",
+    )
     product = models.ForeignKey(
         Product,
         on_delete=models.CASCADE,
