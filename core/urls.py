@@ -46,6 +46,7 @@ def me_view(request: Request) -> Response:
 
         if new_username and new_username != user.username:
             from django.contrib.auth import get_user_model
+
             User = get_user_model()
             if User.objects.filter(username=new_username).exclude(pk=user.pk).exists():
                 errors["username"] = ["Username already taken."]
@@ -54,6 +55,7 @@ def me_view(request: Request) -> Response:
 
         if new_email and new_email != user.email:
             from django.contrib.auth import get_user_model
+
             User = get_user_model()
             if User.objects.filter(email=new_email).exclude(pk=user.pk).exists():
                 errors["email"] = ["Email already in use."]

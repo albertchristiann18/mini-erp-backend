@@ -43,7 +43,9 @@ class Command(BaseCommand):
         is_staff = role == "admin"
 
         company = Company.objects.create(name=company_name, email=email)
-        user = User.objects.create_user(username=username, email=email, password=password, is_staff=is_staff)
+        user = User.objects.create_user(
+            username=username, email=email, password=password, is_staff=is_staff
+        )
         UserProfile.objects.create(user=user, company=company, role=role)
 
         self.stdout.write(self.style.SUCCESS("User created successfully"))

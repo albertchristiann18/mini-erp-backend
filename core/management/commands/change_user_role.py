@@ -15,7 +15,9 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser: Any) -> None:
         parser.add_argument("--username", required=True, help="Username of the user to update")
-        parser.add_argument("--role", required=True, choices=ROLES, help=f"New role. Choices: {ROLES}")
+        parser.add_argument(
+            "--role", required=True, choices=ROLES, help=f"New role. Choices: {ROLES}"
+        )
 
     def handle(self, *args: Any, **options: Any) -> None:
         username: str = options["username"]
@@ -38,8 +40,4 @@ class Command(BaseCommand):
         user.is_staff = new_role == "admin"
         user.save(update_fields=["is_staff"])
 
-        self.stdout.write(
-            self.style.SUCCESS(
-                f"Updated '{username}': {old_role} -> {new_role}"
-            )
-        )
+        self.stdout.write(self.style.SUCCESS(f"Updated '{username}': {old_role} -> {new_role}"))
