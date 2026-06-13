@@ -1,19 +1,21 @@
 default_stages: [pre-commit]
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.9.3
-    hooks:
-      - id: ruff
-        name: ruff check and fix
-        args: [
-          '--fix',
-          '--config', 'pyproject.toml',
-          '--exit-non-zero-on-fix'
-        ]
-      - id: ruff-format
-
   - repo: local
     hooks:
+      - id: ruff-check
+        name: ruff check (auto-fix)
+        entry: uv run ruff check --fix --exit-non-zero-on-fix
+        language: system
+        types_or: [python, pyi]
+        require_serial: false
+
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types_or: [python, pyi]
+        require_serial: false
+
       - id: mypy
         name: mypy
         entry: bash ./run-mypy
