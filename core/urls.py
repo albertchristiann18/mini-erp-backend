@@ -29,11 +29,50 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from core import views
 
 
-@api_view(["GET"])
+@api_view(["GET", "PATCH"])
 @permission_classes([IsAuthenticated])
 def me_view(request: Request) -> Response:
     user = request.user
     profile = getattr(user, "profile", None)
+
+    if request.method == "PATCH":
+        data = request.data
+        errors: dict[str, list[str]] = {}
+
+        new_username = data.get("username", "").strip()
+        new_email = data.get("email", "").strip()
+        new_password = data.get("new_password", "").strip()
+        current_password = data.get("current_password", "").strip()
+
+        if new_username and new_username != user.username:
+            from django.contrib.auth import get_user_model
+            User = get_user_model()
+            if User.objects.filter(username=new_username).exclude(pk=user.pk).exists():
+                errors["username"] = ["Username already taken."]
+            else:
+                user.username = new_username
+
+        if new_email and new_email != user.email:
+            from django.contrib.auth import get_user_model
+            User = get_user_model()
+            if User.objects.filter(email=new_email).exclude(pk=user.pk).exists():
+                errors["email"] = ["Email already in use."]
+            else:
+                user.email = new_email
+
+        if new_password:
+            if not current_password:
+                errors["current_password"] = ["Current password is required to set a new password."]
+            elif not user.check_password(current_password):
+                errors["current_password"] = ["Current password is incorrect."]
+            else:
+                user.set_password(new_password)
+
+        if errors:
+            return Response(errors, status=400)
+
+        user.save()
+
     return Response(
         {
             "id": user.id,
