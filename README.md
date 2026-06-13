@@ -245,6 +245,42 @@ docker compose -f docker-compose.test.yml run --rm test uv run pytest --reuse-db
 ISO 8601
 2026-03-03T10:49:31Z
 
+## User Roles
+
+Every user has a `UserProfile` that assigns them a **role** within their company. The role controls what parts of the system they can access.
+
+| Role | Key | Description |
+|---|---|---|
+| **Admin** | `admin` | Full access — manage products, orders, stock, finance, and users |
+| **Customer Service** | `cs` | Create and manage sales orders; view products and stock |
+| **Warehouse** | `warehouse` | Receive purchase orders, record stock movements, view inventory |
+| **Finance** | `finance` | View and record payments on payables and receivables |
+| **Viewer** | `viewer` | Read-only access across all modules; cannot create or edit anything |
+
+### Creating a user
+
+Use the Makefile target to create a new user with an isolated company and a randomly generated password:
+
+```bash
+make create-user username=albert
+# With a specific role (default is admin):
+make create-user username=albert role=viewer
+```
+
+The command prints the generated password once — save it before closing the terminal.
+
+### Available roles
+
+```
+admin     — full access
+cs        — sales orders
+warehouse — stock & purchasing
+finance   — payables & receivables
+viewer    — read-only
+```
+
+---
+
 ## remove .venv
 this for handling when we got error when we want to do `uv sync`
 
