@@ -76,8 +76,15 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
         ]
 
     def get_product_photo_url(self, obj: PurchaseOrderDetail) -> str | None:
-        photo = obj.product_variant.product.product_photo
-        return photo.url if photo else None
+        variant = obj.product_variant
+        if variant.photo:
+            return variant.photo.url  # type: ignore[no-any-return]
+        gallery = list(variant.product.photos.order_by("order").all())
+        if gallery:
+            return gallery[0].image.url  # type: ignore[no-any-return]
+        if variant.product.product_photo:
+            return variant.product.product_photo.url  # type: ignore[no-any-return]
+        return None
 
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
         return self._calculate_prices(attrs)

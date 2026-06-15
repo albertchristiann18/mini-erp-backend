@@ -235,6 +235,9 @@ class ProductVariantStockSerializer(serializers.ModelSerializer):
     def get_product_photo_url(self, obj: ProductVariant) -> str | None:
         if obj.photo:
             return obj.photo.url  # type: ignore[no-any-return]
+        gallery = list(obj.product.photos.order_by("order").all())
+        if gallery:
+            return gallery[0].image.url  # type: ignore[no-any-return]
         if obj.product.product_photo:
             return obj.product.product_photo.url  # type: ignore[no-any-return]
         return None

@@ -89,7 +89,9 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
                 | Q(delivery_order_number__icontains=search)
             )
         return qs.prefetch_related(  # type: ignore[no-any-return]
-            "order_details__product_variant__product"
+            "order_details__product_variant",
+            "order_details__product_variant__product",
+            "order_details__product_variant__product__photos",
         )
 
     def list(self, request: Request, *args: Any, **kwargs: Any) -> Response:

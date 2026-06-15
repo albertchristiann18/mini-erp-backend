@@ -19,6 +19,7 @@ from apps.inventory.factories import (
     CategoryFactory,
     ProductCogsFactory,
     ProductFactory,
+    ProductPhotoFactory,
     ProductSupplierFactory,
     ProductVariantFactory,
     ProductVariantWarehouseFactory,
@@ -30,7 +31,6 @@ from apps.inventory.models import (
     Product,
     ProductBusinessEntity,
     ProductCogs,
-    ProductPhoto,
     ProductSupplier,
     ProductVariant,
     ProductVariantWarehouse,
@@ -1776,8 +1776,6 @@ class InventorySummaryAPITest(APITestCase):
 
     def test_photo_url_uses_primary_photo_from_gallery(self):
         """Photo URL comes from the primary ProductPhoto gallery, not legacy product_photo."""
-        from django.core.files.uploadedfile import SimpleUploadedFile
-
         category = CategoryFactory(company=self.company)
         product = ProductFactory(
             company=self.company,
@@ -1792,19 +1790,13 @@ class InventorySummaryAPITest(APITestCase):
             current_cogs=10000,
             base_price=20000,
         )
-        ProductPhoto.objects.create(
-            product=product,
-            company=self.company,
-            image=SimpleUploadedFile("primary_test.jpg", b"x"),
-            is_primary=True,
-            order=0,
-        )
+        ProductPhotoFactory(product=product, company=self.company, is_primary=True, order=0)
 
         response = self.client.get("/inventory-summary/")
         self.assertEqual(response.status_code, 200)
         photo_url = response.data["products"][0]["photo_url"]
         self.assertIsNotNone(photo_url)
-        self.assertIn("primary_test.jpg", photo_url)
+        self.assertIn("test_photo", photo_url)
 
     def test_no_n1_queries(self):
         """Number of queries is bounded (no N+1)."""
@@ -3631,7 +3623,7 @@ class QCPPhase1Test(APITestCase):
         serializer = ProductVariantStockSerializer(variant)
         photo_url = serializer.data["product_photo_url"]
         self.assertIsNotNone(photo_url)
-        self.assertIn("variant.jpg", photo_url)
+        self.assertIn("variant", photo_url)
 
     def test_product_supplier_link_returns_none_when_no_supplier(self):
         """product_supplier_link is None when no ProductSupplier exists."""
@@ -3804,3 +3796,45 @@ class QCPPhase1Test(APITestCase):
             format="multipart",
         )
         self.assertEqual(response.status_code, 404)
+
+
+class QCPPhase5Test(APITestCase):
+    """Tests for QCP Phase 5 — product_photo_url from gallery photos."""
+
+    def setUp(self):
+        from core.models import UserProfile
+
+        self.company = CompanyFactory()
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(category=self.category, company=self.company)
+        self.user = User.objects.create_user(
+            username="qcp5_inv_user", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def test_variant_stock_photo_url_from_gallery(self):
+        """Gallery photo is returned when variant.photo is null."""
+        variant = ProductVariantFactory(product=self.product, company=self.company)
+        ProductPhotoFactory(product=self.product, company=self.company, order=0)
+        response = self.client.get("/product-variants/", format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        result = next(r for r in response.data["results"] if r["id"] == str(variant.id))
+        photo_url = result["product_photo_url"]
+        self.assertIsNotNone(photo_url)
+        self.assertIn("test_photo", photo_url)
+
+    def test_variant_stock_photo_url_variant_takes_priority(self):
+        """Variant photo takes priority over gallery photo."""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        variant = ProductVariantFactory(product=self.product, company=self.company)
+        variant.photo = SimpleUploadedFile("variant.jpg", b"x")
+        variant.save()
+        ProductPhotoFactory(product=self.product, company=self.company, order=0)
+        response = self.client.get("/product-variants/", format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        result = next(r for r in response.data["results"] if r["id"] == str(variant.id))
+        photo_url = result["product_photo_url"]
+        self.assertIsNotNone(photo_url)
+        self.assertIn("variant", photo_url)

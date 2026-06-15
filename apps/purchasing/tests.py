@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
@@ -13,6 +14,7 @@ from apps.inventory.factories import (
     CategoryFactory,
     CompanyFactory,
     ProductFactory,
+    ProductPhotoFactory,
     ProductVariantFactory,
     ProductVariantWarehouseFactory,
 )
@@ -3481,3 +3483,54 @@ class ForecastCbmAutoCalculationTest(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         po.refresh_from_db()
         self.assertEqual(po.forecast_cbm, Decimal("0.011000"))
+
+
+class QCPPhase5Test(APITestCase):
+    """Tests for QCP Phase 5 — product_photo_url from gallery photos."""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(category=self.category, company=self.company)
+        self.product_variant = ProductVariantFactory(product=self.product)
+        self.user = User.objects.create_user(
+            username="qcp5_user", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def test_po_detail_photo_url_from_gallery(self):
+        """Gallery photo is returned when variant.photo is null."""
+        ProductPhotoFactory(product=self.product, company=self.company, order=0)
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        PurchaseOrderDetailFactory(purchase_order=po, product_variant=self.product_variant)
+        response = self.client.get(f"/purchase-order/{po.id}/", format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        photo_url = response.data["order_details"][0]["product_photo_url"]
+        self.assertIsNotNone(photo_url)
+        self.assertIn("test_photo", photo_url)
+
+    def test_po_detail_photo_url_variant_takes_priority(self):
+        """Variant photo takes priority over gallery photo."""
+        ProductPhotoFactory(product=self.product, company=self.company, order=0)
+        self.product_variant.photo = SimpleUploadedFile("variant.jpg", b"x")
+        self.product_variant.save()
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        PurchaseOrderDetailFactory(purchase_order=po, product_variant=self.product_variant)
+        response = self.client.get(f"/purchase-order/{po.id}/", format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        photo_url = response.data["order_details"][0]["product_photo_url"]
+        self.assertIsNotNone(photo_url)
+        self.assertIn("variant", photo_url)
+
+    def test_po_detail_photo_url_null_when_no_photos(self):
+        """Null returned when no photos exist anywhere."""
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        PurchaseOrderDetailFactory(purchase_order=po, product_variant=self.product_variant)
+        response = self.client.get(f"/purchase-order/{po.id}/", format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        photo_url = response.data["order_details"][0]["product_photo_url"]
+        self.assertIsNone(photo_url)

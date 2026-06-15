@@ -339,7 +339,7 @@ class ProductVariantStockViewSet(viewsets.ReadOnlyModelViewSet):
         qs = (
             ProductVariant.objects.filter(is_active=True, company=self.request.user.profile.company)
             .select_related("product", "product__category")
-            .prefetch_related("product__product_suppliers")
+            .prefetch_related("product__product_suppliers", "product__photos")
         )
         search = self.request.query_params.get("search")
         if search:
