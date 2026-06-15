@@ -1,7 +1,9 @@
+import mimetypes
 from typing import Any, Type, cast
 
 from django.db import models, transaction
 from django.db.models import Prefetch, QuerySet
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -318,6 +320,26 @@ class ProductViewSet(viewsets.ModelViewSet):
         variant.save(update_fields=["photo", "udate"])
         photo_url = variant.photo.url if variant.photo else None
         return Response({"photo_url": photo_url}, status=200)
+
+    @action(detail=True, methods=["get"], url_path="photo-proxy")
+    def photo_proxy(self, request: Request, pk: str | None = None) -> Response:
+        """Return the primary product photo bytes — used by PDF generator to bypass CORS."""
+        product = self.get_object()
+        gallery = product.photos.order_by("order").first()
+        if gallery and gallery.image:
+            photo_file = gallery.image
+        elif product.product_photo:
+            photo_file = product.product_photo
+        else:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        content_type = mimetypes.guess_type(photo_file.name)[0] or "image/jpeg"
+        photo_file.open("rb")
+        data: bytes = photo_file.read()
+        photo_file.close()
+        http_response = HttpResponse(data, content_type=content_type)
+        http_response["Cache-Control"] = "private, max-age=3600"
+        return http_response  # type: ignore[return-value]
 
 
 class ProductVariantStockViewSet(viewsets.ReadOnlyModelViewSet):

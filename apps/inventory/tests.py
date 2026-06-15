@@ -3838,3 +3838,33 @@ class QCPPhase5Test(APITestCase):
         photo_url = result["product_photo_url"]
         self.assertIsNotNone(photo_url)
         self.assertIn("variant", photo_url)
+
+
+class QCPPhase6Test(APITestCase):
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.user = User.objects.create_user(username="qcp6", password="pass")
+        from core.models import UserProfile
+
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+        category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(company=self.company, category=category)
+
+    def test_photo_proxy_returns_image_bytes(self):
+        """photo-proxy returns image bytes when gallery photo exists."""
+        ProductPhotoFactory(product=self.product, company=self.company, order=0)
+        response = self.client.get(f"/product/{self.product.id}/photo-proxy/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("image", response.get("Content-Type", ""))
+
+    def test_photo_proxy_returns_404_when_no_photo(self):
+        """photo-proxy returns 404 when product has no photos."""
+        response = self.client.get(f"/product/{self.product.id}/photo-proxy/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_photo_proxy_requires_auth(self):
+        """photo-proxy returns 404 when unauthenticated (empty queryset)."""
+        self.client.force_authenticate(user=None)
+        response = self.client.get(f"/product/{self.product.id}/photo-proxy/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
