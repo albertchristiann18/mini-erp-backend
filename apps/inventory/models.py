@@ -125,6 +125,7 @@ class ProductVariant(DefaultModel):
 
     is_active = models.BooleanField(default=True)
     is_fake = models.BooleanField(default=False)
+    photo = models.FileField(upload_to="variants/photos/", null=True, blank=True)
 
     def __str__(self) -> str:
         return f"{self.sku_variant_code}-{self.name}"

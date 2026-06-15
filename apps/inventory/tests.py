@@ -28,8 +28,10 @@ from apps.inventory.factories import (
 from apps.inventory.models import (
     Category,
     Product,
+    ProductBusinessEntity,
     ProductCogs,
     ProductPhoto,
+    ProductSupplier,
     ProductVariant,
     ProductVariantWarehouse,
     StockMovement,
@@ -2669,7 +2671,6 @@ class TestBusinessEntityService(TestCase):
             CompanyMarketplaceFactory,
             ProductFactory,
         )
-        from apps.inventory.models import ProductBusinessEntity
         from apps.inventory.services.business_entity_service import BusinessEntityService
 
         self.ProductBusinessEntity = ProductBusinessEntity
@@ -3573,3 +3574,233 @@ class AdjustStockBatchServiceTest(TestCase):
         self.assertIsNotNone(movement)
         self.assertEqual(movement.movement_type, StockMovement.MovementType.ADJUSTMENT)
         self.assertEqual(movement.quantity, -3)
+
+
+class QCPPhase1Test(APITestCase):
+    """Tests for QCP Phase 1 — Variant Photo, Supplier Link, Default Variant."""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.category = CategoryFactory(company=self.company)
+        self.user = User.objects.create_user(
+            username="qcp1_user", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def test_product_variant_photo_field_nullable(self):
+        """Variant photo is nullable (None by default)."""
+        variant = ProductVariantFactory(company=self.company)
+        self.assertFalse(variant.photo)
+
+    def test_variant_serializer_photo_url_none_when_no_photo(self):
+        """VariantSerializer returns None photo_url when no photo."""
+        from apps.inventory.serializers import VariantSerializer
+
+        variant = ProductVariantFactory(company=self.company)
+        serializer = VariantSerializer(variant)
+        self.assertIsNone(serializer.data["photo_url"])
+
+    def test_product_photo_url_falls_back_to_product_photo(self):
+        """ProductVariantStockSerializer falls back to product photo when variant has none."""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        from apps.inventory.serializers import ProductVariantStockSerializer
+
+        product = ProductFactory(company=self.company, category=self.category)
+        variant = ProductVariantFactory(product=product, company=self.company)
+        product.product_photo = SimpleUploadedFile("test.jpg", b"x")
+        product.save()
+        serializer = ProductVariantStockSerializer(variant)
+        photo_url = serializer.data["product_photo_url"]
+        self.assertIsNotNone(photo_url)
+        self.assertIn("test.jpg", photo_url)
+
+    def test_product_photo_url_uses_variant_photo_when_set(self):
+        """ProductVariantStockSerializer uses variant photo when set."""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        from apps.inventory.serializers import ProductVariantStockSerializer
+
+        product = ProductFactory(company=self.company, category=self.category)
+        variant = ProductVariantFactory(product=product, company=self.company)
+        variant.photo = SimpleUploadedFile("variant.jpg", b"x")
+        variant.save()
+        serializer = ProductVariantStockSerializer(variant)
+        photo_url = serializer.data["product_photo_url"]
+        self.assertIsNotNone(photo_url)
+        self.assertIn("variant.jpg", photo_url)
+
+    def test_product_supplier_link_returns_none_when_no_supplier(self):
+        """product_supplier_link is None when no ProductSupplier exists."""
+        from apps.inventory.serializers import ProductVariantStockSerializer
+
+        product = ProductFactory(company=self.company, category=self.category)
+        variant = ProductVariantFactory(product=product, company=self.company)
+        serializer = ProductVariantStockSerializer(variant)
+        self.assertIsNone(serializer.data["product_supplier_link"])
+
+    def test_product_supplier_link_returns_first_supplier_link(self):
+        """product_supplier_link returns first ProductSupplier link without supplier_id filter."""
+        from apps.inventory.serializers import ProductVariantStockSerializer
+
+        product = ProductFactory(company=self.company, category=self.category)
+        variant = ProductVariantFactory(product=product, company=self.company)
+        ProductSupplierFactory(
+            product=product, company=self.company, supplier_link="https://example.com"
+        )
+        serializer = ProductVariantStockSerializer(variant)
+        self.assertEqual(serializer.data["product_supplier_link"], "https://example.com")
+
+    def test_product_supplier_link_filtered_by_supplier_id(self):
+        """product_supplier_link respects supplier_id query param."""
+        from apps.inventory.serializers import ProductVariantStockSerializer
+
+        product = ProductFactory(company=self.company, category=self.category)
+        variant = ProductVariantFactory(product=product, company=self.company)
+        supplier1 = SupplierFactory(company=self.company)
+        supplier2 = SupplierFactory(company=self.company)
+        ProductSupplierFactory(
+            product=product,
+            supplier=supplier1,
+            company=self.company,
+            supplier_link="https://link1.com",
+        )
+        ProductSupplierFactory(
+            product=product,
+            supplier=supplier2,
+            company=self.company,
+            supplier_link="https://link2.com",
+        )
+        request = self.client.get("/").wsgi_request
+        request.query_params = {"supplier_id": str(supplier2.id)}  # type: ignore[attr-defined]
+        serializer = ProductVariantStockSerializer(variant, context={"request": request})
+        self.assertEqual(serializer.data["product_supplier_link"], "https://link2.com")
+
+    def test_create_product_auto_creates_default_variant(self):
+        """POST /product/ with variants=[] creates a Default variant."""
+        payload = {
+            "company_id": str(self.company.id),
+            "category_id": str(self.category.id),
+            "name": "Default Variant Product",
+            "description": "A" * 25,
+            "variant_options": {},
+            "variants": [],
+        }
+        response = self.client.post("/product/", payload, format="json")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(len(response.data["variants"]), 1)
+        self.assertEqual(response.data["variants"][0]["name"], "Default")
+        self.assertTrue(response.data["variants"][0]["sku_variant_code"].endswith("-DEFAULT"))
+
+    def test_create_product_with_variants_does_not_create_default(self):
+        """POST /product/ with explicit variants does not create a Default variant."""
+        payload = {
+            "company_id": str(self.company.id),
+            "category_id": str(self.category.id),
+            "name": "Normal Product",
+            "description": "A" * 25,
+            "variants": [
+                {
+                    "variant_values": {"size": "L"},
+                    "base_price": 100000,
+                }
+            ],
+        }
+        response = self.client.post("/product/", payload, format="json")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(len(response.data["variants"]), 1)
+        self.assertNotEqual(response.data["variants"][0]["name"], "Default")
+        self.assertFalse(response.data["variants"][0]["sku_variant_code"].endswith("-DEFAULT"))
+
+    def test_create_product_with_supplier_creates_product_supplier(self):
+        """POST /product/ with supplier_id and supplier_link creates ProductSupplier."""
+        supplier = SupplierFactory(company=self.company)
+        payload = {
+            "company_id": str(self.company.id),
+            "category_id": str(self.category.id),
+            "name": "Supplier Linked Product",
+            "description": "A" * 25,
+            "variants": [
+                {
+                    "variant_values": {"color": "Red"},
+                    "base_price": 50000,
+                }
+            ],
+            "supplier_id": str(supplier.id),
+            "supplier_link": "https://1688.com/product/123",
+        }
+        response = self.client.post("/product/", payload, format="json")
+        self.assertEqual(response.status_code, 201)
+        product_id = response.data["id"]
+        self.assertEqual(ProductSupplier.objects.filter(product_id=product_id).count(), 1)
+        ps = ProductSupplier.objects.filter(product_id=product_id).first()
+        self.assertEqual(ps.supplier_link, "https://1688.com/product/123")
+        self.assertEqual(ps.supplier_id, supplier.id)
+
+    def test_create_product_supplier_id_optional(self):
+        """POST /product/ without supplier_id does not create ProductSupplier."""
+        payload = {
+            "company_id": str(self.company.id),
+            "category_id": str(self.category.id),
+            "name": "No Supplier Product",
+            "description": "A" * 25,
+            "variants": [
+                {
+                    "variant_values": {"color": "Blue"},
+                    "base_price": 60000,
+                }
+            ],
+        }
+        response = self.client.post("/product/", payload, format="json")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(ProductSupplier.objects.count(), 0)
+
+    def test_upload_variant_photo(self):
+        """POST /product/<pid>/variants/<vid>/photo/ uploads photo."""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        product = ProductFactory(company=self.company, category=self.category)
+        variant = ProductVariantFactory(product=product, company=self.company)
+        image = SimpleUploadedFile("photo.jpg", b"image_data", content_type="image/jpeg")
+        response = self.client.post(
+            f"/product/{product.id}/variants/{variant.id}/photo/",
+            {"image": image},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNotNone(response.data["photo_url"])
+        variant.refresh_from_db()
+        self.assertTrue(variant.photo)
+
+    def test_delete_variant_photo(self):
+        """DELETE /product/<pid>/variants/<vid>/photo/ deletes photo."""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        product = ProductFactory(company=self.company, category=self.category)
+        variant = ProductVariantFactory(product=product, company=self.company)
+        variant.photo = SimpleUploadedFile("photo.jpg", b"x")
+        variant.save()
+        response = self.client.delete(
+            f"/product/{product.id}/variants/{variant.id}/photo/",
+        )
+        self.assertEqual(response.status_code, 204)
+        variant.refresh_from_db()
+        self.assertFalse(variant.photo)
+
+    def test_upload_variant_photo_wrong_product(self):
+        """Uploading photo to variant that belongs to a different product returns 404."""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        product = ProductFactory(company=self.company, category=self.category)
+        other_product = ProductFactory(company=self.company, category=self.category)
+        variant = ProductVariantFactory(product=other_product, company=self.company)
+        image = SimpleUploadedFile("photo.jpg", b"x", content_type="image/jpeg")
+        response = self.client.post(
+            f"/product/{product.id}/variants/{variant.id}/photo/",
+            {"image": image},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 404)

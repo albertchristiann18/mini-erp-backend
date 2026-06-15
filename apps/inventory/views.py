@@ -291,6 +291,34 @@ class ProductViewSet(viewsets.ModelViewSet):
         services.create_product_with_variants(serializer.validated_data)
         return Response({"created": len(request.data), "errors": []}, status=201)
 
+    @action(
+        detail=True,
+        methods=["post", "delete"],
+        url_path=r"variants/(?P<variant_id>[^/.]+)/photo",
+        parser_classes=[MultiPartParser, FormParser],
+    )
+    def manage_variant_photo(
+        self, request: Request, pk: str | None = None, variant_id: str | None = None
+    ) -> Response:
+        product = self.get_object()
+        variant = get_object_or_404(
+            ProductVariant, id=variant_id, product=product, company=product.company
+        )
+        if request.method == "DELETE":
+            if variant.photo:
+                variant.photo.delete(save=False)
+                variant.save(update_fields=["photo", "udate"])
+            return Response(status=204)
+        image = request.FILES.get("image")
+        if not image:
+            return Response({"error": "No image provided"}, status=400)
+        if variant.photo:
+            variant.photo.delete(save=False)
+        variant.photo = image
+        variant.save(update_fields=["photo", "udate"])
+        photo_url = variant.photo.url if variant.photo else None
+        return Response({"photo_url": photo_url}, status=200)
+
 
 class ProductVariantStockViewSet(viewsets.ReadOnlyModelViewSet):
     """
@@ -308,9 +336,11 @@ class ProductVariantStockViewSet(viewsets.ReadOnlyModelViewSet):
 
         if not self.request.user.is_authenticated:
             return ProductVariant.objects.none()
-        qs = ProductVariant.objects.filter(
-            is_active=True, company=self.request.user.profile.company
-        ).select_related("product", "product__category")
+        qs = (
+            ProductVariant.objects.filter(is_active=True, company=self.request.user.profile.company)
+            .select_related("product", "product__category")
+            .prefetch_related("product__product_suppliers")
+        )
         search = self.request.query_params.get("search")
         if search:
             from django.db import models as db_models

@@ -25,6 +25,10 @@ class ProductService:
 
         company_id = data_list[0].get("company_id", "")
 
+        supplier_info: list[tuple[str | None, str | None]] = []
+        for data in data_list:
+            supplier_info.append((data.pop("supplier_id", None), data.pop("supplier_link", None)))
+
         products = [
             Product(
                 company_id=company_id,
@@ -43,23 +47,43 @@ class ProductService:
         created_products = Product.objects.bulk_create(products, batch_size=100)
         product_index_map = {i: obj.id for i, obj in enumerate(created_products)}
 
+        sku_map: dict[str, str] = dict(
+            Product.objects.filter(id__in=[p.id for p in created_products]).values_list(
+                "id", "sku_code"
+            )
+        )
+
         variant_product_map: list[int] = []
         variants: list[ProductVariant] = []
         for i, data in enumerate(data_list):
             variants_data = data.pop("variants", [])
-            for variant_data in variants_data:
-                variant_values = variant_data.get("variant_values", {})
+            if not variants_data:
+                sku_code = sku_map.get(str(product_index_map[i]), "SKU")
                 variants.append(
                     ProductVariant(
                         product_id=product_index_map[i],
                         company_id=company_id,
-                        name=_build_variant_name(variant_values),
-                        sku_variant_code=variant_data.get("sku_variant_code", ""),
-                        variant_values=variant_values,
-                        base_price=variant_data.get("base_price", 0),
+                        name="Default",
+                        sku_variant_code=f"{sku_code}-DEFAULT",
+                        variant_values={},
+                        base_price=0,
                     )
                 )
                 variant_product_map.append(i)
+            else:
+                for variant_data in variants_data:
+                    variant_values = variant_data.get("variant_values", {})
+                    variants.append(
+                        ProductVariant(
+                            product_id=product_index_map[i],
+                            company_id=company_id,
+                            name=_build_variant_name(variant_values),
+                            sku_variant_code=variant_data.get("sku_variant_code", ""),
+                            variant_values=variant_values,
+                            base_price=variant_data.get("base_price", 0),
+                        )
+                    )
+                    variant_product_map.append(i)
 
         created_variants = ProductVariant.objects.bulk_create(variants, batch_size=100)
 
@@ -68,6 +92,22 @@ class ProductService:
         }
         for j, variant in enumerate(created_variants):
             created_variants_by_product[variant_product_map[j]].append(variant)
+
+        from apps.inventory.models import ProductSupplier
+
+        suppliers_to_create = []
+        for i, (s_id, s_link) in enumerate(supplier_info):
+            if s_id:
+                suppliers_to_create.append(
+                    ProductSupplier(
+                        product_id=product_index_map[i],
+                        supplier_id=s_id,
+                        company_id=company_id,
+                        supplier_link=s_link or None,
+                    )
+                )
+        if suppliers_to_create:
+            ProductSupplier.objects.bulk_create(suppliers_to_create, ignore_conflicts=True)
 
         return [
             {

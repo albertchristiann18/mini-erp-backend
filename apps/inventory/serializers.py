@@ -60,6 +60,7 @@ class VariantMarketplaceSerializer(serializers.ModelSerializer):
 class VariantSerializer(serializers.ModelSerializer):
     # Nest the marketplace pricing inside the variant
     marketplace_listings = VariantMarketplaceSerializer(many=True)
+    photo_url = serializers.SerializerMethodField()
 
     class Meta:
         model = ProductVariant
@@ -74,7 +75,13 @@ class VariantSerializer(serializers.ModelSerializer):
             "total_incoming_qty",
             "marketplace_listings",
             "is_active",
+            "photo_url",
         ]
+
+    def get_photo_url(self, obj: ProductVariant) -> str | None:
+        if obj.photo:
+            return obj.photo.url  # type: ignore[no-any-return]
+        return None
 
 
 class ProductSerializer(serializers.ModelSerializer):
@@ -140,6 +147,12 @@ class ProductCreateSerializer(serializers.ModelSerializer):
     )
     variants = SaveVariantItemSerializer(many=True, required=False, default=list)
     description = serializers.CharField(required=True, min_length=25, max_length=5000)
+    supplier_id = serializers.CharField(
+        required=False, allow_blank=True, allow_null=True, default=None, write_only=True
+    )
+    supplier_link = serializers.CharField(
+        required=False, allow_blank=True, allow_null=True, default=None, write_only=True
+    )
 
     class Meta:
         model = Product
@@ -156,7 +169,18 @@ class ProductCreateSerializer(serializers.ModelSerializer):
             "height",
             "master_category_key",
             "variants",
+            "supplier_id",
+            "supplier_link",
         ]
+
+    def validate_supplier_id(self, value: str | None) -> str | None:
+        if not value:
+            return None
+        from apps.inventory.models import Supplier
+
+        if not Supplier.objects.filter(id=value).exists():
+            raise serializers.ValidationError("Supplier not found")
+        return value
 
     def validate_company_id(self, value: Any) -> Any:
         # Return the value (the ID string) exactly as it was passed.
@@ -198,9 +222,19 @@ class ProductVariantStockSerializer(serializers.ModelSerializer):
         ]
 
     def get_product_supplier_link(self, obj: ProductVariant) -> str | None:
-        return None
+        req = self.context.get("request")
+        params = getattr(req, "query_params", None) or getattr(req, "GET", {})
+        supplier_id = params.get("supplier_id")
+        qs = obj.product.product_suppliers
+        if supplier_id:
+            ps = qs.filter(supplier_id=supplier_id).first()
+        else:
+            ps = qs.first()
+        return ps.supplier_link if ps else None
 
     def get_product_photo_url(self, obj: ProductVariant) -> str | None:
+        if obj.photo:
+            return obj.photo.url  # type: ignore[no-any-return]
         if obj.product.product_photo:
             return obj.product.product_photo.url  # type: ignore[no-any-return]
         return None
