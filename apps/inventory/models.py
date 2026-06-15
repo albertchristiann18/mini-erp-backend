@@ -127,6 +127,12 @@ class ProductVariant(DefaultModel):
     is_fake = models.BooleanField(default=False)
     photo = models.FileField(upload_to="variants/photos/", null=True, blank=True)
 
+    last_unit_price_foreign = models.DecimalField(
+        max_digits=14, decimal_places=4, null=True, blank=True
+    )
+    last_currency = models.CharField(max_length=10, null=True, blank=True)
+    price_updated_at = models.DateTimeField(null=True, blank=True)
+
     def __str__(self) -> str:
         return f"{self.sku_variant_code}-{self.name}"
 

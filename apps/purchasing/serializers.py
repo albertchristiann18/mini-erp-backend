@@ -35,6 +35,7 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
     product_supplier_link = serializers.CharField(
         source="supplier_link", read_only=True, allow_null=True
     )
+    variant_values = serializers.JSONField(source="product_variant.variant_values", read_only=True)
     product_photo_url = serializers.SerializerMethodField()
     updated_qty = serializers.IntegerField(read_only=True)
 
@@ -49,6 +50,7 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
             "product_name",
             "product_supplier_link",
             "product_photo_url",
+            "variant_values",
             "ordered_qty",
             "received_qty",
             "updated_qty",

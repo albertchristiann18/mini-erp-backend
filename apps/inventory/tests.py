@@ -3868,3 +3868,137 @@ class QCPPhase6Test(APITestCase):
         self.client.force_authenticate(user=None)
         response = self.client.get(f"/product/{self.product.id}/photo-proxy/")
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class QCPPhase7Test(APITestCase):
+    """Tests for QCP Phase 7 — variant last price tracking and variant_values."""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(category=self.category, company=self.company)
+        self.product_variant = ProductVariantFactory(product=self.product)
+        self.user = User.objects.create_user(
+            username="qcp7_inv_user", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def test_variant_stock_serializer_includes_last_price(self):
+        self.product_variant.last_unit_price_foreign = Decimal("18.50")
+        self.product_variant.last_currency = "CNY"
+        self.product_variant.save()
+        response = self.client.get("/product-variants/", format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        result = next(
+            r for r in response.data["results"] if r["id"] == str(self.product_variant.id)
+        )
+        self.assertEqual(result["last_unit_price_foreign"], "18.5000")
+        self.assertEqual(result["last_currency"], "CNY")
+
+    def test_po_detail_serializer_includes_variant_values(self):
+        from apps.purchasing.factories import PurchaseOrderDetailFactory, PurchaseOrderFactory
+
+        self.product_variant.variant_values = {"color": "Red", "size": "M"}
+        self.product_variant.save()
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+        )
+        response = self.client.get(f"/purchase-order/{po.id}/", format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.data["order_details"][0]["variant_values"],
+            {"color": "Red", "size": "M"},
+        )
+
+    def test_supplier_link_populated_on_detail_creation(self):
+        from apps.inventory.factories import ProductSupplierFactory, SupplierFactory
+        from apps.purchasing.factories import PurchaseOrderFactory
+
+        supplier = SupplierFactory(company=self.company)
+        ProductSupplierFactory(
+            product=self.product,
+            supplier=supplier,
+            company=self.company,
+            supplier_link="https://supplier.com/item",
+        )
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            supplier=supplier,
+            status="DRAFT",
+        )
+        response = self.client.patch(
+            f"/purchase-order/{po.id}/",
+            {
+                "order_details": [
+                    {
+                        "product_variant_id": str(self.product_variant.id),
+                        "ordered_qty": 10,
+                        "unit_price_foreign": 15.00,
+                    }
+                ]
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        detail_response = self.client.get(f"/purchase-order/{po.id}/", format="json")
+        self.assertEqual(detail_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            detail_response.data["order_details"][0]["product_supplier_link"],
+            "https://supplier.com/item",
+        )
+
+    def test_supplier_link_prefers_po_supplier(self):
+        from apps.inventory.factories import ProductSupplierFactory, SupplierFactory
+        from apps.purchasing.factories import PurchaseOrderFactory
+
+        supplier_a = SupplierFactory(company=self.company)
+        supplier_b = SupplierFactory(company=self.company)
+        ProductSupplierFactory(
+            product=self.product,
+            supplier=supplier_a,
+            company=self.company,
+            supplier_link="https://po-supplier.com",
+        )
+        ProductSupplierFactory(
+            product=self.product,
+            supplier=supplier_b,
+            company=self.company,
+            supplier_link="https://other.com",
+        )
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            supplier=supplier_a,
+            status="DRAFT",
+        )
+        response = self.client.patch(
+            f"/purchase-order/{po.id}/",
+            {
+                "order_details": [
+                    {
+                        "product_variant_id": str(self.product_variant.id),
+                        "ordered_qty": 10,
+                        "unit_price_foreign": 15.00,
+                    }
+                ]
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        from apps.purchasing.models import PurchaseOrderDetail
+
+        detail = PurchaseOrderDetail.objects.filter(purchase_order=po).first()
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail.supplier_link, "https://po-supplier.com")
+        detail_response = self.client.get(f"/purchase-order/{po.id}/", format="json")
+        self.assertEqual(
+            detail_response.data["order_details"][0]["product_supplier_link"],
+            "https://po-supplier.com",
+        )

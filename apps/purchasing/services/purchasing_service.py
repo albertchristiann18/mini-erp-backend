@@ -5,10 +5,11 @@ from typing import TYPE_CHECKING
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from django_ulid.models import ULIDField
 
-from apps.inventory.models import ProductCogs, ProductVariantWarehouse, Warehouse
+from apps.inventory.models import ProductCogs, ProductVariant, ProductVariantWarehouse, Warehouse
 from apps.inventory.services.inventory_service import InventoryService
 from apps.purchasing.models import PurchaseOrder, PurchaseOrderDetail
 from core.models import Company
@@ -786,8 +787,65 @@ class PurchaseOrderService:
                 update_details, update_fields_list, batch_size=100
             )
 
+        # Populate supplier_link for new details from ProductSupplier
+        if new_details:
+            from apps.inventory.models import ProductSupplier as PS
+
+            variant_ids = [d.product_variant.id for d in new_details]
+            raw_pairs = list(
+                ProductVariant.objects.filter(id__in=variant_ids).values_list("id", "product_id")
+            )
+            variant_product_map: dict[str, str] = {str(vid): str(pid) for vid, pid in raw_pairs}
+            product_ids = list(set(variant_product_map.values()))
+            link_map: dict[str, str | None] = {}
+            if po.supplier:
+                for row in PS.objects.filter(
+                    product_id__in=product_ids,
+                    supplier=po.supplier,
+                    supplier_link__isnull=False,
+                ).values("product_id", "supplier_link"):
+                    link_map[str(row["product_id"])] = row["supplier_link"]
+            missing = [pid for pid in product_ids if pid not in link_map]
+            if missing:
+                for row in PS.objects.filter(
+                    product_id__in=missing,
+                    supplier_link__isnull=False,
+                ).values("product_id", "supplier_link"):
+                    link_map.setdefault(str(row["product_id"]), row["supplier_link"])
+            for detail in new_details:
+                if not detail.supplier_link:
+                    product_id = variant_product_map.get(str(detail.product_variant.id))
+                    if product_id:
+                        detail.supplier_link = link_map.get(product_id)
+
         if new_details:
             PurchaseOrderDetail.objects.bulk_create(new_details, batch_size=100)
+
+        # Sync variant prices after all detail mutations
+        all_saved_details = list(po.order_details.all())
+        self._sync_variant_prices(po, all_saved_details)
+
+    def _sync_variant_prices(
+        self,
+        po: PurchaseOrder,
+        all_details: list[PurchaseOrderDetail],
+    ) -> None:
+        """Persist the latest unit price back to each variant for auto-fill."""
+        from django.utils import timezone
+
+        now = timezone.now()
+
+        for detail in all_details:
+            if not detail.unit_price_foreign:
+                continue
+            currency = po.currency or ""
+            ProductVariant.objects.filter(
+                id=detail.product_variant.id,
+            ).filter(Q(price_updated_at__isnull=True) | Q(price_updated_at__lt=now)).update(
+                last_unit_price_foreign=detail.unit_price_foreign,
+                last_currency=currency,
+                price_updated_at=now,
+            )
 
     def _recalculate_item_prices(self, po: "PurchaseOrder") -> None:
         """Recalculate all item base prices using the PO's current exchange_rate.

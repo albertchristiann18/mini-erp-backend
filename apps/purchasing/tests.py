@@ -7,6 +7,7 @@ from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 
@@ -3483,6 +3484,186 @@ class ForecastCbmAutoCalculationTest(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         po.refresh_from_db()
         self.assertEqual(po.forecast_cbm, Decimal("0.011000"))
+
+
+class QCPPhase7Test(TestCase):
+    """Tests for QCP Phase 7 — variant price tracking, variant_values, supplier_link."""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(category=self.category, company=self.company)
+        self.product_variant = ProductVariantFactory(product=self.product)
+        self.service = PurchaseOrderService()
+
+    def test_price_synced_to_variant_after_po_save(self):
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            currency="CNY",
+        )
+        PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            unit_price_foreign=Decimal("15.00"),
+        )
+        po.refresh_from_db()
+        with patch("apps.purchasing.serializers.compress_pdf_file"):
+            self.service.update_purchase_order(
+                po,
+                {
+                    "order_details": [
+                        {
+                            "id": str(po.order_details.first().id),
+                            "product_variant_id": str(self.product_variant.id),
+                            "ordered_qty": 10,
+                            "unit_price_foreign": Decimal("15.00"),
+                        }
+                    ]
+                },
+            )
+        self.product_variant.refresh_from_db()
+        self.assertEqual(self.product_variant.last_unit_price_foreign, Decimal("15.00"))
+        self.assertEqual(self.product_variant.last_currency, "CNY")
+        self.assertIsNotNone(self.product_variant.price_updated_at)
+
+    def test_latest_po_price_wins(self):
+        now = timezone.now()
+        self.product_variant.last_unit_price_foreign = Decimal("10.00")
+        self.product_variant.last_currency = "USD"
+        self.product_variant.price_updated_at = now - timedelta(hours=2)
+        self.product_variant.save()
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            currency="CNY",
+        )
+        PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            unit_price_foreign=Decimal("20.00"),
+        )
+        po.refresh_from_db()
+        with patch("apps.purchasing.serializers.compress_pdf_file"):
+            self.service.update_purchase_order(
+                po,
+                {
+                    "order_details": [
+                        {
+                            "id": str(po.order_details.first().id),
+                            "product_variant_id": str(self.product_variant.id),
+                            "ordered_qty": 10,
+                            "unit_price_foreign": Decimal("20.00"),
+                        }
+                    ]
+                },
+            )
+        self.product_variant.refresh_from_db()
+        self.assertEqual(self.product_variant.last_unit_price_foreign, Decimal("20.00"))
+        self.assertEqual(self.product_variant.last_currency, "CNY")
+
+    def test_zero_price_not_synced(self):
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+        )
+        PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            unit_price_foreign=None,
+        )
+        po.refresh_from_db()
+        with patch("apps.purchasing.serializers.compress_pdf_file"):
+            self.service.update_purchase_order(
+                po,
+                {
+                    "order_details": [
+                        {
+                            "id": str(po.order_details.first().id),
+                            "product_variant_id": str(self.product_variant.id),
+                            "ordered_qty": 10,
+                        }
+                    ]
+                },
+            )
+        self.product_variant.refresh_from_db()
+        self.assertIsNone(self.product_variant.last_unit_price_foreign)
+        self.assertIsNone(self.product_variant.last_currency)
+        self.assertIsNone(self.product_variant.price_updated_at)
+
+    def test_supplier_link_populated_on_detail_creation(self):
+        from apps.inventory.factories import ProductSupplierFactory, SupplierFactory
+
+        supplier = SupplierFactory(company=self.company)
+        ProductSupplierFactory(
+            product=self.product,
+            supplier=supplier,
+            company=self.company,
+            supplier_link="https://supplier.com/item",
+        )
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            supplier=supplier,
+            status=PurchaseOrder.POStatus.DRAFT,
+        )
+        with patch("apps.purchasing.serializers.compress_pdf_file"):
+            self.service.update_purchase_order(
+                po,
+                {
+                    "order_details": [
+                        {
+                            "product_variant_id": str(self.product_variant.id),
+                            "ordered_qty": 10,
+                            "unit_price_foreign": Decimal("15.00"),
+                        }
+                    ]
+                },
+            )
+        detail = po.order_details.first()
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail.supplier_link, "https://supplier.com/item")
+
+    def test_supplier_link_prefers_po_supplier(self):
+        from apps.inventory.factories import ProductSupplierFactory, SupplierFactory
+
+        supplier_a = SupplierFactory(company=self.company)
+        supplier_b = SupplierFactory(company=self.company)
+        ProductSupplierFactory(
+            product=self.product,
+            supplier=supplier_a,
+            company=self.company,
+            supplier_link="https://po-supplier.com",
+        )
+        ProductSupplierFactory(
+            product=self.product,
+            supplier=supplier_b,
+            company=self.company,
+            supplier_link="https://other.com",
+        )
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            supplier=supplier_a,
+            status=PurchaseOrder.POStatus.DRAFT,
+        )
+        with patch("apps.purchasing.serializers.compress_pdf_file"):
+            self.service.update_purchase_order(
+                po,
+                {
+                    "order_details": [
+                        {
+                            "product_variant_id": str(self.product_variant.id),
+                            "ordered_qty": 10,
+                            "unit_price_foreign": Decimal("15.00"),
+                        }
+                    ]
+                },
+            )
+        detail = po.order_details.first()
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail.supplier_link, "https://po-supplier.com")
 
 
 class QCPPhase5Test(APITestCase):
