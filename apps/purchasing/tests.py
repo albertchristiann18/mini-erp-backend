@@ -3391,6 +3391,15 @@ class PurchaseOrderDetailSerializerProductFieldsTest(TestCase):
             serializer.data["product_supplier_link"], "https://example.com/supplier/product-789"
         )
 
+    def test_po_detail_serializer_includes_sku_variant_code(self):
+        from apps.purchasing.serializers import PurchaseOrderDetailSerializer
+
+        serializer = PurchaseOrderDetailSerializer(self.detail)
+        self.assertIn("sku_variant_code", serializer.data)
+        self.assertEqual(
+            serializer.data["sku_variant_code"], self.product_variant.sku_variant_code
+        )
+
 
 class ForecastShippingPerCbmTest(TestCase):
     """Tests for forecast_shipping_fee_per_cbm auto-calculation on PurchaseOrder."""

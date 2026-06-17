@@ -30,6 +30,7 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
     product_variant_id = serializers.CharField(write_only=True)
     variant_id = serializers.CharField(source="product_variant.id", read_only=True)
     product_variant_name = serializers.CharField(source="product_variant.name", read_only=True)
+    sku_variant_code = serializers.CharField(source="product_variant.sku_variant_code", read_only=True)
     product_id = serializers.CharField(source="product_variant.product.id", read_only=True)
     product_name = serializers.CharField(source="product_variant.product.name", read_only=True)
     product_supplier_link = serializers.CharField(
@@ -46,6 +47,7 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
             "product_variant_id",
             "variant_id",
             "product_variant_name",
+            "sku_variant_code",
             "product_id",
             "product_name",
             "product_supplier_link",
