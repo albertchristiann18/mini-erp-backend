@@ -16,10 +16,12 @@ from apps.inventory.factories import (
     CompanyFactory,
     ProductFactory,
     ProductPhotoFactory,
+    ProductSupplierFactory,
     ProductVariantFactory,
     ProductVariantWarehouseFactory,
+    SupplierFactory,
 )
-from apps.inventory.models import ProductCogs, ProductVariantWarehouse
+from apps.inventory.models import ProductCogs, ProductSupplier, ProductVariantWarehouse
 from apps.inventory.services.inventory_service import InventoryService
 from apps.purchasing.factories import (
     PurchaseOrderDetailFactory,
@@ -1342,6 +1344,137 @@ class PurchaseOrderServiceTest(TestCase):
         serializer = PurchaseOrderReadSerializer(po)
         self.assertIn("cost_ratio_cogs", serializer.data)
         self.assertIn("shipping_per_qty", serializer.data)
+
+    def test_create_po_with_supplier_autolinks_products(self):
+        """Auto-create ProductSupplier records for products not yet linked to PO's supplier."""
+        supplier = SupplierFactory(company=self.company)
+        product_a = ProductFactory(category=self.category, company=self.company)
+        product_b = ProductFactory(category=self.category, company=self.company)
+        variant_a = ProductVariantFactory(product=product_a)
+        variant_b = ProductVariantFactory(product=product_b)
+
+        data = {
+            "warehouse_id": str(self.warehouse.id),
+            "company_id": str(self.company.id),
+            "supplier_name": "Test Supplier",
+            "supplier_id": str(supplier.id),
+            "total_ordered_qty": 100,
+            "total_amount": 1000000,
+            "order_details": [
+                {
+                    "product_variant_id": str(variant_a.id),
+                    "ordered_qty": 50,
+                    "unit_price_foreign": 100,
+                },
+                {
+                    "product_variant_id": str(variant_b.id),
+                    "ordered_qty": 50,
+                    "unit_price_foreign": 100,
+                },
+            ],
+        }
+
+        self.service.create_purchase_order(data)
+
+        links = ProductSupplier.objects.filter(supplier=supplier)
+        self.assertEqual(links.count(), 2)
+        self.assertIn(links[0].product, [product_a, product_b])
+        self.assertIn(links[1].product, [product_a, product_b])
+        self.assertNotEqual(links[0].product, links[1].product)
+
+    def test_create_po_with_supplier_skips_existing_link(self):
+        """Do not duplicate ProductSupplier for products already linked to the supplier."""
+        supplier = SupplierFactory(company=self.company)
+        product_a = ProductFactory(category=self.category, company=self.company)
+        product_b = ProductFactory(category=self.category, company=self.company)
+        variant_a = ProductVariantFactory(product=product_a)
+        variant_b = ProductVariantFactory(product=product_b)
+
+        ProductSupplierFactory(product=product_a, supplier=supplier, company=self.company)
+
+        data = {
+            "warehouse_id": str(self.warehouse.id),
+            "company_id": str(self.company.id),
+            "supplier_name": "Test Supplier",
+            "supplier_id": str(supplier.id),
+            "total_ordered_qty": 100,
+            "total_amount": 1000000,
+            "order_details": [
+                {
+                    "product_variant_id": str(variant_a.id),
+                    "ordered_qty": 50,
+                    "unit_price_foreign": 100,
+                },
+                {
+                    "product_variant_id": str(variant_b.id),
+                    "ordered_qty": 50,
+                    "unit_price_foreign": 100,
+                },
+            ],
+        }
+
+        self.service.create_purchase_order(data)
+
+        links = ProductSupplier.objects.filter(supplier=supplier)
+        self.assertEqual(links.count(), 2)
+        # Ensure no duplicate for product_a
+        self.assertEqual(links.filter(product=product_a).count(), 1)
+
+    def test_create_po_without_supplier_no_autolink(self):
+        """No ProductSupplier records when PO has no supplier."""
+        product_b = ProductFactory(category=self.category, company=self.company)
+        variant_b = ProductVariantFactory(product=product_b)
+
+        data = {
+            "warehouse_id": str(self.warehouse.id),
+            "company_id": str(self.company.id),
+            "supplier_name": "Test Supplier",
+            "total_ordered_qty": 100,
+            "total_amount": 1000000,
+            "order_details": [
+                {
+                    "product_variant_id": str(variant_b.id),
+                    "ordered_qty": 50,
+                    "unit_price_foreign": 100,
+                },
+            ],
+        }
+
+        self.service.create_purchase_order(data)
+
+        self.assertEqual(ProductSupplier.objects.count(), 0)
+
+    def test_update_po_adding_new_detail_autolinks(self):
+        """Auto-create ProductSupplier when adding a new detail via update PO."""
+        supplier = SupplierFactory(company=self.company)
+        product = ProductFactory(category=self.category, company=self.company)
+        variant = ProductVariantFactory(product=product)
+
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            supplier=supplier,
+            status=PurchaseOrder.POStatus.DRAFT,
+        )
+
+        data = {
+            "order_details": [
+                {
+                    "product_variant_id": str(variant.id),
+                    "ordered_qty": 50,
+                    "unit_price_foreign": 100,
+                },
+            ]
+        }
+
+        self.service.update_purchase_order(po, data)
+
+        self.assertTrue(
+            ProductSupplier.objects.filter(
+                supplier=supplier,
+                product=product,
+            ).exists()
+        )
 
 
 class PurchaseOrderSerializerValidationTest(TestCase):

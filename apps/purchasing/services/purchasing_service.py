@@ -52,6 +52,46 @@ class PurchaseOrderService:
                     exc_info=True,
                 )
 
+    def _ensure_product_supplier_links(
+        self, po: "PurchaseOrder", variant_ids: list[str]
+    ) -> None:
+        """Silently create ProductSupplier records for products not yet linked to PO's supplier."""
+        if not po.supplier or not variant_ids:
+            return
+        try:
+            from apps.inventory.models import ProductSupplier
+
+            raw_pairs = list(
+                ProductVariant.objects.filter(id__in=variant_ids).values_list("id", "product_id")
+            )
+            product_ids = list({str(pid) for _, pid in raw_pairs})
+            if not product_ids:
+                return
+
+            existing_product_ids = set(
+                str(pid)
+                for pid in ProductSupplier.objects.filter(
+                    product_id__in=product_ids,
+                    supplier=po.supplier,
+                ).values_list("product_id", flat=True)
+            )
+
+            missing_ids = [pid for pid in product_ids if pid not in existing_product_ids]
+            if missing_ids:
+                ProductSupplier.objects.bulk_create(
+                    [
+                        ProductSupplier(
+                            product_id=pid,
+                            supplier=po.supplier,
+                            company=po.company,
+                        )
+                        for pid in missing_ids
+                    ],
+                    ignore_conflicts=True,
+                )
+        except Exception:
+            logger.exception("Failed to auto-link product-supplier for PO %s", po.id)
+
     @transaction.atomic
     def _snapshot_sales_metrics_at_ordered(self, po: PurchaseOrder) -> None:
         """Capture avg_sales (7d+30d), stock_on_hand, incoming_qty snapshots on each detail."""
@@ -104,6 +144,7 @@ class PurchaseOrderService:
             details, ["avg_sales", "avg_sales_7d", "stock_on_hand", "incoming_qty"]
         )
 
+    @transaction.atomic
     def create_purchase_order(self, data: dict) -> PurchaseOrder:
         """Create a Purchase Order with nested order details."""
         details_data = data.pop("order_details", [])
@@ -118,8 +159,10 @@ class PurchaseOrderService:
 
         if details_data:
             order_details = []
+            variant_ids: list[str] = []
             for detail_data in details_data:
                 product_variant_id = detail_data.pop("product_variant_id")
+                variant_ids.append(str(product_variant_id))
                 order_details.append(
                     PurchaseOrderDetail(
                         purchase_order=po,
@@ -130,6 +173,7 @@ class PurchaseOrderService:
                 )
 
             PurchaseOrderDetail.objects.bulk_create(order_details, batch_size=100)
+            self._ensure_product_supplier_links(po, variant_ids)
             self._recalculate_forecast_cbm(po)
 
         return po
@@ -820,6 +864,8 @@ class PurchaseOrderService:
 
         if new_details:
             PurchaseOrderDetail.objects.bulk_create(new_details, batch_size=100)
+            new_variant_ids = [str(d.product_variant.id) for d in new_details]
+            self._ensure_product_supplier_links(po, new_variant_ids)
 
         # Sync variant prices after all detail mutations
         all_saved_details = list(po.order_details.all())
