@@ -58,7 +58,7 @@ class ProductService:
         for i, data in enumerate(data_list):
             variants_data = data.pop("variants", [])
             if not variants_data:
-                sku_code = sku_map.get(str(product_index_map[i]), "SKU")
+                sku_code = sku_map.get(product_index_map[i], "SKU")
                 variants.append(
                     ProductVariant(
                         product_id=product_index_map[i],
@@ -71,14 +71,17 @@ class ProductService:
                 )
                 variant_product_map.append(i)
             else:
+                sku_code = sku_map.get(product_index_map[i], "SKU")
                 for variant_data in variants_data:
                     variant_values = variant_data.get("variant_values", {})
+                    raw_suffix = variant_data.get("sku_variant_code", "")
+                    final_sku = f"{sku_code}-{raw_suffix}" if raw_suffix else f"{sku_code}-VAR"
                     variants.append(
                         ProductVariant(
                             product_id=product_index_map[i],
                             company_id=company_id,
                             name=_build_variant_name(variant_values),
-                            sku_variant_code=variant_data.get("sku_variant_code", ""),
+                            sku_variant_code=final_sku,
                             variant_values=variant_values,
                             base_price=variant_data.get("base_price", 0),
                         )
