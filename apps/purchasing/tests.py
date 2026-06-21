@@ -1476,6 +1476,115 @@ class PurchaseOrderServiceTest(TestCase):
             ).exists()
         )
 
+    def test_create_po_with_has_discount_true(self):
+        """has_discount=True on PO create: field is stored."""
+        data = {
+            "warehouse_id": str(self.warehouse.id),
+            "company_id": str(self.company.id),
+            "supplier_name": "Test Supplier",
+            "total_ordered_qty": 100,
+            "total_amount": 1000000,
+            "has_discount": True,
+            "order_details": [
+                {
+                    "product_variant_id": str(self.product_variant.id),
+                    "ordered_qty": 100,
+                    "unit_price_foreign": 100,
+                }
+            ],
+        }
+
+        po = self.service.create_purchase_order(data)
+        po.refresh_from_db()
+        self.assertTrue(po.has_discount)
+
+    def test_update_po_has_discount_false_nulls_discounted_prices(self):
+        """has_discount=False on PO update: all detail discounted price fields become null."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DRAFT,
+            exchange_rate=2200,
+        )
+        detail = PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            ordered_qty=10,
+            unit_price_foreign=Decimal("100"),
+            discounted_unit_price_foreign=Decimal("90"),
+            discounted_unit_price_base=198000,
+            discounted_total_price_foreign=Decimal("900"),
+            discounted_total_price_base=1980000,
+        )
+
+        self.service.update_purchase_order(po, {"has_discount": False})
+        detail.refresh_from_db()
+
+        self.assertIsNone(detail.discounted_unit_price_foreign)
+        self.assertIsNone(detail.discounted_unit_price_base)
+        self.assertIsNone(detail.discounted_total_price_foreign)
+        self.assertIsNone(detail.discounted_total_price_base)
+
+    def test_update_po_has_discount_true_preserves_discounted_prices(self):
+        """has_discount=True on PO update: discounted prices are preserved."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DRAFT,
+            exchange_rate=2200,
+        )
+        detail = PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            ordered_qty=10,
+            unit_price_foreign=Decimal("100"),
+            discounted_unit_price_foreign=Decimal("90"),
+            discounted_unit_price_base=198000,
+            discounted_total_price_foreign=Decimal("900"),
+            discounted_total_price_base=1980000,
+        )
+
+        self.service.update_purchase_order(po, {"has_discount": True})
+        detail.refresh_from_db()
+
+        self.assertEqual(detail.discounted_unit_price_foreign, Decimal("90"))
+        self.assertEqual(detail.discounted_unit_price_base, 198000)
+        self.assertEqual(detail.discounted_total_price_foreign, Decimal("900"))
+        self.assertEqual(detail.discounted_total_price_base, 1980000)
+
+    def test_recalculate_po_totals_falls_back_to_base_prices_when_discount_null(self):
+        """_recalculate_po_totals uses base price fields when discounted prices are null."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DRAFT,
+            commission_fee_pct=0,
+            delivery_fee=0,
+            cbm=0,
+            shipping_fee_per_cbm=0,
+            exchange_rate=2200,
+        )
+        PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            ordered_qty=10,
+            unit_price_foreign=Decimal("100"),
+            unit_price_base=220000,
+            total_price_foreign=Decimal("1000"),
+            total_price_base=2200000,
+            discounted_unit_price_foreign=None,
+            discounted_unit_price_base=None,
+            discounted_total_price_foreign=None,
+            discounted_total_price_base=None,
+        )
+
+        po = self.service.update_purchase_order(po, {})
+        po.refresh_from_db()
+
+        self.assertEqual(po.total_item_amount, 2200000)
+        self.assertEqual(po.total_order_amount, 2200000)
+        self.assertEqual(po.total_amount, 2200000)
+
 
 class PurchaseOrderSerializerValidationTest(TestCase):
     """Test cases for PurchaseOrderUpdateSerializer validation"""
@@ -3125,9 +3234,9 @@ class EditableFieldsAndNoteTest(TestCase):
         self.assertIn("received_qty", fields["order_detail"])
 
     def test_get_editable_fields_completed(self):
-        """Assert only note is in COMPLETED header, order_detail is empty."""
+        """Assert note and has_discount are in COMPLETED header, order_detail is empty."""
         fields = PurchaseOrder.get_editable_fields(PurchaseOrder.POStatus.COMPLETED)
-        self.assertEqual(fields["header"], ["note"])
+        self.assertEqual(fields["header"], ["note", "has_discount"])
         self.assertEqual(fields["order_detail"], [])
 
     def test_note_field_in_list_response(self):

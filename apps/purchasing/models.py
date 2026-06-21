@@ -149,6 +149,7 @@ class PurchaseOrder(DefaultModel):
         "delivery_order_invoice_file",
         "packing_list_file",
         "note",
+        "has_discount",
     ]
 
     _ALL_EDITABLE_ORDER_DETAIL: list[str] = [
@@ -184,7 +185,7 @@ class PurchaseOrder(DefaultModel):
                 "order_detail": ["received_qty", "remarks"],
             }
         else:  # COMPLETED, CANCELLED
-            return {"header": ["note"], "order_detail": []}
+            return {"header": ["note", "has_discount"], "order_detail": []}
 
     def get_next_status(self) -> str | None:
         transitions = self.STATUS_TRANSITIONS.get(self.status, [])
