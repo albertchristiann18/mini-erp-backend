@@ -137,8 +137,8 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
 
         attrs["total_price_foreign"] = unit_price_foreign * ordered_qty
         attrs["discounted_total_price_foreign"] = discounted_unit_price_foreign * ordered_qty
-        attrs["total_price_base"] = attrs["unit_price_base"] * ordered_qty
-        attrs["discounted_total_price_base"] = attrs["discounted_unit_price_base"] * ordered_qty
+        attrs["total_price_base"] = int(round(unit_price_foreign * exchange_rate * ordered_qty))
+        attrs["discounted_total_price_base"] = int(round(discounted_unit_price_foreign * exchange_rate * ordered_qty))
 
         return attrs
 

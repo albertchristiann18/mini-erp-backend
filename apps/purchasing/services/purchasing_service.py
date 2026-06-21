@@ -1000,6 +1000,7 @@ class PurchaseOrderService:
             )
 
         exchange_rate = Decimal(str(po.exchange_rate or 0))
+        delivery_fee_idr = int(round(Decimal(str(po.delivery_fee or 0)) * exchange_rate))
         commission_fee_pct = Decimal(str(po.commission_fee_pct or 0))
         shipping_fee_per_cbm = Decimal(
             str(po.shipping_fee_per_cbm or po.forecast_shipping_fee_per_cbm or 0)
@@ -1010,9 +1011,9 @@ class PurchaseOrderService:
             round(commission_fee_pct / Decimal("100") * total_item_rmb * exchange_rate)
         )
         shipping_fee = PurchaseOrderService._calc_shipping_fee(shipping_fee_per_cbm, cbm)
-        procure_amount = shipping_fee + commission_fee
-        total_order_amount = total_item_amount + commission_fee
-        total_amount = total_item_amount + commission_fee + shipping_fee
+        procure_amount = shipping_fee + commission_fee + delivery_fee_idr
+        total_order_amount = total_item_amount + commission_fee + delivery_fee_idr
+        total_amount = total_item_amount + commission_fee + shipping_fee + delivery_fee_idr
 
         update_fields = []
         if po.total_ordered_qty != total_ordered_qty:
