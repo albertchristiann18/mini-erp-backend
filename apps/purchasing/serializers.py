@@ -472,8 +472,8 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
                 )
 
         if current_status != PurchaseOrder.POStatus.DRAFT:
-            new_exchange_rate = attrs.get("exchange_rate")
-            if new_exchange_rate is not None:
+            new_exchange_rate = attrs.get('exchange_rate')
+            if new_exchange_rate is not None and new_exchange_rate != self.instance.exchange_rate:
                 raise serializers.ValidationError(
                     {
                         "exchange_rate": f"Cannot change exchange_rate when status is {current_status}. Exchange rate can only be changed in DRAFT status."

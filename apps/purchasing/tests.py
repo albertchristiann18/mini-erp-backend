@@ -1967,6 +1967,21 @@ class PurchaseOrderSerializerValidationTest(TestCase):
         self.assertFalse(serializer.is_valid())
         self.assertIn("exchange_rate", serializer.errors)
 
+    def test_same_exchange_rate_allowed_on_non_draft(self):
+        """Test sending the same exchange_rate on ORDERED PO does not raise error"""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.ORDERED,
+            exchange_rate=Decimal("2200"),
+        )
+
+        serializer = self._create_serializer(
+            po, {"exchange_rate": Decimal("2200")}, partial=True
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
     def test_unit_price_foreign_cannot_change_after_ordered(self):
         """Test that unit_price_foreign cannot be changed after ORDERED status"""
         po = PurchaseOrderFactory(
