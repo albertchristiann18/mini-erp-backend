@@ -383,6 +383,7 @@ class PurchaseOrderService:
         """
         old_status = po.status
         new_status: str | None = data.get("status")
+        new_has_discount = data.get("has_discount")
 
         # Enforce status transitions
         if new_status and new_status != old_status:
@@ -651,6 +652,14 @@ class PurchaseOrderService:
 
         if details_data is not None:
             self._update_order_details(po, details_data, old_status, new_status or old_status)
+
+        if new_has_discount is False:
+            po.order_details.update(
+                discounted_unit_price_foreign=None,
+                discounted_unit_price_base=None,
+                discounted_total_price_foreign=None,
+                discounted_total_price_base=None,
+            )
 
         self._recalculate_forecast_cbm(po)
         self._recalculate_po_totals(po)
@@ -977,8 +986,18 @@ class PurchaseOrderService:
         for detail in po.order_details.all():
             total_ordered_qty += detail.ordered_qty or 0
             total_received_qty += detail.received_qty or 0
-            total_item_amount += detail.discounted_total_price_base or 0
-            total_item_rmb += Decimal(str(detail.discounted_total_price_foreign or 0))
+            total_item_amount += (
+                detail.discounted_total_price_base
+                if detail.discounted_total_price_base is not None
+                else (detail.total_price_base or 0)
+            )
+            total_item_rmb += Decimal(
+                str(
+                    detail.discounted_total_price_foreign
+                    if detail.discounted_total_price_foreign is not None
+                    else (detail.total_price_foreign or 0)
+                )
+            )
 
         exchange_rate = Decimal(str(po.exchange_rate or 0))
         commission_fee_pct = Decimal(str(po.commission_fee_pct or 0))

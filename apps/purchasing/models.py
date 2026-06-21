@@ -44,6 +44,7 @@ class PurchaseOrder(DefaultModel):
         max_digits=10, decimal_places=3, null=True, blank=True
     )  # RMB
     note = models.TextField(blank=True, null=True)
+    has_discount = models.BooleanField(default=False)
 
     warehouse = models.ForeignKey(
         Warehouse, on_delete=models.CASCADE

@@ -184,6 +184,7 @@ class PurchaseOrderListSerializer(serializers.ModelSerializer):
             "cdate",
             "udate",
             "note",
+            "has_discount",
         ]
         read_only_fields = ["id", "cdate", "udate"]
 
@@ -238,6 +239,7 @@ class PurchaseOrderCreateSerializer(serializers.ModelSerializer):
             "delivery_order_invoice_file",
             "packing_list_file",
             "note",
+            "has_discount",
         ]
         extra_kwargs = {
             "purchase_order_number": {"required": False},
@@ -410,6 +412,7 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
             "delivery_order_invoice_file",
             "packing_list_file",
             "note",
+            "has_discount",
         ]
         extra_kwargs = {
             "purchase_order_number": {"required": False},
@@ -831,6 +834,7 @@ class PurchaseOrderReadSerializer(serializers.ModelSerializer):
             "delivery_order_invoice_file",
             "packing_list_file",
             "note",
+            "has_discount",
             "editable_fields",
             "cdate",
             "udate",
