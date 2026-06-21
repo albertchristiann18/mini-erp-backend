@@ -876,9 +876,9 @@ class PurchaseOrderService:
             new_variant_ids = [str(d.product_variant.id) for d in new_details]
             self._ensure_product_supplier_links(po, new_variant_ids)
 
-        # Sync variant prices after all detail mutations
-        all_saved_details = list(po.order_details.all())
-        self._sync_variant_prices(po, all_saved_details)
+        if po.status in (PurchaseOrder.POStatus.DRAFT, PurchaseOrder.POStatus.ORDERED):
+            all_saved_details = list(po.order_details.all())
+            self._sync_variant_prices(po, all_saved_details)
 
     def _sync_variant_prices(
         self,
