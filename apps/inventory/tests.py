@@ -69,10 +69,12 @@ class InventoryAPITest(APITestCase):
                 "variants": [
                     {
                         "variant_values": {"warna": "Navy", "size": "L"},
+                        "sku_variant_code": "NAVY-L",
                         "base_price": 180000,
                     },
                     {
                         "variant_values": {"warna": "Navy", "size": "XL"},
+                        "sku_variant_code": "NAVY-XL",
                         "base_price": 185000,
                     },
                 ],
@@ -113,10 +115,12 @@ class InventoryAPITest(APITestCase):
                 "variants": [
                     {
                         "variant_values": {"warna": "Blue", "size": "L"},
+                        "sku_variant_code": "BLUE-L",
                         "base_price": 180000,
                     },
                     {
                         "variant_values": {"warna": "Blue", "size": "XL"},
+                        "sku_variant_code": "BLUE-XL",
                         "base_price": 185000,
                     },
                 ],
@@ -146,7 +150,7 @@ class InventoryAPITest(APITestCase):
         # This confirms your global counter logic worked!
         for v in variants_b:
             self.assertEqual(v.product_id, product_b.id)
-            self.assertIn("BLUE", v.sku_variant_code)  # Assuming your trigger uppercases it
+            self.assertIn("BLUE", v.sku_variant_code)
 
     def test_create_multiple_products_with_nested_variants_and_listings(self):
         """
@@ -174,10 +178,12 @@ class InventoryAPITest(APITestCase):
                 "variants": [
                     {
                         "variant_values": {"warna": "Blue", "size": "L"},
+                        "sku_variant_code": "BLUE-L",
                         "base_price": 180000,
                     },
                     {
                         "variant_values": {"warna": "Blue", "size": "XL"},
+                        "sku_variant_code": "BLUE-XL",
                         "base_price": 185000,
                     },
                 ],
@@ -211,7 +217,7 @@ class InventoryAPITest(APITestCase):
             "variants": [
                 {
                     "variant_values": {"color": "Blue"},
-                    "sku_variant_code": "TSH-001-BLU-M",
+                    "sku_variant_code": "BLU-M",
                     "base_price": 50000,
                 }
             ],
@@ -220,11 +226,12 @@ class InventoryAPITest(APITestCase):
         self.assertEqual(response.status_code, 201)
         self.assertIn("id", response.data)
         self.assertEqual(len(response.data["variants"]), 1)
-        self.assertEqual(response.data["variants"][0]["sku_variant_code"], "TSH-001-BLU-M")
+        product = Product.objects.get(name="Test Product Quick")
+        self.assertEqual(response.data["variants"][0]["sku_variant_code"], f"{product.sku_code}-BLU-M")
         self.assertEqual(response.data["variants"][0]["name"], "Blue")
 
     def test_create_product_sets_sku_variant_code_in_db(self):
-        """sku_variant_code from request is saved to the ProductVariant record."""
+        """sku_variant_code from request is saved to the ProductVariant record with sku_code prefix."""
         payload = {
             "company_id": str(self.company.id),
             "category_id": str(self.category.id),
@@ -233,7 +240,7 @@ class InventoryAPITest(APITestCase):
             "variants": [
                 {
                     "variant_values": {"color": "red"},
-                    "sku_variant_code": "SKU-001-RED-L",
+                    "sku_variant_code": "RED-L",
                     "base_price": 75000,
                 }
             ],
@@ -242,7 +249,8 @@ class InventoryAPITest(APITestCase):
         self.assertEqual(response.status_code, 201)
         variant_id = response.data["variants"][0]["id"]
         variant = ProductVariant.objects.get(id=variant_id)
-        self.assertEqual(variant.sku_variant_code, "SKU-001-RED-L")
+        product = Product.objects.get(name="SKU Test Product")
+        self.assertEqual(variant.sku_variant_code, f"{product.sku_code}-RED-L")
 
 
 class InventoryServiceStockUpdateTest(TestCase):

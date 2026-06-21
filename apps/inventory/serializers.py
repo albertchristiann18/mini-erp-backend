@@ -221,6 +221,7 @@ class ProductVariantStockSerializer(serializers.ModelSerializer):
             "is_active",
             "last_unit_price_foreign",
             "last_currency",
+            "last_discounted_unit_price_foreign",
         ]
 
     def get_product_supplier_link(self, obj: ProductVariant) -> str | None:

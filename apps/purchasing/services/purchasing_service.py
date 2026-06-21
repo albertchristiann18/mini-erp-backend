@@ -898,6 +898,7 @@ class PurchaseOrderService:
                 id=detail.product_variant.id,
             ).filter(Q(price_updated_at__isnull=True) | Q(price_updated_at__lt=now)).update(
                 last_unit_price_foreign=detail.unit_price_foreign,
+                last_discounted_unit_price_foreign=detail.discounted_unit_price_foreign or None,
                 last_currency=currency,
                 price_updated_at=now,
             )

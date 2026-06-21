@@ -131,6 +131,9 @@ class ProductVariant(DefaultModel):
         max_digits=14, decimal_places=4, null=True, blank=True
     )
     last_currency = models.CharField(max_length=10, null=True, blank=True)
+    last_discounted_unit_price_foreign = models.DecimalField(
+        max_digits=15, decimal_places=3, null=True, blank=True
+    )
     price_updated_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self) -> str:

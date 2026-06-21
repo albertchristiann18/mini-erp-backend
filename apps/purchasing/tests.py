@@ -3916,6 +3916,40 @@ class QCPPhase7Test(TestCase):
         self.assertIsNotNone(detail)
         self.assertEqual(detail.supplier_link, "https://po-supplier.com")
 
+    def test_discounted_price_synced_to_variant_after_po_save(self):
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            currency="CNY",
+        )
+        PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            unit_price_foreign=Decimal("20.00"),
+            discounted_unit_price_foreign=Decimal("18.00"),
+        )
+        po.refresh_from_db()
+        with patch("apps.purchasing.serializers.compress_pdf_file"):
+            self.service.update_purchase_order(
+                po,
+                {
+                    "order_details": [
+                        {
+                            "id": str(po.order_details.first().id),
+                            "product_variant_id": str(self.product_variant.id),
+                            "ordered_qty": 10,
+                            "unit_price_foreign": Decimal("20.00"),
+                            "discounted_unit_price_foreign": Decimal("18.00"),
+                        }
+                    ]
+                },
+            )
+        self.product_variant.refresh_from_db()
+        self.assertEqual(
+            self.product_variant.last_discounted_unit_price_foreign, Decimal("18.00")
+        )
+        self.assertEqual(self.product_variant.last_unit_price_foreign, Decimal("20.00"))
+
 
 class QCPPhase5Test(APITestCase):
     """Tests for QCP Phase 5 — product_photo_url from gallery photos."""
