@@ -227,7 +227,9 @@ class InventoryAPITest(APITestCase):
         self.assertIn("id", response.data)
         self.assertEqual(len(response.data["variants"]), 1)
         product = Product.objects.get(name="Test Product Quick")
-        self.assertEqual(response.data["variants"][0]["sku_variant_code"], f"{product.sku_code}-BLU-M")
+        self.assertEqual(
+            response.data["variants"][0]["sku_variant_code"], f"{product.sku_code}-BLU-M"
+        )
         self.assertEqual(response.data["variants"][0]["name"], "Blue")
 
     def test_create_product_sets_sku_variant_code_in_db(self):

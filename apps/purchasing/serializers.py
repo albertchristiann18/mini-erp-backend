@@ -30,7 +30,9 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
     product_variant_id = serializers.CharField(write_only=True)
     variant_id = serializers.CharField(source="product_variant.id", read_only=True)
     product_variant_name = serializers.CharField(source="product_variant.name", read_only=True)
-    sku_variant_code = serializers.CharField(source="product_variant.sku_variant_code", read_only=True)
+    sku_variant_code = serializers.CharField(
+        source="product_variant.sku_variant_code", read_only=True
+    )
     product_id = serializers.CharField(source="product_variant.product.id", read_only=True)
     product_name = serializers.CharField(source="product_variant.product.name", read_only=True)
     product_supplier_link = serializers.CharField(
@@ -138,7 +140,9 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
         attrs["total_price_foreign"] = unit_price_foreign * ordered_qty
         attrs["discounted_total_price_foreign"] = discounted_unit_price_foreign * ordered_qty
         attrs["total_price_base"] = int(round(unit_price_foreign * exchange_rate * ordered_qty))
-        attrs["discounted_total_price_base"] = int(round(discounted_unit_price_foreign * exchange_rate * ordered_qty))
+        attrs["discounted_total_price_base"] = int(
+            round(discounted_unit_price_foreign * exchange_rate * ordered_qty)
+        )
 
         return attrs
 
@@ -472,7 +476,7 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
                 )
 
         if current_status != PurchaseOrder.POStatus.DRAFT:
-            new_exchange_rate = attrs.get('exchange_rate')
+            new_exchange_rate = attrs.get("exchange_rate")
             if new_exchange_rate is not None and new_exchange_rate != self.instance.exchange_rate:
                 raise serializers.ValidationError(
                     {

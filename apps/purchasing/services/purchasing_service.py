@@ -52,9 +52,7 @@ class PurchaseOrderService:
                     exc_info=True,
                 )
 
-    def _ensure_product_supplier_links(
-        self, po: "PurchaseOrder", variant_ids: list[str]
-    ) -> None:
+    def _ensure_product_supplier_links(self, po: "PurchaseOrder", variant_ids: list[str]) -> None:
         """Silently create ProductSupplier records for products not yet linked to PO's supplier."""
         if not po.supplier or not variant_ids:
             return

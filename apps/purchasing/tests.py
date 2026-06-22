@@ -1976,9 +1976,7 @@ class PurchaseOrderSerializerValidationTest(TestCase):
             exchange_rate=Decimal("2200"),
         )
 
-        serializer = self._create_serializer(
-            po, {"exchange_rate": Decimal("2200")}, partial=True
-        )
+        serializer = self._create_serializer(po, {"exchange_rate": Decimal("2200")}, partial=True)
 
         self.assertTrue(serializer.is_valid(), serializer.errors)
 
@@ -3520,9 +3518,7 @@ class PurchaseOrderDetailSerializerProductFieldsTest(TestCase):
 
         serializer = PurchaseOrderDetailSerializer(self.detail)
         self.assertIn("sku_variant_code", serializer.data)
-        self.assertEqual(
-            serializer.data["sku_variant_code"], self.product_variant.sku_variant_code
-        )
+        self.assertEqual(serializer.data["sku_variant_code"], self.product_variant.sku_variant_code)
 
 
 class ForecastShippingPerCbmTest(TestCase):
@@ -3960,9 +3956,7 @@ class QCPPhase7Test(TestCase):
                 },
             )
         self.product_variant.refresh_from_db()
-        self.assertEqual(
-            self.product_variant.last_discounted_unit_price_foreign, Decimal("18.00")
-        )
+        self.assertEqual(self.product_variant.last_discounted_unit_price_foreign, Decimal("18.00"))
         self.assertEqual(self.product_variant.last_unit_price_foreign, Decimal("20.00"))
 
     def test_sync_variant_prices_skipped_for_shipped_status(self):
