@@ -7,7 +7,7 @@ from apps.inventory.models import ProductVariant, Warehouse
 from apps.purchasing.models import PurchaseOrder, PurchaseOrderDetail, PurchaseOrderStatusHistory
 from apps.purchasing.services.purchasing_service import PurchaseOrderService
 from core.models import Company
-from core.utils import compress_pdf_file
+from core.utils import compress_pdf_iterative
 
 
 def _calc_shipping_fee(shipping_fee_per_cbm: Decimal, cbm: Decimal) -> int:
@@ -369,6 +369,9 @@ class PurchaseOrderCreateSerializer(serializers.ModelSerializer):
         return ret
 
 
+PDF_COMPRESS_THRESHOLD_MB = 2.0
+
+
 class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
     """Serializer for updating Purchase Orders and Details"""
 
@@ -671,20 +674,30 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
 
         return attrs
 
-    @staticmethod
-    def _compress_file(value: Any) -> Any:
-        if value:
-            return compress_pdf_file(value)
-        return value
+    def _compress_file(self, field_name: str, value: Any) -> Any:
+        if not value:
+            return value
+        file_size_mb = (value.size or 0) / (1024 * 1024)
+        if file_size_mb <= PDF_COMPRESS_THRESHOLD_MB:
+            return value
+        result, was_compressed = compress_pdf_iterative(value, target_mb=PDF_COMPRESS_THRESHOLD_MB)
+        if was_compressed:
+            if not hasattr(self, "_compressed_fields"):
+                self._compressed_fields: list[str] = []
+            self._compressed_fields.append(field_name)
+        return result
 
     def validate_purchase_order_invoice_file(self, value: Any) -> Any:
-        return self._compress_file(value)
+        return self._compress_file("purchase_order_invoice_file", value)
 
     def validate_delivery_order_file(self, value: Any) -> Any:
-        return self._compress_file(value)
+        return self._compress_file("delivery_order_file", value)
 
     def validate_delivery_order_invoice_file(self, value: Any) -> Any:
-        return self._compress_file(value)
+        return self._compress_file("delivery_order_invoice_file", value)
+
+    def validate_packing_list_file(self, value: Any) -> Any:
+        return self._compress_file("packing_list_file", value)
 
     def _calculate_totals_from_details(
         self, order_details: list, existing_details_map: dict | None = None

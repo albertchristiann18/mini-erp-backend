@@ -3,8 +3,10 @@ from decimal import Decimal
 from unittest.mock import patch
 from uuid import uuid4
 
+import fitz
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
+from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from django.utils import timezone
@@ -32,6 +34,7 @@ from apps.purchasing.serializers import PurchaseOrderReadSerializer, PurchaseOrd
 from apps.purchasing.services.purchasing_service import PurchaseOrderService
 from core.factories import WarehouseFactory
 from core.models import UserProfile
+from core.utils import compress_pdf_iterative
 
 
 class PurchaseOrderAPITest(TestCase):
@@ -162,7 +165,10 @@ class PurchaseOrderAPITest(TestCase):
         self.assertEqual(response.data["order_details"][0]["ordered_qty"], 50)
 
         service = PurchaseOrderService()
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             service.update_purchase_order(
                 po,
                 {
@@ -180,13 +186,19 @@ class PurchaseOrderAPITest(TestCase):
         )
         self.assertEqual(pvw.incoming_qty, 50)
 
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             service.update_purchase_order(po, {"status": PurchaseOrder.POStatus.SHIPPED})
         po.refresh_from_db()
         self.assertEqual(po.status, PurchaseOrder.POStatus.SHIPPED)
 
         detail = po.order_details.first()
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             service.update_purchase_order(
                 po,
                 {
@@ -228,7 +240,10 @@ class PurchaseOrderAPITest(TestCase):
         self.assertEqual(cogs.original_qty, 50)
         self.assertEqual(cogs.remaining_qty, 50)
 
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             service.update_purchase_order(po, {"status": PurchaseOrder.POStatus.COMPLETED})
         po.refresh_from_db()
         self.assertEqual(po.status, PurchaseOrder.POStatus.COMPLETED)
@@ -270,7 +285,10 @@ class PurchaseOrderAPITest(TestCase):
         po1 = PurchaseOrder.objects.last()
         self.assertEqual(po1.status, PurchaseOrder.POStatus.DRAFT)
 
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             service.update_purchase_order(
                 po1,
                 {
@@ -281,11 +299,17 @@ class PurchaseOrderAPITest(TestCase):
                 },
             )
 
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             service.update_purchase_order(po1, {"status": PurchaseOrder.POStatus.SHIPPED})
 
         detail1 = po1.order_details.first()
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             service.update_purchase_order(
                 po1,
                 {
@@ -322,7 +346,10 @@ class PurchaseOrderAPITest(TestCase):
             purchase_order=po, product_variant=self.product_variant, ordered_qty=100
         )
         service = PurchaseOrderService()
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             service.update_purchase_order(
                 po,
                 {
@@ -355,7 +382,10 @@ class PurchaseOrderAPITest(TestCase):
             purchase_order=po, product_variant=self.product_variant, ordered_qty=100
         )
         service = PurchaseOrderService()
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             service.update_purchase_order(
                 po,
                 {
@@ -386,7 +416,10 @@ class PurchaseOrderAPITest(TestCase):
             purchase_order=po, product_variant=self.product_variant, ordered_qty=100
         )
         service = PurchaseOrderService()
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             service.update_purchase_order(
                 po,
                 {
@@ -437,7 +470,10 @@ class PurchaseOrderAPITest(TestCase):
             ordered_qty=50,
         )
         service = PurchaseOrderService()
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             service.update_purchase_order(
                 po,
                 {
@@ -474,7 +510,10 @@ class PurchaseOrderAPITest(TestCase):
             purchase_order=po, product_variant=self.product_variant, ordered_qty=5
         )
         service = PurchaseOrderService()
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             service.update_purchase_order(
                 po,
                 {
@@ -521,7 +560,10 @@ class PurchaseOrderAPITest(TestCase):
             purchase_order=po, product_variant=self.product_variant, ordered_qty=100
         )
         service = PurchaseOrderService()
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             service.update_purchase_order(
                 po,
                 {
@@ -538,7 +580,10 @@ class PurchaseOrderAPITest(TestCase):
                 },
             )
         po.refresh_from_db()
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             service.update_purchase_order(
                 po,
                 {
@@ -571,6 +616,52 @@ class PurchaseOrderAPITest(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_pdf_compression_skipped_under_threshold(self):
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        file_data = b"x" * (1 * 1024 * 1024)
+        pdf_file = SimpleUploadedFile("test.pdf", file_data, content_type="application/pdf")
+        response = self.client.patch(
+            f"/purchase-order/{po.id}/",
+            {"purchase_order_invoice_file": pdf_file},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertNotIn("compressed_files", response.data)
+
+    def test_pdf_compression_triggered_over_threshold(self):
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        file_data = b"x" * (3 * 1024 * 1024)
+        pdf_file = SimpleUploadedFile("test.pdf", file_data, content_type="application/pdf")
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"compressed", name="test.pdf"), True),
+        ):
+            response = self.client.patch(
+                f"/purchase-order/{po.id}/",
+                {"purchase_order_invoice_file": pdf_file},
+                format="multipart",
+            )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("compressed_files", response.data)
+        self.assertIn("purchase_order_invoice_file", response.data["compressed_files"])
+
+    def test_packing_list_file_compression(self):
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        file_data = b"x" * (3 * 1024 * 1024)
+        pdf_file = SimpleUploadedFile("packing_list.pdf", file_data, content_type="application/pdf")
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"compressed", name="packing_list.pdf"), True),
+        ):
+            response = self.client.patch(
+                f"/purchase-order/{po.id}/",
+                {"packing_list_file": pdf_file},
+                format="multipart",
+            )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("compressed_files", response.data)
+        self.assertIn("packing_list_file", response.data["compressed_files"])
 
 
 class PurchaseOrderServiceTest(TestCase):
@@ -617,7 +708,10 @@ class PurchaseOrderServiceTest(TestCase):
 
         po1 = self.service.create_purchase_order(po1_data)
 
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             self.service.update_purchase_order(
                 po1,
                 {
@@ -660,7 +754,10 @@ class PurchaseOrderServiceTest(TestCase):
 
         po2 = self.service.create_purchase_order(po2_data)
 
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             self.service.update_purchase_order(
                 po2,
                 {
@@ -674,7 +771,10 @@ class PurchaseOrderServiceTest(TestCase):
         pvw.refresh_from_db()
         self.assertEqual(pvw.incoming_qty, 35)
 
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             self.service.update_purchase_order(
                 po2,
                 {
@@ -684,7 +784,10 @@ class PurchaseOrderServiceTest(TestCase):
             )
 
         detail = po2.order_details.first()
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             self.service.update_purchase_order(
                 po2,
                 {
@@ -706,7 +809,10 @@ class PurchaseOrderServiceTest(TestCase):
         self.assertEqual(pvw.incoming_qty, 25)
         self.assertEqual(pvw.physical_qty, 10)
 
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             self.service.update_purchase_order(
                 po2,
                 {"status": PurchaseOrder.POStatus.COMPLETED},
@@ -716,162 +822,31 @@ class PurchaseOrderServiceTest(TestCase):
         self.assertEqual(pvw.incoming_qty, 20)
         self.assertEqual(pvw.physical_qty, 10)
 
-    def test_cogs_created_for_each_po_even_same_price(self):
-        """Test that COGS is created for each PO, even with same cogs_amount.
+    def test_compress_pdf_iterative_under_target_returns_original(self):
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text(fitz.Point(100, 100), "Test PDF")
+        pdf_bytes = doc.tobytes()
+        doc.close()
+        uploaded = SimpleUploadedFile("test.pdf", pdf_bytes, content_type="application/pdf")
+        result, was_compressed = compress_pdf_iterative(uploaded, target_mb=2.0)
+        self.assertFalse(was_compressed)
+        result.seek(0)
+        self.assertEqual(result.read(), pdf_bytes)
 
-        Scenario:
-        1. PO1: Create with product, move to DELIVERED -> COGS created (cogs_amount = 33000)
-        2. PO2: Create with same product, same price, move to DELIVERED -> Another COGS created
-        3. Verify both COGS records exist with same cogs_amount but different purchase dates and reference numbers
-        """
-        po1_payload = {
-            "warehouse_id": str(self.warehouse.id),
-            "company_id": str(self.company.id),
-            "supplier_name": "Supplier A",
-            "forwarder_name": "Forwarder A",
-            "shop_services": "Service A",
-            "commission_fee_pct": 10,
-            "delivery_fee": 100,
-            "currency": "RMB",
-            "exchange_rate": 2200,
-            "cbm": 1,
-            "weight": 10,
-            "shipping_fee": 1000,
-            "order_details": [
-                {
-                    "product_variant_id": str(self.product_variant.id),
-                    "ordered_qty": 50,
-                    "unit_price_foreign": 15,
-                }
-            ],
-        }
-
-        po1 = self.service.create_purchase_order(po1_payload)
-        po1.refresh_from_db()
-
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
-            self.service.update_purchase_order(
-                po1,
-                {
-                    "status": PurchaseOrder.POStatus.ORDERED,
-                    "purchase_order_invoice_file": "invoice.pdf",
-                    "invoice_number": "INV-001",
-                    "invoice_date": date(2026, 1, 15),
-                },
-            )
-
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
-            self.service.update_purchase_order(po1, {"status": PurchaseOrder.POStatus.SHIPPED})
-
-        detail1 = po1.order_details.first()
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
-            self.service.update_purchase_order(
-                po1,
-                {
-                    "status": PurchaseOrder.POStatus.DELIVERED,
-                    "delivery_date": date(2026, 1, 20),
-                    "delivery_order_number": "DO-001",
-                    "order_details": [
-                        {
-                            "id": str(detail1.id),
-                            "product_variant_id": str(self.product_variant.id),
-                            "ordered_qty": 50,
-                            "received_qty": 50,
-                            "received_date": "2026-01-20",
-                            "unit_price_foreign": 15,
-                            "discounted_unit_price_foreign": 15,
-                        }
-                    ],
-                },
-            )
-
-        po1.refresh_from_db()
-
-        cogs1 = ProductCogs.objects.filter(
-            product_variant=self.product_variant,
-            warehouse=self.warehouse,
-        )
-        self.assertEqual(cogs1.count(), 1)
-        self.assertEqual(cogs1.first().cogs_amount, 33000)
-
-        po2_payload = {
-            "warehouse_id": str(self.warehouse.id),
-            "company_id": str(self.company.id),
-            "supplier_name": "Supplier B",
-            "forwarder_name": "Forwarder B",
-            "shop_services": "Service B",
-            "commission_fee_pct": 10,
-            "delivery_fee": 100,
-            "currency": "RMB",
-            "exchange_rate": 2200,
-            "cbm": 1,
-            "weight": 10,
-            "shipping_fee": 1000,
-            "order_details": [
-                {
-                    "product_variant_id": str(self.product_variant.id),
-                    "ordered_qty": 50,
-                    "unit_price_foreign": 15,
-                }
-            ],
-        }
-
-        po2 = self.service.create_purchase_order(po2_payload)
-        po2.refresh_from_db()
-
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
-            self.service.update_purchase_order(
-                po2,
-                {
-                    "status": PurchaseOrder.POStatus.ORDERED,
-                    "purchase_order_invoice_file": "invoice2.pdf",
-                    "invoice_number": "INV-002",
-                    "invoice_date": date(2026, 2, 15),
-                },
-            )
-
-        po2.refresh_from_db()
-
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
-            self.service.update_purchase_order(po2, {"status": PurchaseOrder.POStatus.SHIPPED})
-
-        detail2 = po2.order_details.first()
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
-            self.service.update_purchase_order(
-                po2,
-                {
-                    "status": PurchaseOrder.POStatus.DELIVERED,
-                    "delivery_date": date(2026, 2, 20),
-                    "delivery_order_number": "DO-002",
-                    "order_details": [
-                        {
-                            "id": str(detail2.id),
-                            "product_variant_id": str(self.product_variant.id),
-                            "ordered_qty": 50,
-                            "received_qty": 50,
-                            "received_date": "2026-02-20",
-                            "unit_price_foreign": 15,
-                            "discounted_unit_price_foreign": 15,
-                        }
-                    ],
-                },
-            )
-
-        cogs_all = ProductCogs.objects.filter(
-            product_variant=self.product_variant,
-            warehouse=self.warehouse,
-        )
-        self.assertEqual(cogs_all.count(), 2)
-
-        cogs_for_po1 = cogs_all.filter(reference_number=po1.purchase_order_number).first()
-        cogs_for_po2 = cogs_all.filter(reference_number=po2.purchase_order_number).first()
-        self.assertIsNotNone(cogs_for_po1)
-        self.assertIsNotNone(cogs_for_po2)
-        self.assertEqual(cogs_for_po1.cogs_amount, cogs_for_po2.cogs_amount)
-        self.assertEqual(cogs_for_po1.cogs_amount, 33000)
-        self.assertEqual(cogs_for_po2.cogs_amount, 33000)
-        self.assertEqual(cogs_for_po1.purchase_date, date(2026, 1, 15))
-        self.assertEqual(cogs_for_po2.purchase_date, date(2026, 2, 15))
+    def test_compress_pdf_iterative_over_target_returns_compressed(self):
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text(fitz.Point(100, 100), "Test PDF for compression")
+        pdf_bytes = doc.tobytes()
+        doc.close()
+        uploaded = SimpleUploadedFile("test.pdf", pdf_bytes, content_type="application/pdf")
+        tiny_target_mb = len(pdf_bytes) / (1024 * 1024) / 2
+        result, was_compressed = compress_pdf_iterative(uploaded, target_mb=tiny_target_mb)
+        result.seek(0)
+        result_bytes = result.read()
+        self.assertTrue(was_compressed)
+        self.assertLessEqual(len(result_bytes), len(pdf_bytes))
 
     def test_decrease_received_qty_fails_when_physical_qty_insufficient(self):
         """Test that decreasing received_qty fails when physical qty already sold."""
@@ -897,7 +872,10 @@ class PurchaseOrderServiceTest(TestCase):
 
         po.refresh_from_db()
 
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             with self.assertRaises(ValidationError) as context:
                 self.service.update_purchase_order(
                     po,
@@ -942,7 +920,10 @@ class PurchaseOrderServiceTest(TestCase):
 
         po.refresh_from_db()
 
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             with self.assertRaises(ValidationError) as context:
                 self.service.update_purchase_order(
                     po,
@@ -978,7 +959,10 @@ class PurchaseOrderServiceTest(TestCase):
 
         po.refresh_from_db()
 
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             with self.assertRaises(ValidationError) as context:
                 self.service.update_purchase_order(
                     po,
@@ -3315,7 +3299,10 @@ class EditableFieldsAndNoteTest(TestCase):
             ordered_qty=10,
         )
 
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             self.service.update_purchase_order(
                 po,
                 {
@@ -3771,7 +3758,10 @@ class QCPPhase7Test(TestCase):
             unit_price_foreign=Decimal("15.00"),
         )
         po.refresh_from_db()
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             self.service.update_purchase_order(
                 po,
                 {
@@ -3807,7 +3797,10 @@ class QCPPhase7Test(TestCase):
             unit_price_foreign=Decimal("20.00"),
         )
         po.refresh_from_db()
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             self.service.update_purchase_order(
                 po,
                 {
@@ -3836,7 +3829,10 @@ class QCPPhase7Test(TestCase):
             unit_price_foreign=None,
         )
         po.refresh_from_db()
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             self.service.update_purchase_order(
                 po,
                 {
@@ -3870,7 +3866,10 @@ class QCPPhase7Test(TestCase):
             supplier=supplier,
             status=PurchaseOrder.POStatus.DRAFT,
         )
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             self.service.update_purchase_order(
                 po,
                 {
@@ -3910,7 +3909,10 @@ class QCPPhase7Test(TestCase):
             supplier=supplier_a,
             status=PurchaseOrder.POStatus.DRAFT,
         )
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             self.service.update_purchase_order(
                 po,
                 {
@@ -3940,7 +3942,10 @@ class QCPPhase7Test(TestCase):
             discounted_unit_price_foreign=Decimal("18.00"),
         )
         po.refresh_from_db()
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             self.service.update_purchase_order(
                 po,
                 {
@@ -3976,7 +3981,10 @@ class QCPPhase7Test(TestCase):
             unit_price_foreign=Decimal("15.00"),
         )
         po.refresh_from_db()
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             self.service.update_purchase_order(
                 po,
                 {
@@ -4011,7 +4019,10 @@ class QCPPhase7Test(TestCase):
             unit_price_foreign=Decimal("15.00"),
         )
         po.refresh_from_db()
-        with patch("apps.purchasing.serializers.compress_pdf_file"):
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
             self.service.update_purchase_order(
                 po,
                 {

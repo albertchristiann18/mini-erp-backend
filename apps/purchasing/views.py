@@ -137,7 +137,9 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
             services = purchasing_service.PurchaseOrderService()
             services.update_purchase_order(instance, validated_data, changed_by=request.user)
 
-            return Response(status=status.HTTP_200_OK)
+            compressed_fields: list[str] = getattr(serializer, "_compressed_fields", [])
+            body = {"compressed_files": compressed_fields} if compressed_fields else {}
+            return Response(body, status=status.HTTP_200_OK)
 
         except ValidationError as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
