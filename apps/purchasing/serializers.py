@@ -40,6 +40,8 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
     )
     variant_values = serializers.JSONField(source="product_variant.variant_values", read_only=True)
     product_photo_url = serializers.SerializerMethodField()
+    last_unit_price_foreign = serializers.SerializerMethodField()
+    last_currency = serializers.SerializerMethodField()
     updated_qty = serializers.IntegerField(read_only=True)
 
     class Meta:
@@ -71,6 +73,8 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
             "avg_sales_7d",
             "stock_on_hand",
             "incoming_qty",
+            "last_unit_price_foreign",
+            "last_currency",
         ]
         read_only_fields = [
             "updated_qty",
@@ -91,6 +95,13 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
         if variant.product.product_photo:
             return variant.product.product_photo.url  # type: ignore[no-any-return]
         return None
+
+    def get_last_unit_price_foreign(self, obj: PurchaseOrderDetail) -> str | None:
+        val = obj.product_variant.last_unit_price_foreign
+        return str(val) if val is not None else None
+
+    def get_last_currency(self, obj: PurchaseOrderDetail) -> str | None:
+        return obj.product_variant.last_currency
 
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
         return self._calculate_prices(attrs)

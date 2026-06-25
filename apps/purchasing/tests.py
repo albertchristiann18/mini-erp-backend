@@ -96,6 +96,36 @@ class PurchaseOrderAPITest(TestCase):
         po_data = next(r for r in response.data["results"] if r["id"] == str(po.id))
         self.assertEqual(po_data["delivery_fee_idr"], 675000)
 
+    def test_last_price_fields_in_po_detail_response(self):
+        """last_unit_price_foreign and last_currency appear in PO detail response"""
+        self.product_variant.last_unit_price_foreign = Decimal("25.0000")
+        self.product_variant.last_currency = "CNY"
+        self.product_variant.save()
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        PurchaseOrderDetailFactory(purchase_order=po, product_variant=self.product_variant)
+
+        response = self.client.get(f"/purchase-order/{po.id}/", format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        detail = response.data["order_details"][0]
+        self.assertEqual(detail["last_unit_price_foreign"], "25.0000")
+        self.assertEqual(detail["last_currency"], "CNY")
+
+    def test_last_price_fields_null_when_variant_has_no_last_price(self):
+        """last_unit_price_foreign and last_currency are None when variant has no last price"""
+        self.product_variant.last_unit_price_foreign = None
+        self.product_variant.last_currency = None
+        self.product_variant.save()
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        PurchaseOrderDetailFactory(purchase_order=po, product_variant=self.product_variant)
+
+        response = self.client.get(f"/purchase-order/{po.id}/", format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        detail = response.data["order_details"][0]
+        self.assertIsNone(detail["last_unit_price_foreign"])
+        self.assertIsNone(detail["last_currency"])
+
     def test_create_po(self):
         """Create a PO"""
         payload = {
