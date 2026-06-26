@@ -693,6 +693,77 @@ class PurchaseOrderAPITest(TestCase):
         self.assertIn("compressed_files", response.data)
         self.assertIn("packing_list_file", response.data["compressed_files"])
 
+    def test_freight_breakdown_fields_in_delivered_po_response(self):
+        """Per-item freight allocation fields appear in DELIVERED PO response."""
+        self.product.length = 20
+        self.product.width = 10
+        self.product.height = 5
+        self.product.save()
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            shipping_fee=100000,
+            delivery_fee=50,
+            exchange_rate=2000,
+        )
+        po.commission_fee = 20000
+        po.total_item_amount = 500000
+        po.save()
+        PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            ordered_qty=10,
+            received_qty=10,
+            discounted_total_price_base=500000,
+            discounted_unit_price_base=50000,
+        )
+        po.status = PurchaseOrder.POStatus.DELIVERED
+        po.save()
+
+        response = self.client.get(f"/purchase-order/{po.id}/", format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        resp_detail = response.data["order_details"][0]
+        self.assertTrue(resp_detail["product_has_dimensions"])
+        self.assertIsNotNone(resp_detail["shipping_per_unit_idr"])
+        self.assertIsNotNone(resp_detail["cogs_per_unit_idr"])
+        self.assertEqual(resp_detail["shipping_per_unit_idr"], 10000)
+        self.assertEqual(resp_detail["delivery_per_unit_idr"], 10000)
+        self.assertEqual(resp_detail["commission_per_unit_idr"], 2000)
+        self.assertEqual(resp_detail["cogs_per_unit_idr"], 72000)
+
+    def test_product_without_dimensions_has_zero_shipping(self):
+        """Product with no dimensions gets zero shipping allocation."""
+        self.product.length = 0
+        self.product.width = 0
+        self.product.height = 0
+        self.product.save()
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            shipping_fee=100000,
+        )
+        po.total_item_amount = 100000
+        po.save()
+        PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            ordered_qty=5,
+            received_qty=5,
+            discounted_total_price_base=100000,
+            discounted_unit_price_base=20000,
+        )
+        po.status = PurchaseOrder.POStatus.DELIVERED
+        po.save()
+
+        response = self.client.get(f"/purchase-order/{po.id}/", format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        resp_detail = response.data["order_details"][0]
+        self.assertFalse(resp_detail["product_has_dimensions"])
+        self.assertEqual(resp_detail["shipping_per_unit_idr"], 0)
+        self.assertIsNotNone(resp_detail["cogs_per_unit_idr"])
+
 
 class PurchaseOrderServiceTest(TestCase):
     """Unit tests for PurchaseOrderService"""
@@ -4120,3 +4191,5 @@ class QCPPhase5Test(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         photo_url = response.data["order_details"][0]["product_photo_url"]
         self.assertIsNone(photo_url)
+
+

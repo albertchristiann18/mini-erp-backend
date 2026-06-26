@@ -816,6 +816,19 @@ class PurchaseOrderReadSerializer(serializers.ModelSerializer):
     editable_fields = serializers.SerializerMethodField()
     supplier_id = serializers.CharField(source="supplier.id", read_only=True, allow_null=True)
 
+    def to_representation(self, instance: PurchaseOrder) -> dict[str, Any]:
+        ret: dict[str, Any] = super().to_representation(instance)
+        freight_map = self._build_freight_map(instance)
+        for item in ret.get("order_details") or []:
+            detail_id = str(item.get("id", ""))
+            f = freight_map.get(detail_id, {})
+            item["shipping_per_unit_idr"] = f.get("shipping_per_unit_idr")
+            item["delivery_per_unit_idr"] = f.get("delivery_per_unit_idr")
+            item["commission_per_unit_idr"] = f.get("commission_per_unit_idr")
+            item["cogs_per_unit_idr"] = f.get("cogs_per_unit_idr")
+            item["product_has_dimensions"] = f.get("product_has_dimensions")
+        return ret
+
     class Meta:
         model = PurchaseOrder
         fields = [
@@ -880,3 +893,106 @@ class PurchaseOrderReadSerializer(serializers.ModelSerializer):
 
     def get_editable_fields(self, obj: PurchaseOrder) -> dict[str, list[str]]:
         return PurchaseOrder.get_editable_fields(obj.status)
+
+    @staticmethod
+    def _build_freight_map(po: PurchaseOrder) -> dict[str, dict]:
+        details = list(po.order_details.all())
+
+        dims_map: dict[str, bool] = {}
+        for detail in details:
+            p = detail.product_variant.product
+            dims_map[str(detail.id)] = p.length > 0 and p.width > 0 and p.height > 0
+
+        is_delivered = po.status in [
+            PurchaseOrder.POStatus.DELIVERED,
+            PurchaseOrder.POStatus.COMPLETED,
+        ]
+
+        if not is_delivered:
+            return {
+                detail_id: {
+                    "shipping_per_unit_idr": None,
+                    "delivery_per_unit_idr": None,
+                    "commission_per_unit_idr": None,
+                    "cogs_per_unit_idr": None,
+                    "product_has_dimensions": has_dims,
+                }
+                for detail_id, has_dims in dims_map.items()
+            }
+
+        shipping_fee = Decimal(str(po.shipping_fee or 0))
+        delivery_fee = Decimal(str(po.delivery_fee or 0))
+        exchange_rate = Decimal(str(po.exchange_rate or 1))
+        commission_fee_total = Decimal(str(po.commission_fee or 0))
+        total_item_amount_idr = Decimal(str(po.total_item_amount or 0))
+        delivery_fee_idr = delivery_fee * exchange_rate
+
+        total_cbm = Decimal("0")
+        item_data: dict[str, dict] = {}
+        for detail in details:
+            p = detail.product_variant.product
+            length = Decimal(str(p.length or 0))
+            width = Decimal(str(p.width or 0))
+            height = Decimal(str(p.height or 0))
+            ordered_qty = Decimal(str(detail.ordered_qty or 0))
+            received_qty = detail.received_qty or 0
+            cbm_per_unit = length * width * height / Decimal("1000000")
+            detail_total_cbm = cbm_per_unit * ordered_qty
+            total_cbm += detail_total_cbm
+            item_data[str(detail.id)] = {
+                "cbm": detail_total_cbm,
+                "item_value_idr": Decimal(str(detail.discounted_total_price_base or 0)),
+                "received_qty": received_qty,
+                "unit_price_idr": Decimal(str(
+                    detail.discounted_unit_price_base or detail.unit_price_base or 0
+                )),
+            }
+
+        result: dict[str, dict] = {}
+        for detail in details:
+            detail_id = str(detail.id)
+            data = item_data[detail_id]
+            received_qty = data["received_qty"]
+
+            if received_qty <= 0:
+                result[detail_id] = {
+                    "shipping_per_unit_idr": None,
+                    "delivery_per_unit_idr": None,
+                    "commission_per_unit_idr": None,
+                    "cogs_per_unit_idr": None,
+                    "product_has_dimensions": dims_map[detail_id],
+                }
+                continue
+
+            qty = Decimal(str(received_qty))
+
+            shipping_share = (
+                int(round(shipping_fee * data["cbm"] / total_cbm)) if total_cbm > 0 else 0
+            )
+            if total_item_amount_idr > 0:
+                value_ratio = data["item_value_idr"] / total_item_amount_idr
+                delivery_share = int(round(delivery_fee_idr * value_ratio))
+                commission_share = int(round(commission_fee_total * value_ratio))
+            else:
+                delivery_share = 0
+                commission_share = 0
+
+            shipping_per_unit = int(round(Decimal(str(shipping_share)) / qty))
+            delivery_per_unit = int(round(Decimal(str(delivery_share)) / qty))
+            commission_per_unit = int(round(Decimal(str(commission_share)) / qty))
+            cogs_per_unit = int(round(
+                data["unit_price_idr"]
+                + Decimal(str(shipping_share)) / qty
+                + Decimal(str(delivery_share)) / qty
+                + Decimal(str(commission_share)) / qty
+            ))
+
+            result[detail_id] = {
+                "shipping_per_unit_idr": shipping_per_unit,
+                "delivery_per_unit_idr": delivery_per_unit,
+                "commission_per_unit_idr": commission_per_unit,
+                "cogs_per_unit_idr": cogs_per_unit,
+                "product_has_dimensions": dims_map[detail_id],
+            }
+
+        return result
