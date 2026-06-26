@@ -42,6 +42,7 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
     product_photo_url = serializers.SerializerMethodField()
     last_unit_price_foreign = serializers.SerializerMethodField()
     last_currency = serializers.SerializerMethodField()
+    last_discounted_unit_price_foreign = serializers.SerializerMethodField()
     updated_qty = serializers.IntegerField(read_only=True)
 
     class Meta:
@@ -75,6 +76,7 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
             "incoming_qty",
             "last_unit_price_foreign",
             "last_currency",
+            "last_discounted_unit_price_foreign",
         ]
         read_only_fields = [
             "updated_qty",
@@ -102,6 +104,10 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
 
     def get_last_currency(self, obj: PurchaseOrderDetail) -> str | None:
         return obj.product_variant.last_currency
+
+    def get_last_discounted_unit_price_foreign(self, obj: PurchaseOrderDetail) -> str | None:
+        val = obj.product_variant.last_discounted_unit_price_foreign
+        return str(val) if val is not None else None
 
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
         return self._calculate_prices(attrs)
@@ -943,9 +949,9 @@ class PurchaseOrderReadSerializer(serializers.ModelSerializer):
                 "cbm": detail_total_cbm,
                 "item_value_idr": Decimal(str(detail.discounted_total_price_base or 0)),
                 "received_qty": received_qty,
-                "unit_price_idr": Decimal(str(
-                    detail.discounted_unit_price_base or detail.unit_price_base or 0
-                )),
+                "unit_price_idr": Decimal(
+                    str(detail.discounted_unit_price_base or detail.unit_price_base or 0)
+                ),
             }
 
         result: dict[str, dict] = {}
@@ -980,12 +986,14 @@ class PurchaseOrderReadSerializer(serializers.ModelSerializer):
             shipping_per_unit = int(round(Decimal(str(shipping_share)) / qty))
             delivery_per_unit = int(round(Decimal(str(delivery_share)) / qty))
             commission_per_unit = int(round(Decimal(str(commission_share)) / qty))
-            cogs_per_unit = int(round(
-                data["unit_price_idr"]
-                + Decimal(str(shipping_share)) / qty
-                + Decimal(str(delivery_share)) / qty
-                + Decimal(str(commission_share)) / qty
-            ))
+            cogs_per_unit = int(
+                round(
+                    data["unit_price_idr"]
+                    + Decimal(str(shipping_share)) / qty
+                    + Decimal(str(delivery_share)) / qty
+                    + Decimal(str(commission_share)) / qty
+                )
+            )
 
             result[detail_id] = {
                 "shipping_per_unit_idr": shipping_per_unit,

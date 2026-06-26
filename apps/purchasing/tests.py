@@ -126,6 +126,33 @@ class PurchaseOrderAPITest(TestCase):
         self.assertIsNone(detail["last_unit_price_foreign"])
         self.assertIsNone(detail["last_currency"])
 
+    def test_last_discounted_price_field_in_po_detail_response(self):
+        """last_discounted_unit_price_foreign appears in PO detail response"""
+        self.product_variant.last_discounted_unit_price_foreign = Decimal("18.5000")
+        self.product_variant.last_currency = "CNY"
+        self.product_variant.save()
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        PurchaseOrderDetailFactory(purchase_order=po, product_variant=self.product_variant)
+
+        response = self.client.get(f"/purchase-order/{po.id}/", format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.data["order_details"][0]["last_discounted_unit_price_foreign"], "18.500"
+        )
+
+    def test_last_discounted_price_field_null_when_not_set(self):
+        """last_discounted_unit_price_foreign is None when variant has none set"""
+        self.product_variant.last_discounted_unit_price_foreign = None
+        self.product_variant.save()
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        PurchaseOrderDetailFactory(purchase_order=po, product_variant=self.product_variant)
+
+        response = self.client.get(f"/purchase-order/{po.id}/", format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsNone(response.data["order_details"][0]["last_discounted_unit_price_foreign"])
+
     def test_create_po(self):
         """Create a PO"""
         payload = {
@@ -4191,5 +4218,3 @@ class QCPPhase5Test(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         photo_url = response.data["order_details"][0]["product_photo_url"]
         self.assertIsNone(photo_url)
-
-
