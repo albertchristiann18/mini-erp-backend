@@ -27,7 +27,8 @@ class PurchaseOrder(DefaultModel):
     id = ULIDField(
         primary_key=True, default=generate_ulid, editable=False, db_column="purchase_order_id"
     )
-    # PO Number auto-generated format: PO-{YYYY}-{SEQUENCE} (e.g., PO-2026-001)
+    # PO Number auto-generated per-company format: PO-{YYYY}-{SEQUENCE} (e.g., PO-2026-001)
+    # Each company has its own independent sequence counter via po_number_counter table
     purchase_order_number = models.CharField(
         max_length=100,
     )

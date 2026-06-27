@@ -8,6 +8,7 @@ from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import connection
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework import status
@@ -4218,3 +4219,58 @@ class QCPPhase5Test(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         photo_url = response.data["order_details"][0]["product_photo_url"]
         self.assertIsNone(photo_url)
+
+
+class TestPerCompanyPONumberSequence(TestCase):
+    def test_each_company_gets_independent_po_sequence(self):
+        """Two companies both start their own sequence from PO-YYYY-001."""
+        company_a = CompanyFactory()
+        company_b = CompanyFactory()
+        warehouse_a = WarehouseFactory(company=company_a)
+        warehouse_b = WarehouseFactory(company=company_b)
+
+        po_a1 = PurchaseOrderFactory(company=company_a, warehouse=warehouse_a)
+        po_a2 = PurchaseOrderFactory(company=company_a, warehouse=warehouse_a)
+        po_b1 = PurchaseOrderFactory(company=company_b, warehouse=warehouse_b)
+
+        po_a1.refresh_from_db()
+        po_a2.refresh_from_db()
+        po_b1.refresh_from_db()
+
+        self.assertRegex(po_a1.purchase_order_number, r"^PO-\d{4}-001$")
+        self.assertRegex(po_a2.purchase_order_number, r"^PO-\d{4}-002$")
+        self.assertRegex(po_b1.purchase_order_number, r"^PO-\d{4}-001$")
+
+    def test_po_numbers_are_unique_within_company(self):
+        """Sequential POs for the same company never get the same number."""
+        company = CompanyFactory()
+        warehouse = WarehouseFactory(company=company)
+
+        po1 = PurchaseOrderFactory(company=company, warehouse=warehouse)
+        po2 = PurchaseOrderFactory(company=company, warehouse=warehouse)
+        po3 = PurchaseOrderFactory(company=company, warehouse=warehouse)
+
+        po1.refresh_from_db()
+        po2.refresh_from_db()
+        po3.refresh_from_db()
+
+        numbers = [po1.purchase_order_number, po2.purchase_order_number, po3.purchase_order_number]
+        self.assertEqual(len(numbers), len(set(numbers)))
+
+    def test_new_year_resets_sequence_per_company(self):
+        """A company's counter for a prior year does not affect the current year's sequence."""
+        company = CompanyFactory()
+        warehouse = WarehouseFactory(company=company)
+        current_year = str(timezone.now().year)
+        prior_year = str(timezone.now().year - 1)
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO po_number_counter (company_id, year, last_value) VALUES (%s, %s, %s)",
+                [company.id.uuid, prior_year, 50],
+            )
+
+        po = PurchaseOrderFactory(company=company, warehouse=warehouse)
+        po.refresh_from_db()
+
+        self.assertRegex(po.purchase_order_number, rf"^PO-{current_year}-001$")
