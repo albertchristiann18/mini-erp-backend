@@ -495,6 +495,24 @@ class SourcingPoolViewSet(viewsets.ViewSet):
         response.data["pool_id"] = str(pool.id)
         return response
 
+    @action(detail=False, methods=["post"], url_path="download-images")
+    def download_images(self, request: Request) -> Response:
+        from apps.purchasing.services.sourcing_service import SourcingService
+
+        pool_id = request.data.get("pool_id")
+        include_failed = bool(request.data.get("include_failed", False))
+
+        if not pool_id:
+            return Response({"error": "pool_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            pool = SourcingPool.objects.get(id=pool_id, company=request.user.profile.company)
+        except SourcingPool.DoesNotExist:
+            return Response({"error": "Pool not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        result = SourcingService().download_pool_images(pool=pool, include_failed=include_failed)
+        return Response(result, status=status.HTTP_200_OK)
+
 
 class SourcingPoolItemImageView(APIView):
     """

@@ -1,15 +1,29 @@
 import io
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import openpyxl
+import requests as http_requests
+from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
 from django.db import transaction
 
 from apps.inventory.models import Category, Supplier
 from apps.purchasing.models import SourcingPool, SourcingPoolItem
 from core.models import Company
 
+logger = logging.getLogger(__name__)
+
 REQUIRED_COLUMNS = {"product_name", "variant_name", "category_code", "unit_price"}
+
+CONTENT_TYPE_EXT: dict[str, str] = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
 
 
 class SourcingService:
@@ -66,7 +80,12 @@ class SourcingService:
         if len(rows) > MAX_ROWS + 1:  # +1 for header row
             return {
                 "valid": [],
-                "errors": [{"row": 0, "message": f"File exceeds the {MAX_ROWS}-row limit. Split into smaller files."}],
+                "errors": [
+                    {
+                        "row": 0,
+                        "message": f"File exceeds the {MAX_ROWS}-row limit. Split into smaller files.",
+                    }
+                ],
             }
         if not rows:
             return {"valid": [], "errors": [{"row": 0, "message": "Items sheet is empty."}]}
@@ -336,3 +355,66 @@ class SourcingService:
             )
 
         return {"created": len(to_create), "updated": len(to_update), "pool_id": str(pool.id)}
+
+    def download_pool_images(
+        self,
+        pool: SourcingPool,
+        include_failed: bool = False,
+    ) -> dict[str, int]:
+        status_filter = [SourcingPoolItem.ImageDownloadStatus.PENDING]
+        if include_failed:
+            status_filter.append(SourcingPoolItem.ImageDownloadStatus.FAILED)
+
+        all_candidates = list(
+            SourcingPoolItem.objects.filter(
+                pool=pool,
+                image_download_status__in=status_filter,
+            )
+        )
+        items = [i for i in all_candidates if i.image_url]
+        skipped = len(all_candidates) - len(items)
+
+        if not items:
+            return {"done": 0, "failed": 0, "skipped": skipped}
+
+        done_items: list[SourcingPoolItem] = []
+        failed_items: list[SourcingPoolItem] = []
+
+        def _download_one(item: SourcingPoolItem) -> tuple[SourcingPoolItem, bool, str | None]:
+            try:
+                resp = http_requests.get(item.image_url, timeout=10)  # type: ignore[arg-type]
+                resp.raise_for_status()
+                content_type = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
+                ext = CONTENT_TYPE_EXT.get(content_type, ".jpg")
+                r2_path = f"sourcing/images/{item.id}{ext}"
+                saved_path = default_storage.save(r2_path, ContentFile(resp.content))
+                item.image_file.name = saved_path  # type: ignore[attr-defined]
+                item.image_download_status = SourcingPoolItem.ImageDownloadStatus.DONE
+                return (item, True, None)
+            except Exception as exc:
+                item.image_download_status = SourcingPoolItem.ImageDownloadStatus.FAILED
+                return (item, False, str(exc))
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {executor.submit(_download_one, item): item for item in items}
+            for future in as_completed(futures):
+                item, success, error_msg = future.result()
+                if success:
+                    done_items.append(item)
+                else:
+                    logger.warning(
+                        "Image download failed for SourcingPoolItem %s (url=%s): %s",
+                        item.id,
+                        item.image_url,
+                        error_msg,
+                    )
+                    failed_items.append(item)
+
+        if done_items:
+            SourcingPoolItem.objects.bulk_update(
+                done_items, fields=["image_file", "image_download_status"]
+            )
+        if failed_items:
+            SourcingPoolItem.objects.bulk_update(failed_items, fields=["image_download_status"])
+
+        return {"done": len(done_items), "failed": len(failed_items), "skipped": skipped}

@@ -1,11 +1,12 @@
 import io
 from datetime import date, timedelta
 from decimal import Decimal
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
 import fitz
 import openpyxl
+import requests
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
@@ -4963,7 +4964,9 @@ class TestSourcingService(TestCase):
     # --- FIX 1: Row count cap ---
 
     def test_parse_excel_preview_rejects_file_exceeding_row_limit(self):
-        data_rows = [[f"Prod{i}", f"Var{i}", self.category.category_code, "10.000"] for i in range(5001)]
+        data_rows = [
+            [f"Prod{i}", f"Var{i}", self.category.category_code, "10.000"] for i in range(5001)
+        ]
         file_bytes = self._build_workbook(data_rows)
         result = self.service.parse_excel_preview(file_bytes, company=self.company)
         self.assertEqual(len(result["valid"]), 0)
@@ -5017,3 +5020,409 @@ class TestSourcingService(TestCase):
         self.assertEqual(len(response.data["results"]), 50)
         self.assertIsNotNone(response.data["next"])
         self.assertEqual(response.data["pool_id"], str(pool.id))
+
+    # --- Image download tests ---
+
+    def test_download_pool_images_sets_done_status_and_image_file_on_success(self):
+        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
+        item = SourcingPoolItemFactory(
+            pool=pool,
+            company=self.company,
+            category=self.category,
+            image_url="http://cdn.example.com/img.jpg",
+            image_download_status=SourcingPoolItem.ImageDownloadStatus.PENDING,
+        )
+
+        with (
+            patch("apps.purchasing.services.sourcing_service.http_requests.get") as mock_get,
+            patch("apps.purchasing.services.sourcing_service.default_storage.save") as mock_save,
+        ):
+            mock_response = Mock()
+            mock_response.headers = {"Content-Type": "image/jpeg"}
+            mock_response.content = b"imgdata"
+            mock_get.return_value = mock_response
+            mock_save.return_value = f"sourcing/images/{item.id}.jpg"
+
+            result = self.service.download_pool_images(pool)
+
+        item.refresh_from_db()
+        self.assertEqual(item.image_download_status, SourcingPoolItem.ImageDownloadStatus.DONE)
+        self.assertEqual(item.image_file.name, f"sourcing/images/{item.id}.jpg")
+        self.assertEqual(result, {"done": 1, "failed": 0, "skipped": 0})
+
+    def test_download_pool_images_derives_correct_extension_from_content_type(self):
+        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
+        item = SourcingPoolItemFactory(
+            pool=pool,
+            company=self.company,
+            category=self.category,
+            image_url="http://cdn.example.com/img.png",
+            image_download_status=SourcingPoolItem.ImageDownloadStatus.PENDING,
+        )
+
+        with (
+            patch("apps.purchasing.services.sourcing_service.http_requests.get") as mock_get,
+            patch("apps.purchasing.services.sourcing_service.default_storage.save") as mock_save,
+        ):
+            mock_response = Mock()
+            mock_response.headers = {"Content-Type": "image/png"}
+            mock_response.content = b"pngdata"
+            mock_get.return_value = mock_response
+            mock_save.return_value = f"sourcing/images/{item.id}.png"
+
+            self.service.download_pool_images(pool)
+
+            args, _ = mock_save.call_args
+            self.assertTrue(args[0].endswith(".png"))
+
+    def test_download_pool_images_skips_items_with_no_image_url(self):
+        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
+        SourcingPoolItemFactory(
+            pool=pool,
+            company=self.company,
+            category=self.category,
+            product_name="No URL",
+            variant_name="Var",
+            image_url=None,
+        )
+        SourcingPoolItemFactory(
+            pool=pool,
+            company=self.company,
+            category=self.category,
+            product_name="Has URL",
+            variant_name="Var",
+            image_url="http://cdn.example.com/img.jpg",
+        )
+
+        with (
+            patch("apps.purchasing.services.sourcing_service.http_requests.get") as mock_get,
+            patch("apps.purchasing.services.sourcing_service.default_storage.save") as mock_save,
+        ):
+            mock_response = Mock()
+            mock_response.headers = {"Content-Type": "image/jpeg"}
+            mock_response.content = b"imgdata"
+            mock_get.return_value = mock_response
+            mock_save.return_value = "sourcing/images/dummy.jpg"
+
+            result = self.service.download_pool_images(pool)
+
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(result["done"], 1)
+
+    def test_download_pool_images_skips_done_items_by_default(self):
+        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
+        SourcingPoolItemFactory(
+            pool=pool,
+            company=self.company,
+            category=self.category,
+            product_name="Done Item",
+            variant_name="Var",
+            image_url="http://cdn.example.com/img.jpg",
+            image_download_status=SourcingPoolItem.ImageDownloadStatus.DONE,
+        )
+
+        with patch("apps.purchasing.services.sourcing_service.http_requests.get") as mock_get:
+            result = self.service.download_pool_images(pool)
+
+        mock_get.assert_not_called()
+        self.assertEqual(result, {"done": 0, "failed": 0, "skipped": 0})
+
+    def test_download_pool_images_retries_failed_items_when_include_failed_true(self):
+        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
+        item = SourcingPoolItemFactory(
+            pool=pool,
+            company=self.company,
+            category=self.category,
+            product_name="Failed Item",
+            variant_name="Var",
+            image_url="http://cdn.example.com/img.jpg",
+            image_download_status=SourcingPoolItem.ImageDownloadStatus.FAILED,
+        )
+
+        with (
+            patch("apps.purchasing.services.sourcing_service.http_requests.get") as mock_get,
+            patch("apps.purchasing.services.sourcing_service.default_storage.save") as mock_save,
+        ):
+            mock_response = Mock()
+            mock_response.headers = {"Content-Type": "image/jpeg"}
+            mock_response.content = b"imgdata"
+            mock_get.return_value = mock_response
+            mock_save.return_value = f"sourcing/images/{item.id}.jpg"
+
+            result = self.service.download_pool_images(pool, include_failed=True)
+
+        self.assertEqual(result["done"], 1)
+
+    def test_download_pool_images_does_not_process_failed_items_by_default(self):
+        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
+        item = SourcingPoolItemFactory(
+            pool=pool,
+            company=self.company,
+            category=self.category,
+            product_name="Failed Item",
+            variant_name="Var",
+            image_url="http://cdn.example.com/img.jpg",
+            image_download_status=SourcingPoolItem.ImageDownloadStatus.FAILED,
+        )
+
+        with patch("apps.purchasing.services.sourcing_service.http_requests.get") as mock_get:
+            result = self.service.download_pool_images(pool)
+
+        mock_get.assert_not_called()
+        item.refresh_from_db()
+        self.assertEqual(item.image_download_status, SourcingPoolItem.ImageDownloadStatus.FAILED)
+        self.assertEqual(result, {"done": 0, "failed": 0, "skipped": 0})
+
+    def test_download_pool_images_returns_correct_counts_for_mixed_batch(self):
+        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
+        SourcingPoolItemFactory(
+            pool=pool,
+            company=self.company,
+            category=self.category,
+            product_name="Succeed",
+            variant_name="Var",
+            image_url="http://cdn.example.com/success.jpg",
+        )
+        SourcingPoolItemFactory(
+            pool=pool,
+            company=self.company,
+            category=self.category,
+            product_name="Timeout",
+            variant_name="Var",
+            image_url="http://cdn.example.com/timeout.jpg",
+        )
+        SourcingPoolItemFactory(
+            pool=pool,
+            company=self.company,
+            category=self.category,
+            product_name="No URL",
+            variant_name="Var",
+            image_url=None,
+        )
+
+        with (
+            patch("apps.purchasing.services.sourcing_service.http_requests.get") as mock_get,
+            patch("apps.purchasing.services.sourcing_service.default_storage.save") as mock_save,
+        ):
+
+            def side_effect(url, timeout=10):
+                mock = Mock()
+                if "timeout" in url:
+                    from requests.exceptions import Timeout
+
+                    raise Timeout()
+                mock.headers = {"Content-Type": "image/jpeg"}
+                mock.content = b"imgdata"
+                mock.raise_for_status.return_value = None
+                return mock
+
+            mock_get.side_effect = side_effect
+            mock_save.return_value = "sourcing/images/dummy.jpg"
+
+            result = self.service.download_pool_images(pool)
+
+        self.assertEqual(result, {"done": 1, "failed": 1, "skipped": 1})
+
+    def test_download_pool_images_marks_failed_on_network_error(self):
+        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
+        item = SourcingPoolItemFactory(
+            pool=pool,
+            company=self.company,
+            category=self.category,
+            image_url="http://cdn.example.com/img.jpg",
+        )
+
+        with (
+            patch("apps.purchasing.services.sourcing_service.http_requests.get") as mock_get,
+        ):
+            from requests.exceptions import ConnectionError
+
+            mock_get.side_effect = ConnectionError("Network down")
+
+            result = self.service.download_pool_images(pool)
+
+        item.refresh_from_db()
+        self.assertEqual(item.image_download_status, SourcingPoolItem.ImageDownloadStatus.FAILED)
+        self.assertEqual(result["failed"], 1)
+
+    def test_download_pool_images_marks_failed_on_http_error(self):
+        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
+        item = SourcingPoolItemFactory(
+            pool=pool,
+            company=self.company,
+            category=self.category,
+            image_url="http://cdn.example.com/img.jpg",
+        )
+
+        with (
+            patch("apps.purchasing.services.sourcing_service.http_requests.get") as mock_get,
+        ):
+            mock_response = Mock()
+            mock_response.headers = {"Content-Type": "image/jpeg"}
+            mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError(
+                "403 Client Error"
+            )
+            mock_get.return_value = mock_response
+
+            result = self.service.download_pool_images(pool)
+
+        item.refresh_from_db()
+        self.assertEqual(item.image_download_status, SourcingPoolItem.ImageDownloadStatus.FAILED)
+        self.assertEqual(result["failed"], 1)
+
+    def test_download_pool_images_continues_after_single_item_failure(self):
+        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
+        items = []
+        for i in range(3):
+            items.append(
+                SourcingPoolItemFactory(
+                    pool=pool,
+                    company=self.company,
+                    category=self.category,
+                    product_name=f"Item {i}",
+                    variant_name="Var",
+                    image_url=f"http://cdn.example.com/{i}.jpg",
+                )
+            )
+
+        with (
+            patch("apps.purchasing.services.sourcing_service.http_requests.get") as mock_get,
+            patch("apps.purchasing.services.sourcing_service.default_storage.save") as mock_save,
+        ):
+            call_count = [0]
+
+            def side_effect(url, timeout=10):
+                call_count[0] += 1
+                mock = Mock()
+                if call_count[0] == 2:
+                    from requests.exceptions import Timeout
+
+                    raise Timeout()
+                mock.headers = {"Content-Type": "image/jpeg"}
+                mock.content = b"imgdata"
+                mock.raise_for_status.return_value = None
+                return mock
+
+            mock_get.side_effect = side_effect
+            mock_save.return_value = "sourcing/images/dummy.jpg"
+
+            result = self.service.download_pool_images(pool)
+
+        self.assertEqual(result["done"], 2)
+        self.assertEqual(result["failed"], 1)
+        for item in items:
+            item.refresh_from_db()
+        statuses = [item.image_download_status for item in items]
+        self.assertEqual(
+            statuses.count(SourcingPoolItem.ImageDownloadStatus.DONE), 2
+        )
+        self.assertEqual(
+            statuses.count(SourcingPoolItem.ImageDownloadStatus.FAILED), 1
+        )
+
+    def test_download_pool_images_uses_jpg_fallback_for_unknown_content_type(self):
+        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
+        item = SourcingPoolItemFactory(
+            pool=pool,
+            company=self.company,
+            category=self.category,
+            image_url="http://cdn.example.com/img.xyz",
+        )
+
+        with (
+            patch("apps.purchasing.services.sourcing_service.http_requests.get") as mock_get,
+            patch("apps.purchasing.services.sourcing_service.default_storage.save") as mock_save,
+        ):
+            mock_response = Mock()
+            mock_response.headers = {"Content-Type": "application/octet-stream"}
+            mock_response.content = b"imagedata"
+            mock_get.return_value = mock_response
+            mock_save.return_value = f"sourcing/images/{item.id}.jpg"
+
+            self.service.download_pool_images(pool)
+
+            args, _ = mock_save.call_args
+            self.assertTrue(args[0].endswith(".jpg"))
+
+    # --- Download images endpoint tests ---
+
+    def test_download_images_endpoint_returns_counts(self):
+        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
+        self.client = APIClient()
+        from core.models import UserProfile
+
+        user = User.objects.create_user(
+            username="download_img1", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        self.client.force_authenticate(user=user)
+
+        with patch(
+            "apps.purchasing.services.sourcing_service.SourcingService.download_pool_images",
+            return_value={"done": 3, "failed": 1, "skipped": 0},
+        ):
+            response = self.client.post(
+                "/sourcing-pool/download-images/",
+                {"pool_id": str(pool.id)},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {"done": 3, "failed": 1, "skipped": 0})
+
+    def test_download_images_endpoint_returns_400_when_pool_id_missing(self):
+        self.client = APIClient()
+        from core.models import UserProfile
+
+        user = User.objects.create_user(
+            username="download_img2", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        self.client.force_authenticate(user=user)
+
+        response = self.client.post("/sourcing-pool/download-images/", {}, format="json")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("pool_id is required", str(response.data))
+
+    def test_download_images_endpoint_returns_404_when_pool_not_found(self):
+        self.client = APIClient()
+        from core.models import UserProfile
+
+        user = User.objects.create_user(
+            username="download_img3", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        self.client.force_authenticate(user=user)
+
+        response = self.client.post(
+            "/sourcing-pool/download-images/",
+            {"pool_id": "00000000000000000000000000"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("Pool not found", str(response.data))
+
+    def test_download_images_endpoint_scoped_to_company(self):
+        company_b = CompanyFactory()
+        supplier_b = SupplierFactory(company=company_b)
+        pool_b = SourcingPoolFactory(company=company_b, supplier=supplier_b)
+
+        self.client = APIClient()
+        from core.models import UserProfile
+
+        user = User.objects.create_user(
+            username="download_img4", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        self.client.force_authenticate(user=user)
+
+        response = self.client.post(
+            "/sourcing-pool/download-images/",
+            {"pool_id": str(pool_b.id)},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("Pool not found", str(response.data))
