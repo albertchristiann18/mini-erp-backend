@@ -1,7 +1,20 @@
+from decimal import Decimal
+
 import factory
 
-from apps.inventory.factories import CompanyFactory, ProductVariantFactory, WarehouseFactory
-from apps.purchasing.models import PurchaseOrder, PurchaseOrderDetail
+from apps.inventory.factories import (
+    CategoryFactory,
+    CompanyFactory,
+    ProductVariantFactory,
+    SupplierFactory,
+    WarehouseFactory,
+)
+from apps.purchasing.models import (
+    PurchaseOrder,
+    PurchaseOrderDetail,
+    SourcingPool,
+    SourcingPoolItem,
+)
 
 
 class PurchaseOrderFactory(factory.django.DjangoModelFactory):
@@ -31,3 +44,28 @@ class PurchaseOrderDetailFactory(factory.django.DjangoModelFactory):
     ordered_qty = 50
     unit_price_base = 10000
     total_price_base = 500000
+
+
+class SourcingPoolFactory(factory.django.DjangoModelFactory):
+    """Factory for creating test SourcingPool instances"""
+
+    class Meta:
+        model = SourcingPool
+
+    company = factory.SubFactory(CompanyFactory)  # type: ignore[no-untyped-call]
+    supplier = factory.SubFactory(SupplierFactory)  # type: ignore[no-untyped-call]
+
+
+class SourcingPoolItemFactory(factory.django.DjangoModelFactory):
+    """Factory for creating test SourcingPoolItem instances"""
+
+    class Meta:
+        model = SourcingPoolItem
+
+    pool = factory.SubFactory(SourcingPoolFactory)  # type: ignore[no-untyped-call]
+    company = factory.SelfAttribute("pool.company")  # type: ignore[no-untyped-call]
+    product_name = factory.Sequence(lambda n: f"Product-{n}")  # type: ignore[no-untyped-call]
+    variant_name = "Default"
+    category = factory.SubFactory(CategoryFactory)  # type: ignore[no-untyped-call]
+    unit_price = Decimal("10.000")
+    supplier_link = ""

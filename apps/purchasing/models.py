@@ -299,3 +299,73 @@ class PurchaseOrderStatusHistory(DefaultModel):
 
     def __str__(self) -> str:
         return f"{self.purchase_order.purchase_order_number}: {self.from_status} → {self.to_status}"
+
+
+class SourcingPool(DefaultModel):
+    """One persistent pool per supplier per company. Auto-created on first import."""
+
+    id = ULIDField(
+        primary_key=True, default=generate_ulid, editable=False, db_column="sourcing_pool_id"
+    )
+    supplier = models.ForeignKey(
+        "inventory.Supplier",
+        on_delete=models.CASCADE,
+        related_name="sourcing_pools",
+    )
+
+    class Meta:
+        unique_together = [("company", "supplier")]
+
+    def __str__(self) -> str:
+        return f"Pool — {self.supplier.name} ({self.company.name})"
+
+
+class SourcingPoolItem(DefaultModel):
+    """
+    One candidate item (one variant) in a supplier's sourcing pool.
+
+    image_download_status lifecycle:
+      PENDING — default for all items. Either no image_url yet, or URL not yet downloaded.
+                Phase 2 async downloader skips items where image_url is None.
+      DONE    — image file successfully downloaded to R2 (set by Phase 2).
+      FAILED  — download attempted but failed (set by Phase 2).
+    """
+
+    class ImageDownloadStatus(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        DONE = "DONE", "Done"
+        FAILED = "FAILED", "Failed"
+
+    id = ULIDField(
+        primary_key=True, default=generate_ulid, editable=False, db_column="sourcing_pool_item_id"
+    )
+    pool = models.ForeignKey(SourcingPool, on_delete=models.CASCADE, related_name="items")
+
+    product_name = models.CharField(max_length=255)
+    variant_name = models.CharField(max_length=255)
+    category = models.ForeignKey(
+        "inventory.Category",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sourcing_items",
+    )
+    unit_price = models.DecimalField(max_digits=15, decimal_places=3)
+    discounted_price = models.DecimalField(max_digits=15, decimal_places=3, null=True, blank=True)
+    qty_suggested = models.IntegerField(null=True, blank=True)
+    supplier_link = models.URLField(max_length=500, blank=True, null=True)
+    image_url = models.URLField(max_length=1000, blank=True, null=True)
+    image_file = models.FileField(upload_to="sourcing/images/", null=True, blank=True)
+    image_download_status = models.CharField(
+        max_length=20,
+        choices=ImageDownloadStatus.choices,
+        default=ImageDownloadStatus.PENDING,
+    )
+    notes = models.TextField(blank=True, null=True)
+    times_ordered = models.IntegerField(default=0)
+
+    class Meta:
+        unique_together = [("pool", "product_name", "variant_name")]
+
+    def __str__(self) -> str:
+        return f"{self.pool.supplier.name} — {self.product_name} / {self.variant_name}"

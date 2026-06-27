@@ -1,9 +1,11 @@
+import io
 from datetime import date, timedelta
 from decimal import Decimal
 from unittest.mock import patch
 from uuid import uuid4
 
 import fitz
+import openpyxl
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
@@ -29,8 +31,15 @@ from apps.inventory.services.inventory_service import InventoryService
 from apps.purchasing.factories import (
     PurchaseOrderDetailFactory,
     PurchaseOrderFactory,
+    SourcingPoolFactory,
+    SourcingPoolItemFactory,
 )
-from apps.purchasing.models import PurchaseOrder, PurchaseOrderStatusHistory
+from apps.purchasing.models import (
+    PurchaseOrder,
+    PurchaseOrderStatusHistory,
+    SourcingPool,
+    SourcingPoolItem,
+)
 from apps.purchasing.serializers import PurchaseOrderReadSerializer, PurchaseOrderUpdateSerializer
 from apps.purchasing.services.purchasing_service import PurchaseOrderService
 from core.factories import WarehouseFactory
@@ -4274,3 +4283,737 @@ class TestPerCompanyPONumberSequence(TestCase):
         po.refresh_from_db()
 
         self.assertRegex(po.purchase_order_number, rf"^PO-{current_year}-001$")
+
+
+class TestSourcingService(TestCase):
+    """Tests for SourcingService (SourcingPool + SourcingPoolItem)."""
+
+    def setUp(self):
+        from apps.purchasing.services.sourcing_service import SourcingService
+
+        self.company = CompanyFactory()
+        self.supplier = SupplierFactory(company=self.company)
+        self.category = CategoryFactory(
+            company=self.company, category_code="TEST", name="Test Category"
+        )
+        self.service = SourcingService()
+
+    def _make_row(self, **overrides) -> dict:
+        row = {
+            "row": 2,
+            "product_name": "Product",
+            "variant_name": "Variant",
+            "category_code": self.category.category_code,
+            "category_id": str(self.category.id),
+            "unit_price": "10.000",
+            "discounted_price": None,
+            "qty_suggested": None,
+            "supplier_link": None,
+            "image_url": None,
+            "notes": None,
+        }
+        row.update(overrides)
+        return row
+
+    def _build_workbook(self, rows: list[list | tuple]) -> bytes:
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Items"
+        ws.append(
+            [
+                "product_name",
+                "variant_name",
+                "category_code",
+                "unit_price",
+                "discounted_price",
+                "qty_suggested",
+                "supplier_link",
+                "image_url",
+                "notes",
+            ]
+        )
+        for r in rows:
+            ws.append(r)
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return buf.read()
+
+    # --- Happy path ---
+
+    def test_pool_auto_created_for_supplier_on_first_import(self):
+        self.service.import_rows(
+            company=self.company,
+            supplier=self.supplier,
+            rows=[self._make_row()],
+        )
+        self.assertTrue(
+            SourcingPool.objects.filter(company=self.company, supplier=self.supplier).exists()
+        )
+
+    def test_pool_unique_per_supplier_per_company(self):
+        self.service.import_rows(
+            company=self.company, supplier=self.supplier, rows=[self._make_row()]
+        )
+        self.service.import_rows(
+            company=self.company, supplier=self.supplier, rows=[self._make_row()]
+        )
+        self.assertEqual(
+            SourcingPool.objects.filter(company=self.company, supplier=self.supplier).count(), 1
+        )
+
+    def test_import_creates_new_items_in_pool(self):
+        rows = [
+            self._make_row(product_name="A", variant_name="V1"),
+            self._make_row(product_name="B", variant_name="V1"),
+            self._make_row(product_name="C", variant_name="V1"),
+        ]
+        result = self.service.import_rows(company=self.company, supplier=self.supplier, rows=rows)
+        self.assertEqual(result["created"], 3)
+        pool = SourcingPool.objects.get(company=self.company, supplier=self.supplier)
+        self.assertEqual(pool.items.count(), 3)
+
+    def test_build_template_workbook_has_items_and_categories_sheets(self):
+        CategoryFactory(company=self.company, category_code="CAT1", name="Category One")
+        CategoryFactory(company=self.company, category_code="CAT2", name="Category Two")
+        wb = self.service.build_template_workbook(company=self.company)
+        self.assertIn("Items", wb.sheetnames)
+        self.assertIn("Categories", wb.sheetnames)
+        ws = wb["Items"]
+        headers = [str(c.value).strip().lower() for c in next(ws.iter_rows(min_row=1, max_row=1))]
+        for col in ["product_name", "variant_name", "category_code", "unit_price"]:
+            self.assertIn(col, headers)
+        ws_cats = wb["Categories"]
+        cat_rows = list(ws_cats.iter_rows(values_only=True))
+        self.assertEqual(len(cat_rows), 4)  # header + 3 categories (TEST + CAT1 + CAT2)
+        self.assertIn(("CAT1", "Category One"), cat_rows[1:])
+        self.assertIn(("CAT2", "Category Two"), cat_rows[1:])
+
+    def test_parse_excel_preview_returns_valid_rows_for_correct_input(self):
+        file_bytes = self._build_workbook(
+            [
+                ["Prod A", "Var A", self.category.category_code, "10.000"],
+                ["Prod B", "Var B", self.category.category_code, "20.000"],
+                ["Prod C", "Var C", self.category.category_code, "30.000"],
+            ]
+        )
+        result = self.service.parse_excel_preview(file_bytes, company=self.company)
+        self.assertEqual(len(result["valid"]), 3)
+        self.assertEqual(len(result["errors"]), 0)
+        for row in result["valid"]:
+            self.assertIn("category_name", row)
+            self.assertIsInstance(row["category_name"], str)
+            self.assertGreater(len(row["category_name"]), 0)
+
+    def test_list_items_returns_empty_when_no_pool_exists(self):
+        other_supplier = SupplierFactory(company=self.company)
+        self.client = APIClient()
+        from core.models import UserProfile
+
+        user = User.objects.create_user(
+            username="sourcing_test", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        self.client.force_authenticate(user=user)
+        response = self.client.get(f"/sourcing-pool/items/?supplier_id={other_supplier.id}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {"pool_id": None, "items": []})
+
+    # --- Business rules ---
+
+    def test_import_merge_updates_existing_item_on_same_name_variant(self):
+        self.service.import_rows(
+            company=self.company,
+            supplier=self.supplier,
+            rows=[
+                self._make_row(product_name="Earbuds", variant_name="Black", unit_price="45.000")
+            ],
+        )
+        self.service.import_rows(
+            company=self.company,
+            supplier=self.supplier,
+            rows=[
+                self._make_row(product_name="Earbuds", variant_name="Black", unit_price="50.000")
+            ],
+        )
+        pool = SourcingPool.objects.get(company=self.company, supplier=self.supplier)
+        self.assertEqual(pool.items.count(), 1)
+        self.assertEqual(pool.items.first().unit_price, Decimal("50.000"))
+
+    def test_import_merge_case_insensitive_match(self):
+        self.service.import_rows(
+            company=self.company,
+            supplier=self.supplier,
+            rows=[self._make_row(product_name="Earbuds", variant_name="Black")],
+        )
+        self.service.import_rows(
+            company=self.company,
+            supplier=self.supplier,
+            rows=[self._make_row(product_name="EARBUDS", variant_name="BLACK")],
+        )
+        pool = SourcingPool.objects.get(company=self.company, supplier=self.supplier)
+        self.assertEqual(pool.items.count(), 1)
+        self.assertEqual(pool.items.first().product_name, "EARBUDS")
+
+    def test_import_deduplicates_intra_batch_case_insensitive_rows(self):
+        result = self.service.import_rows(
+            company=self.company,
+            supplier=self.supplier,
+            rows=[
+                self._make_row(product_name="Widget", variant_name="Red"),
+                self._make_row(product_name="WIDGET", variant_name="RED"),
+            ],
+        )
+        self.assertEqual(result["created"], 1)
+        self.assertEqual(result["updated"], 0)
+        pool = SourcingPool.objects.get(company=self.company, supplier=self.supplier)
+        self.assertEqual(pool.items.count(), 1)
+        self.assertEqual(pool.items.first().product_name, "WIDGET")
+
+    def test_import_resets_image_status_when_image_url_changes(self):
+        self.service.import_rows(
+            company=self.company,
+            supplier=self.supplier,
+            rows=[self._make_row(image_url="http://a.com/1.jpg")],
+        )
+        pool = SourcingPool.objects.get(company=self.company, supplier=self.supplier)
+        item = pool.items.first()
+        item.image_download_status = SourcingPoolItem.ImageDownloadStatus.DONE
+        item.save()
+        self.service.import_rows(
+            company=self.company,
+            supplier=self.supplier,
+            rows=[self._make_row(image_url="http://a.com/2.jpg")],
+        )
+        item.refresh_from_db()
+        self.assertEqual(item.image_download_status, SourcingPoolItem.ImageDownloadStatus.PENDING)
+        self.assertEqual(item.image_url, "http://a.com/2.jpg")
+
+    def test_import_does_not_reset_image_status_when_image_url_unchanged(self):
+        self.service.import_rows(
+            company=self.company,
+            supplier=self.supplier,
+            rows=[self._make_row(image_url="http://a.com/1.jpg")],
+        )
+        pool = SourcingPool.objects.get(company=self.company, supplier=self.supplier)
+        item = pool.items.first()
+        item.image_download_status = SourcingPoolItem.ImageDownloadStatus.DONE
+        item.save()
+        self.service.import_rows(
+            company=self.company,
+            supplier=self.supplier,
+            rows=[self._make_row(image_url="http://a.com/1.jpg")],
+        )
+        item.refresh_from_db()
+        self.assertEqual(item.image_download_status, SourcingPoolItem.ImageDownloadStatus.DONE)
+
+    def test_import_new_item_with_no_image_url_gets_pending_status(self):
+        self.service.import_rows(
+            company=self.company,
+            supplier=self.supplier,
+            rows=[self._make_row(image_url=None)],
+        )
+        pool = SourcingPool.objects.get(company=self.company, supplier=self.supplier)
+        item = pool.items.first()
+        self.assertEqual(item.image_download_status, SourcingPoolItem.ImageDownloadStatus.PENDING)
+        self.assertIsNone(item.image_url)
+
+    # --- Edge cases ---
+
+    def test_parse_excel_preview_flags_missing_required_column(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Items"
+        ws.append(["product_name", "variant_name", "category_code"])
+        ws.append(["Prod", "Var", self.category.category_code])
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        result = self.service.parse_excel_preview(buf.read(), company=self.company)
+        self.assertEqual(len(result["valid"]), 0)
+        self.assertTrue(any("unit_price" in e["message"] for e in result["errors"]))
+
+    def test_parse_excel_preview_flags_invalid_category_code(self):
+        file_bytes = self._build_workbook(
+            [
+                ["Prod", "Var", "DOES-NOT-EXIST", "10.000"],
+            ]
+        )
+        result = self.service.parse_excel_preview(file_bytes, company=self.company)
+        self.assertEqual(len(result["valid"]), 0)
+        self.assertTrue(any("DOES-NOT-EXIST" in e["message"] for e in result["errors"]))
+
+    def test_parse_excel_preview_flags_invalid_unit_price_non_numeric(self):
+        file_bytes = self._build_workbook(
+            [
+                ["Prod", "Var", self.category.category_code, "abc"],
+            ]
+        )
+        result = self.service.parse_excel_preview(file_bytes, company=self.company)
+        self.assertEqual(len(result["valid"]), 0)
+        self.assertTrue(any("unit_price" in e["message"] for e in result["errors"]))
+
+    def test_parse_excel_preview_rejects_zero_unit_price(self):
+        file_bytes = self._build_workbook(
+            [
+                ["Prod", "Var", self.category.category_code, "0"],
+            ]
+        )
+        result = self.service.parse_excel_preview(file_bytes, company=self.company)
+        self.assertEqual(len(result["valid"]), 0)
+        self.assertTrue(any("greater than zero" in e["message"] for e in result["errors"]))
+
+    def test_parse_excel_preview_rejects_negative_unit_price(self):
+        file_bytes = self._build_workbook(
+            [
+                ["Prod", "Var", self.category.category_code, "-5"],
+            ]
+        )
+        result = self.service.parse_excel_preview(file_bytes, company=self.company)
+        self.assertEqual(len(result["valid"]), 0)
+        self.assertTrue(any("greater than zero" in e["message"] for e in result["errors"]))
+
+    def test_parse_excel_preview_rejects_negative_discounted_price(self):
+        file_bytes = self._build_workbook(
+            [
+                ["Prod", "Var", self.category.category_code, "10.000", "-1"],
+            ]
+        )
+        result = self.service.parse_excel_preview(file_bytes, company=self.company)
+        self.assertEqual(len(result["valid"]), 0)
+        self.assertTrue(any("discounted_price" in e["message"] for e in result["errors"]))
+
+    def test_parse_excel_preview_rejects_negative_qty_suggested(self):
+        file_bytes = self._build_workbook(
+            [
+                ["Prod", "Var", self.category.category_code, "10.000", "", "-3"],
+            ]
+        )
+        result = self.service.parse_excel_preview(file_bytes, company=self.company)
+        self.assertEqual(len(result["valid"]), 0)
+        self.assertTrue(any("qty_suggested" in e["message"] for e in result["errors"]))
+
+    def test_parse_excel_preview_accepts_zero_qty_suggested(self):
+        file_bytes = self._build_workbook(
+            [
+                ["Prod", "Var", self.category.category_code, "10.000", "", "0"],
+            ]
+        )
+        result = self.service.parse_excel_preview(file_bytes, company=self.company)
+        self.assertEqual(len(result["valid"]), 1)
+        self.assertEqual(result["valid"][0]["qty_suggested"], 0)
+
+    def test_parse_excel_preview_accepts_float_formatted_integer_qty(self):
+        file_bytes = self._build_workbook(
+            [
+                ["Prod", "Var", self.category.category_code, "10.000", "", 5.0],
+            ]
+        )
+        result = self.service.parse_excel_preview(file_bytes, company=self.company)
+        self.assertEqual(len(result["valid"]), 1)
+        self.assertEqual(result["valid"][0]["qty_suggested"], 5)
+
+    def test_parse_excel_preview_skips_blank_rows(self):
+        file_bytes = self._build_workbook(
+            [
+                ["Prod A", "Var A", self.category.category_code, "10.000"],
+                [None, None, None, None],
+                ["Prod B", "Var B", self.category.category_code, "20.000"],
+            ]
+        )
+        result = self.service.parse_excel_preview(file_bytes, company=self.company)
+        self.assertEqual(len(result["valid"]), 2)
+        self.assertEqual(len(result["errors"]), 0)
+
+    def test_import_raises_value_error_on_invalid_category_id(self):
+        with self.assertRaises(ValueError):
+            self.service.import_rows(
+                company=self.company,
+                supplier=self.supplier,
+                rows=[self._make_row(category_id="00000000000000000000000000")],
+            )
+
+    def test_import_raises_value_error_on_missing_product_name_key(self):
+        row = self._make_row()
+        del row["product_name"]
+        with self.assertRaises(ValueError):
+            self.service.import_rows(
+                company=self.company,
+                supplier=self.supplier,
+                rows=[row],
+            )
+
+    def test_list_items_search_filters_on_product_name(self):
+        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
+        SourcingPoolItemFactory(
+            pool=pool,
+            company=self.company,
+            product_name="Earbuds Black",
+            variant_name="Default",
+            category=self.category,
+        )
+        SourcingPoolItemFactory(
+            pool=pool,
+            company=self.company,
+            product_name="Phone Case Blue",
+            variant_name="Default",
+            category=self.category,
+        )
+        SourcingPoolItemFactory(
+            pool=pool,
+            company=self.company,
+            product_name="Wallet Red",
+            variant_name="Default",
+            category=self.category,
+        )
+        self.client = APIClient()
+        from core.models import UserProfile
+
+        user = User.objects.create_user(
+            username="sourcing_search1", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        self.client.force_authenticate(user=user)
+        response = self.client.get(
+            f"/sourcing-pool/items/?supplier_id={self.supplier.id}&search=ear"
+        )
+        self.assertEqual(response.status_code, 200)
+        items = response.data["results"]
+        names = [i["product_name"] for i in items]
+        self.assertIn("Earbuds Black", names)
+        self.assertNotIn("Phone Case Blue", names)
+        self.assertNotIn("Wallet Red", names)
+
+    def test_list_items_search_filters_on_variant_name(self):
+        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
+        SourcingPoolItemFactory(
+            pool=pool,
+            company=self.company,
+            product_name="Case",
+            variant_name="Black",
+            category=self.category,
+        )
+        SourcingPoolItemFactory(
+            pool=pool,
+            company=self.company,
+            product_name="Wallet",
+            variant_name="Red",
+            category=self.category,
+        )
+        self.client = APIClient()
+        from core.models import UserProfile
+
+        user = User.objects.create_user(
+            username="sourcing_search2", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        self.client.force_authenticate(user=user)
+        response = self.client.get(
+            f"/sourcing-pool/items/?supplier_id={self.supplier.id}&search=black"
+        )
+        self.assertEqual(response.status_code, 200)
+        items = response.data["results"]
+        names = [i["product_name"] for i in items]
+        self.assertIn("Case", names)
+        self.assertNotIn("Wallet", names)
+
+    # --- Failure paths ---
+
+    def test_import_returns_400_when_rows_list_is_empty(self):
+        self.client = APIClient()
+        from core.models import UserProfile
+
+        user = User.objects.create_user(
+            username="sourcing_empty", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        self.client.force_authenticate(user=user)
+        response = self.client.post(
+            "/sourcing-pool/import/",
+            {"supplier_id": str(self.supplier.id), "rows": []},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("rows must be a non-empty list", str(response.data))
+
+    def test_import_returns_404_when_supplier_not_found(self):
+        self.client = APIClient()
+        from core.models import UserProfile
+
+        user = User.objects.create_user(username="sourcing_404", password="password", is_staff=True)
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        self.client.force_authenticate(user=user)
+        response = self.client.post(
+            "/sourcing-pool/import/",
+            {"supplier_id": "00000000000000000000000000", "rows": [self._make_row()]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_image_view_returns_404_when_item_not_found(self):
+        self.client = APIClient()
+        from core.models import UserProfile
+
+        user = User.objects.create_user(
+            username="sourcing_img1", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        self.client.force_authenticate(user=user)
+        response = self.client.get("/sourcing-pool/items/00000000000000000000000000/image/")
+        self.assertEqual(response.status_code, 404)
+
+    def test_image_view_returns_404_when_no_image_file(self):
+        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
+        item = SourcingPoolItemFactory(
+            pool=pool,
+            company=self.company,
+            category=self.category,
+            image_file=None,
+        )
+        self.client = APIClient()
+        from core.models import UserProfile
+
+        user = User.objects.create_user(
+            username="sourcing_img2", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        self.client.force_authenticate(user=user)
+        response = self.client.get(f"/sourcing-pool/items/{item.id}/image/")
+        self.assertEqual(response.status_code, 404)
+
+    def test_image_view_scoped_to_company(self):
+        company_b = CompanyFactory()
+        supplier_b = SupplierFactory(company=company_b)
+        pool_b = SourcingPoolFactory(company=company_b, supplier=supplier_b)
+        item_b = SourcingPoolItemFactory(
+            pool=pool_b,
+            company=company_b,
+            category=self.category,
+        )
+        self.client = APIClient()
+        from core.models import UserProfile
+
+        user = User.objects.create_user(
+            username="sourcing_img3", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        self.client.force_authenticate(user=user)
+        response = self.client.get(f"/sourcing-pool/items/{item_b.id}/image/")
+        self.assertEqual(response.status_code, 404)
+
+    # --- Scoping ---
+
+    def test_list_items_scoped_to_company(self):
+        company_b = CompanyFactory()
+        supplier_b = SupplierFactory(company=company_b)
+        pool_a = SourcingPoolFactory(company=self.company, supplier=self.supplier)
+        SourcingPoolItemFactory(
+            pool=pool_a,
+            company=self.company,
+            product_name="Item A",
+            variant_name="V1",
+            category=self.category,
+        )
+        pool_b = SourcingPoolFactory(company=company_b, supplier=supplier_b)
+        SourcingPoolItemFactory(
+            pool=pool_b,
+            company=company_b,
+            product_name="Item B",
+            variant_name="V1",
+            category=self.category,
+        )
+        self.client = APIClient()
+        from core.models import UserProfile
+
+        user = User.objects.create_user(
+            username="sourcing_scope", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        self.client.force_authenticate(user=user)
+        response = self.client.get(f"/sourcing-pool/items/?supplier_id={self.supplier.id}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data["results"]), 1)
+        self.assertEqual(response.data["results"][0]["product_name"], "Item A")
+
+    # --- FIX 4: API test for POST /sourcing-pool/preview/ ---
+
+    def test_preview_endpoint_returns_valid_and_errors(self):
+        file_bytes = self._build_workbook(
+            [
+                ["Prod A", "Var A", self.category.category_code, "10.000"],
+                ["Prod B", "Var B", self.category.category_code, "20.000"],
+                ["Prod C", "Var C", "BAD-CODE", "30.000"],
+            ]
+        )
+        self.client = APIClient()
+        from core.models import UserProfile
+
+        user = User.objects.create_user(username="preview_test", password="password", is_staff=True)
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        self.client.force_authenticate(user=user)
+        response = self.client.post(
+            "/sourcing-pool/preview/",
+            {
+                "file": SimpleUploadedFile(
+                    "test.xlsx",
+                    file_bytes,
+                    content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data["valid"]), 2)
+        self.assertEqual(len(response.data["errors"]), 1)
+
+    def test_preview_endpoint_returns_400_when_no_file(self):
+        self.client = APIClient()
+        from core.models import UserProfile
+
+        user = User.objects.create_user(
+            username="preview_no_file", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        self.client.force_authenticate(user=user)
+        response = self.client.post("/sourcing-pool/preview/", {}, format="multipart")
+        self.assertEqual(response.status_code, 400)
+
+    # --- FIX 5: API test for GET /sourcing-pool/template/ ---
+
+    def test_template_endpoint_returns_xlsx(self):
+        self.client = APIClient()
+        from core.models import UserProfile
+
+        user = User.objects.create_user(
+            username="template_test", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        self.client.force_authenticate(user=user)
+        response = self.client.get("/sourcing-pool/template/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response["Content-Type"],
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.assertIn("sourcing_template.xlsx", response["Content-Disposition"])
+
+    # --- FIX 6: Test that import response includes pool_id ---
+
+    def test_import_response_includes_pool_id(self):
+        self.client = APIClient()
+        from core.models import UserProfile
+
+        user = User.objects.create_user(
+            username="import_poolid", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        self.client.force_authenticate(user=user)
+        response = self.client.post(
+            "/sourcing-pool/import/",
+            {"supplier_id": str(self.supplier.id), "rows": [self._make_row()]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("pool_id", response.data)
+        self.assertIsInstance(response.data["pool_id"], str)
+        self.assertGreater(len(response.data["pool_id"]), 0)
+
+    # --- FIX 7: discounted_price < unit_price enforcement ---
+
+    def test_parse_excel_preview_rejects_discounted_price_equal_to_unit_price(self):
+        file_bytes = self._build_workbook(
+            [
+                ["Prod", "Var", self.category.category_code, "10.000", "10.000"],
+            ]
+        )
+        result = self.service.parse_excel_preview(file_bytes, company=self.company)
+        self.assertEqual(len(result["valid"]), 0)
+        self.assertTrue(
+            any(
+                "discounted_price must be less than unit_price" in e["message"]
+                for e in result["errors"]
+            )
+        )
+
+    def test_parse_excel_preview_rejects_discounted_price_greater_than_unit_price(self):
+        file_bytes = self._build_workbook(
+            [
+                ["Prod", "Var", self.category.category_code, "10.000", "15.000"],
+            ]
+        )
+        result = self.service.parse_excel_preview(file_bytes, company=self.company)
+        self.assertEqual(len(result["valid"]), 0)
+        self.assertTrue(
+            any(
+                "discounted_price must be less than unit_price" in e["message"]
+                for e in result["errors"]
+            )
+        )
+
+    def test_parse_excel_preview_accepts_valid_discounted_price(self):
+        file_bytes = self._build_workbook(
+            [
+                ["Prod", "Var", self.category.category_code, "10.000", "8.000"],
+            ]
+        )
+        result = self.service.parse_excel_preview(file_bytes, company=self.company)
+        self.assertEqual(len(result["valid"]), 1)
+        self.assertEqual(len(result["errors"]), 0)
+
+    # --- FIX 1: Row count cap ---
+
+    def test_parse_excel_preview_rejects_file_exceeding_row_limit(self):
+        data_rows = [[f"Prod{i}", f"Var{i}", self.category.category_code, "10.000"] for i in range(5001)]
+        file_bytes = self._build_workbook(data_rows)
+        result = self.service.parse_excel_preview(file_bytes, company=self.company)
+        self.assertEqual(len(result["valid"]), 0)
+        self.assertTrue(any("row limit" in e["message"].lower() for e in result["errors"]))
+
+    # --- FIX 2: Clear image_file when image_url changes ---
+
+    def test_import_clears_image_file_when_image_url_changes(self):
+        self.service.import_rows(
+            company=self.company,
+            supplier=self.supplier,
+            rows=[self._make_row(image_url="http://a.com/old.jpg")],
+        )
+        pool = SourcingPool.objects.get(company=self.company, supplier=self.supplier)
+        item = pool.items.first()
+        item.image_file = "sourcing/images/old.jpg"
+        item.image_download_status = SourcingPoolItem.ImageDownloadStatus.DONE
+        item.save()
+        self.service.import_rows(
+            company=self.company,
+            supplier=self.supplier,
+            rows=[self._make_row(image_url="http://a.com/new.jpg")],
+        )
+        item.refresh_from_db()
+        self.assertFalse(item.image_file)
+        self.assertEqual(item.image_download_status, SourcingPoolItem.ImageDownloadStatus.PENDING)
+
+    # --- FIX 3: Pagination ---
+
+    def test_list_items_returns_paginated_response(self):
+        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
+        for i in range(55):
+            SourcingPoolItemFactory(
+                pool=pool,
+                company=self.company,
+                product_name=f"Product {i}",
+                variant_name="Default",
+                category=self.category,
+            )
+        self.client = APIClient()
+        from core.models import UserProfile
+
+        user = User.objects.create_user(
+            username="sourcing_paginate", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        self.client.force_authenticate(user=user)
+        response = self.client.get(f"/sourcing-pool/items/?supplier_id={self.supplier.id}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 55)
+        self.assertEqual(len(response.data["results"]), 50)
+        self.assertIsNotNone(response.data["next"])
+        self.assertEqual(response.data["pool_id"], str(pool.id))

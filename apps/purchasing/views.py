@@ -1,3 +1,4 @@
+import logging
 from typing import Any, Type
 
 from django.core.exceptions import ValidationError
@@ -12,7 +13,12 @@ from rest_framework.response import Response
 from rest_framework.serializers import Serializer
 from rest_framework.views import APIView
 
-from apps.purchasing.models import PurchaseOrder, PurchaseOrderDetail
+from apps.purchasing.models import (
+    PurchaseOrder,
+    PurchaseOrderDetail,
+    SourcingPool,
+    SourcingPoolItem,
+)
 from apps.purchasing.serializers import (
     PurchaseOrderCreateSerializer,
     PurchaseOrderListSerializer,
@@ -23,11 +29,19 @@ from apps.purchasing.services import purchasing_service
 from apps.purchasing.services.purchasing_service import PurchaseOrderService
 from core.permissions import IsStaffOrReadOnly
 
+logger = logging.getLogger(__name__)
+
 
 class PurchaseOrderPagination(PageNumberPagination):
     page_size = 10
     page_size_query_param = "page_size"
     max_page_size = 100
+
+
+class SourcingPoolItemPagination(PageNumberPagination):
+    page_size = 50
+    page_size_query_param = "page_size"
+    max_page_size = 200
 
 
 class PurchaseOrderViewSet(viewsets.ModelViewSet):
@@ -354,3 +368,164 @@ class ReplenishmentView(APIView):
         results.sort(key=lambda r: r["stock_on_hand"])
 
         return Response({"results": results})
+
+
+class SourcingPoolViewSet(viewsets.ViewSet):
+    """
+    /api/purchasing/sourcing-pool/
+    """
+
+    permission_classes = [IsStaffOrReadOnly]
+
+    @action(detail=False, methods=["get"], url_path="template")
+    def template(self, request: Request) -> Response:
+        """GET /api/purchasing/sourcing-pool/template/ — returns .xlsx"""
+        import io
+
+        from django.http import HttpResponse
+
+        from apps.purchasing.services.sourcing_service import SourcingService
+
+        wb = SourcingService().build_template_workbook(company=request.user.profile.company)
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        resp = HttpResponse(
+            buf.read(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        resp["Content-Disposition"] = 'attachment; filename="sourcing_template.xlsx"'
+        return resp
+
+    @action(detail=False, methods=["post"], url_path="preview")
+    def preview(self, request: Request) -> Response:
+        """
+        POST /api/purchasing/sourcing-pool/preview/
+        Body: multipart with field "file" (.xlsx).
+        Returns { valid: [...], errors: [...] }. Does NOT commit.
+        """
+        from apps.purchasing.services.sourcing_service import SourcingService
+
+        uploaded = request.FILES.get("file")
+        if not uploaded:
+            return Response({"error": "file is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        result = SourcingService().parse_excel_preview(
+            file_bytes=uploaded.read(),
+            company=request.user.profile.company,
+        )
+        return Response(result, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["post"], url_path="import")
+    def import_rows(self, request: Request) -> Response:
+        """
+        POST /api/purchasing/sourcing-pool/import/
+        Body: { "supplier_id": "<ulid>", "rows": [...rows from preview valid list...] }
+        Returns: { created: N, updated: N, pool_id: "<ulid>" }
+        On ValueError from service: returns HTTP 400 with {"error": "<message>"}.
+        """
+        from apps.inventory.models import Supplier
+        from apps.purchasing.services.sourcing_service import SourcingService
+
+        supplier_id = request.data.get("supplier_id")
+        rows = request.data.get("rows")
+
+        if not supplier_id:
+            return Response(
+                {"error": "supplier_id is required"}, status=status.HTTP_400_BAD_REQUEST
+            )
+        if not isinstance(rows, list) or not rows:
+            return Response(
+                {"error": "rows must be a non-empty list"}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            supplier = Supplier.objects.get(id=supplier_id, company=request.user.profile.company)
+        except Supplier.DoesNotExist:
+            return Response({"error": "Supplier not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            result = SourcingService().import_rows(
+                company=request.user.profile.company,
+                supplier=supplier,
+                rows=rows,
+            )
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(result, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="items")
+    def list_items(self, request: Request) -> Response:
+        """
+        GET /api/purchasing/sourcing-pool/items/?supplier_id=<ulid>&search=<str>
+        search filters on product_name OR variant_name (case-insensitive).
+        Returns { pool_id, items: [] } with HTTP 200 even when no pool exists yet (not 404).
+        """
+        from django.db.models import Q
+
+        from apps.purchasing.serializers import SourcingPoolItemSerializer
+
+        supplier_id = request.query_params.get("supplier_id")
+        if not supplier_id:
+            return Response(
+                {"error": "supplier_id is required"}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            pool = SourcingPool.objects.get(
+                supplier_id=supplier_id, company=request.user.profile.company
+            )
+        except SourcingPool.DoesNotExist:
+            return Response({"pool_id": None, "items": []}, status=status.HTTP_200_OK)
+
+        qs = (
+            SourcingPoolItem.objects.filter(pool=pool)
+            .select_related("category")
+            .order_by("product_name", "variant_name")
+        )
+        search = request.query_params.get("search", "").strip()
+        if search:
+            qs = qs.filter(Q(product_name__icontains=search) | Q(variant_name__icontains=search))
+
+        paginator = SourcingPoolItemPagination()
+        page = paginator.paginate_queryset(qs, request)
+        serializer = SourcingPoolItemSerializer(page, many=True, context={"request": request})
+        response = paginator.get_paginated_response(serializer.data)
+        response.data["pool_id"] = str(pool.id)
+        return response
+
+
+class SourcingPoolItemImageView(APIView):
+    """
+    GET /api/purchasing/sourcing-pool/items/<item_id>/image/
+    Proxies the R2 image for a SourcingPoolItem thumbnail.
+    Returns 404 if: item not found, belongs to another company, or image_file is None (not yet downloaded).
+    In Phase 1, image_file is always None (download happens in Phase 2), so this always returns 404.
+    The view is wired now so Phase 2 only needs to populate image_file — no URL change needed.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request, item_id: str) -> Response:
+        import requests as http_requests
+        from django.http import Http404, HttpResponse
+
+        try:
+            item = SourcingPoolItem.objects.get(id=item_id, company=request.user.profile.company)
+        except SourcingPoolItem.DoesNotExist:
+            raise Http404
+
+        if not item.image_file:
+            raise Http404
+
+        try:
+            resp = http_requests.get(item.image_file.url, timeout=10)
+            resp.raise_for_status()
+            return HttpResponse(
+                resp.content,
+                content_type=resp.headers.get("Content-Type", "image/jpeg"),
+            )
+        except Exception:
+            logger.warning("Image proxy failed for item %s", item_id, exc_info=True)
+            raise Http404
