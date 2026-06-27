@@ -69,3 +69,30 @@ class SourcingPoolItemFactory(factory.django.DjangoModelFactory):
     category = factory.SubFactory(CategoryFactory)  # type: ignore[no-untyped-call]
     unit_price = Decimal("10.000")
     supplier_link = ""
+
+
+class DraftPurchaseOrderDetailFactory(factory.django.DjangoModelFactory):
+    """Factory for PurchaseOrderDetail lines backed by a SourcingPoolItem (no ProductVariant).
+
+    sourcing_item.company is aligned to purchase_order.company via pool.company.
+    """
+
+    class Meta:
+        model = PurchaseOrderDetail
+
+    purchase_order = factory.SubFactory(PurchaseOrderFactory)  # type: ignore[no-untyped-call]
+    sourcing_item = factory.SubFactory(  # type: ignore[no-untyped-call]
+        SourcingPoolItemFactory,
+        pool=factory.SubFactory(  # type: ignore[no-untyped-call]
+            SourcingPoolFactory,
+            company=factory.SelfAttribute("...purchase_order.company"),  # type: ignore[no-untyped-call]
+        ),
+        company=factory.SelfAttribute("...purchase_order.company"),  # type: ignore[no-untyped-call]
+    )
+    company = factory.SelfAttribute("purchase_order.company")  # type: ignore[no-untyped-call]
+    product_variant = None
+    draft_product_name = factory.LazyAttribute(  # type: ignore[no-untyped-call]
+        lambda o: f"{o.sourcing_item.product_name} / {o.sourcing_item.variant_name}"
+    )
+    ordered_qty = 10
+    unit_price_foreign = Decimal("15.000")

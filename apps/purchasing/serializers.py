@@ -32,23 +32,24 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
     """Serializer for Purchase Order Details"""
 
     id = serializers.CharField(required=False)
-    product_variant_id = serializers.CharField(write_only=True)
-    variant_id = serializers.CharField(source="product_variant.id", read_only=True)
-    product_variant_name = serializers.CharField(source="product_variant.name", read_only=True)
-    sku_variant_code = serializers.CharField(
-        source="product_variant.sku_variant_code", read_only=True
-    )
-    product_id = serializers.CharField(source="product_variant.product.id", read_only=True)
-    product_name = serializers.CharField(source="product_variant.product.name", read_only=True)
+    product_variant_id = serializers.CharField(write_only=True, required=False, allow_null=True, allow_blank=True)
+    variant_id = serializers.SerializerMethodField()
+    product_variant_name = serializers.SerializerMethodField()
+    sku_variant_code = serializers.SerializerMethodField()
+    product_id = serializers.SerializerMethodField()
+    product_name = serializers.SerializerMethodField()
     product_supplier_link = serializers.CharField(
         source="supplier_link", read_only=True, allow_null=True
     )
-    variant_values = serializers.JSONField(source="product_variant.variant_values", read_only=True)
+    variant_values = serializers.SerializerMethodField()
     product_photo_url = serializers.SerializerMethodField()
     last_unit_price_foreign = serializers.SerializerMethodField()
     last_currency = serializers.SerializerMethodField()
     last_discounted_unit_price_foreign = serializers.SerializerMethodField()
     updated_qty = serializers.IntegerField(read_only=True)
+    sourcing_item_id = serializers.SerializerMethodField()
+    is_draft = serializers.SerializerMethodField()
+    draft_product_name = serializers.CharField(read_only=True)
 
     class Meta:
         model = PurchaseOrderDetail
@@ -82,6 +83,9 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
             "last_unit_price_foreign",
             "last_currency",
             "last_discounted_unit_price_foreign",
+            "sourcing_item_id",
+            "is_draft",
+            "draft_product_name",
         ]
         read_only_fields = [
             "updated_qty",
@@ -90,38 +94,78 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
             "stock_on_hand",
             "incoming_qty",
             "variant_id",
+            "sourcing_item_id",
+            "is_draft",
+            "draft_product_name",
         ]
 
+    def get_variant_id(self, obj: PurchaseOrderDetail) -> str | None:
+        return str(obj.product_variant.id) if obj.product_variant_id else None  # type: ignore[union-attr, attr-defined]
+
+    def get_product_variant_name(self, obj: PurchaseOrderDetail) -> str | None:
+        return obj.product_variant.name if obj.product_variant_id else None  # type: ignore[union-attr, attr-defined]
+
+    def get_sku_variant_code(self, obj: PurchaseOrderDetail) -> str | None:
+        return obj.product_variant.sku_variant_code if obj.product_variant_id else None  # type: ignore[union-attr, attr-defined]
+
+    def get_product_id(self, obj: PurchaseOrderDetail) -> str | None:
+        return str(obj.product_variant.product.id) if obj.product_variant_id else None  # type: ignore[union-attr, attr-defined]
+
+    def get_product_name(self, obj: PurchaseOrderDetail) -> str | None:
+        return obj.product_variant.product.name if obj.product_variant_id else None  # type: ignore[union-attr, attr-defined]
+
+    def get_variant_values(self, obj: PurchaseOrderDetail) -> dict | None:
+        return obj.product_variant.variant_values if obj.product_variant_id else None  # type: ignore[union-attr, attr-defined]
+
+    def get_sourcing_item_id(self, obj: PurchaseOrderDetail) -> str | None:
+        return str(obj.sourcing_item_id) if obj.sourcing_item_id else None  # type: ignore[attr-defined]
+
+    def get_is_draft(self, obj: PurchaseOrderDetail) -> bool:
+        return obj.sourcing_item_id is not None and obj.product_variant_id is None  # type: ignore[attr-defined]
+
     def get_product_photo_url(self, obj: PurchaseOrderDetail) -> str | None:
+        if not obj.product_variant_id:  # type: ignore[attr-defined]
+            return None
         variant = obj.product_variant
-        if variant.photo:
-            return variant.photo.url  # type: ignore[no-any-return]
-        gallery = list(variant.product.photos.order_by("order").all())
+        if variant.photo:  # type: ignore[union-attr]
+            return variant.photo.url  # type: ignore[union-attr, no-any-return]
+        gallery = list(variant.product.photos.order_by("order").all())  # type: ignore[union-attr]
         if gallery:
             return gallery[0].image.url  # type: ignore[no-any-return]
-        if variant.product.product_photo:
-            return variant.product.product_photo.url  # type: ignore[no-any-return]
+        if variant.product.product_photo:  # type: ignore[union-attr]
+            return variant.product.product_photo.url  # type: ignore[union-attr, no-any-return]
         return None
 
     def get_last_unit_price_foreign(self, obj: PurchaseOrderDetail) -> str | None:
-        val = obj.product_variant.last_unit_price_foreign
+        if not obj.product_variant_id:  # type: ignore[attr-defined]
+            return None
+        val = obj.product_variant.last_unit_price_foreign  # type: ignore[union-attr]
         return str(val) if val is not None else None
 
     def get_last_currency(self, obj: PurchaseOrderDetail) -> str | None:
-        return obj.product_variant.last_currency
+        if not obj.product_variant_id:  # type: ignore[attr-defined]
+            return None
+        return obj.product_variant.last_currency  # type: ignore[union-attr]
 
     def get_last_discounted_unit_price_foreign(self, obj: PurchaseOrderDetail) -> str | None:
-        val = obj.product_variant.last_discounted_unit_price_foreign
+        if not obj.product_variant_id:  # type: ignore[attr-defined]
+            return None
+        val = obj.product_variant.last_discounted_unit_price_foreign  # type: ignore[union-attr]
         return str(val) if val is not None else None
 
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        if not attrs.get("id") and not attrs.get("product_variant_id"):
+            raise serializers.ValidationError(
+                {"product_variant_id": "This field is required when adding a new order line."}
+            )
         return self._calculate_prices(attrs)
 
     def create(self, validated_data: dict[str, Any]) -> PurchaseOrderDetail:
         validated_data = self._calculate_prices(validated_data)
-        product_variant_id = validated_data.pop("product_variant_id")
-        product_variant = ProductVariant.objects.get(id=product_variant_id)
-        validated_data["product_variant"] = product_variant
+        product_variant_id = validated_data.pop("product_variant_id", None)
+        if product_variant_id:
+            product_variant = ProductVariant.objects.get(id=product_variant_id)
+            validated_data["product_variant"] = product_variant
         return super().create(validated_data)  # type: ignore
 
     def _calculate_prices(self, attrs: dict[str, Any]) -> dict[str, Any]:
@@ -911,7 +955,10 @@ class PurchaseOrderReadSerializer(serializers.ModelSerializer):
 
         dims_map: dict[str, bool] = {}
         for detail in details:
-            p = detail.product_variant.product
+            if detail.product_variant_id is None:  # type: ignore[attr-defined]
+                dims_map[str(detail.id)] = False
+                continue
+            p = detail.product_variant.product  # type: ignore[union-attr]
             dims_map[str(detail.id)] = p.length > 0 and p.width > 0 and p.height > 0
 
         is_delivered = po.status in [
@@ -941,7 +988,15 @@ class PurchaseOrderReadSerializer(serializers.ModelSerializer):
         total_cbm = Decimal("0")
         item_data: dict[str, dict] = {}
         for detail in details:
-            p = detail.product_variant.product
+            if detail.product_variant_id is None:  # type: ignore[attr-defined]
+                item_data[str(detail.id)] = {
+                    "cbm": Decimal("0"),
+                    "item_value_idr": Decimal(str(detail.discounted_total_price_base or 0)),
+                    "received_qty": 0,
+                    "unit_price_idr": Decimal("0"),
+                }
+                continue
+            p = detail.product_variant.product  # type: ignore[union-attr]
             length = Decimal(str(p.length or 0))
             width = Decimal(str(p.width or 0))
             height = Decimal(str(p.height or 0))

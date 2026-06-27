@@ -229,7 +229,17 @@ class PurchaseOrderDetail(DefaultModel):
     purchase_order = models.ForeignKey(
         PurchaseOrder, on_delete=models.CASCADE, related_name="order_details"
     )
-    product_variant = models.ForeignKey(ProductVariant, on_delete=models.CASCADE)
+    product_variant = models.ForeignKey(
+        ProductVariant, on_delete=models.CASCADE, null=True, blank=True
+    )
+    sourcing_item = models.ForeignKey(
+        "purchasing.SourcingPoolItem",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="po_details",
+    )
+    draft_product_name = models.CharField(max_length=255, blank=True, default="")
 
     ordered_qty = models.IntegerField(default=0)
     received_qty = models.IntegerField(default=0)
@@ -270,9 +280,9 @@ class PurchaseOrderDetail(DefaultModel):
     supplier_link = models.CharField(max_length=500, blank=True, null=True)
 
     def __str__(self) -> str:
-        return (
-            f"{self.purchase_order.purchase_order_number} - {self.product_variant.sku_variant_code}"
-        )
+        if self.product_variant_id:  # type: ignore[attr-defined]
+            return f"{self.purchase_order.purchase_order_number} - {self.product_variant.sku_variant_code}"  # type: ignore[union-attr]
+        return f"{self.purchase_order.purchase_order_number} - [Draft] {self.draft_product_name}"
 
 
 class PurchaseOrderStatusHistory(DefaultModel):

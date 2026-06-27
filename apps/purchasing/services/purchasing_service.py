@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils import timezone
 from django_ulid.models import ULIDField
 
@@ -25,6 +25,122 @@ class PurchaseOrderService:
     Service for Purchase Order operations.
     Handles creation, updates, and inventory-related logic.
     """
+
+    @transaction.atomic
+    def add_draft_line(
+        self,
+        po: PurchaseOrder,
+        sourcing_item_id: str,
+        ordered_qty: int,
+        unit_price_foreign: Decimal | None = None,
+    ) -> PurchaseOrderDetail:
+        """Add a sourcing pool item as a draft line to a DRAFT or ORDERED PO."""
+        from apps.purchasing.models import SourcingPoolItem
+
+        if po.status not in [PurchaseOrder.POStatus.DRAFT, PurchaseOrder.POStatus.ORDERED]:
+            raise ValidationError(f"Cannot add lines to a PO with status {po.status}.")
+
+        if ordered_qty <= 0:
+            raise ValidationError("ordered_qty must be a positive integer.")
+
+        sourcing_item = SourcingPoolItem.objects.select_for_update().get(
+            id=sourcing_item_id, company=po.company
+        )
+
+        if po.order_details.filter(sourcing_item=sourcing_item).exists():
+            raise ValidationError(
+                f"'{sourcing_item.product_name} / {sourcing_item.variant_name}' is already in this PO."
+            )
+
+        draft_product_name = f"{sourcing_item.product_name} / {sourcing_item.variant_name}"
+        effective_price = unit_price_foreign if unit_price_foreign is not None else sourcing_item.unit_price
+
+        detail = PurchaseOrderDetail.objects.create(
+            purchase_order=po,
+            company=po.company,
+            product_variant=None,
+            sourcing_item=sourcing_item,
+            draft_product_name=draft_product_name,
+            ordered_qty=ordered_qty,
+            unit_price_foreign=effective_price,
+        )
+
+        SourcingPoolItem.objects.filter(id=sourcing_item_id).update(
+            times_ordered=F("times_ordered") + 1
+        )
+
+        self._recalculate_po_totals(po)
+        return detail
+
+    @transaction.atomic
+    @transaction.atomic
+    def finalize_draft_line(
+        self,
+        detail: PurchaseOrderDetail,
+        sku_suffix: str,
+        category_id: str | None = None,
+        product_name: str | None = None,
+    ) -> PurchaseOrderDetail:
+        """Convert a draft sourcing line into a real Product+Variant and link it."""
+        from django.db import IntegrityError
+
+        from apps.inventory.models import ProductVariant as PV
+        from apps.inventory.services.product_service import ProductService
+
+        # Lock the row to prevent concurrent finalization of the same draft line.
+        detail = PurchaseOrderDetail.objects.select_for_update().get(id=detail.id)
+
+        if detail.product_variant_id is not None or detail.sourcing_item_id is None:  # type: ignore[attr-defined]
+            raise ValidationError("Detail is not a draft sourcing line.")
+
+        if not sku_suffix or not sku_suffix.strip():
+            raise ValidationError("sku_suffix is required.")
+
+        item = detail.sourcing_item
+        final_product_name = (product_name or "").strip() or item.product_name  # type: ignore[union-attr]
+        final_category_id = category_id or (str(item.category_id) if item.category_id else None)  # type: ignore[union-attr]
+
+        if not final_category_id:
+            raise ValidationError(
+                "category_id is required to finalize this line. "
+                "The pool item has no category — provide one explicitly."
+            )
+
+        try:
+            result = ProductService().create_product_with_variants(
+                {
+                    "company_id": str(detail.company_id),  # type: ignore[attr-defined]
+                    "category_id": final_category_id,
+                    "name": final_product_name,
+                    "description": "",
+                    "variant_options": [],
+                    "specifications": {},
+                    "weight": 0,
+                    "length": 0,
+                    "width": 0,
+                    "height": 0,
+                    "variants": [{"variant_values": {}, "sku_variant_code": sku_suffix.strip(), "base_price": 0}],
+                }
+            )
+        except IntegrityError:
+            raise ValidationError(
+                f"SKU '{sku_suffix.strip()}' already exists. Choose a different sku_suffix."
+            )
+
+        variant_id = result[0]["variants"][0]["id"]
+        variant = PV.objects.get(id=variant_id)
+
+        detail.product_variant = variant
+        detail.sourcing_item = None
+        detail.draft_product_name = ""
+        detail.save(update_fields=["product_variant", "sourcing_item", "draft_product_name", "udate"])
+
+        # Recompute IDR base prices for this line now that it has a real variant.
+        po = detail.purchase_order
+        if po.exchange_rate:
+            self._recalculate_item_prices(po)
+
+        return detail
 
     def _trigger_shopee_sync_batch(self, variant_ids: list[str], company_id: str) -> None:
         from apps.omnichannel.vendor.shopee.stock_sync import ShopeeStockSyncService
@@ -93,11 +209,11 @@ class PurchaseOrderService:
     @transaction.atomic
     def _snapshot_sales_metrics_at_ordered(self, po: PurchaseOrder) -> None:
         """Capture avg_sales (7d+30d), stock_on_hand, incoming_qty snapshots on each detail."""
-        details = list(po.order_details.all())
+        details = list(po.order_details.filter(product_variant__isnull=False))
         if not details:
             return
 
-        variant_ids = [str(d.product_variant.id) for d in details]
+        variant_ids = [str(d.product_variant.id) for d in details]  # type: ignore[union-attr]
 
         # Avg sales
         avg7_list = InventoryService().get_avg_sales_per_day(variant_ids=variant_ids, days=7)
@@ -132,7 +248,7 @@ class PurchaseOrderService:
 
         # Write snapshots
         for detail in details:
-            vid = str(detail.product_variant.id)
+            vid = str(detail.product_variant.id)  # type: ignore[union-attr]
             detail.avg_sales = avg30_map.get(vid, 0.0)
             detail.avg_sales_7d = avg7_map.get(vid, 0.0)
             detail.stock_on_hand = soh_map.get(vid, 0)
@@ -334,6 +450,16 @@ class PurchaseOrderService:
                     }
                 )
 
+            if po.order_details.filter(sourcing_item__isnull=False, product_variant__isnull=True).exists():
+                missing.append(
+                    {
+                        "field": "order_details",
+                        "label": "Draft Lines",
+                        "section": "Order Items",
+                        "message": "All sourcing draft items must be finalized before marking as DELIVERED.",
+                    }
+                )
+
         return missing
 
     def get_transition_warnings(
@@ -350,11 +476,13 @@ class PurchaseOrderService:
         if new_status == PurchaseOrder.POStatus.COMPLETED:
             partial_items = []
             for detail in po.order_details.select_related("product_variant").all():
+                if detail.product_variant_id is None:  # type: ignore[attr-defined]
+                    continue
                 received = detail.received_qty or 0
                 if received < detail.ordered_qty:
                     partial_items.append(
                         {
-                            "name": detail.product_variant.name,
+                            "name": detail.product_variant.name,  # type: ignore[union-attr]
                             "ordered_qty": detail.ordered_qty,
                             "received_qty": received,
                         }
@@ -441,7 +569,9 @@ class PurchaseOrderService:
         if new_status in [PurchaseOrder.POStatus.DELIVERED, PurchaseOrder.POStatus.COMPLETED]:
             existing_details_map = {str(d.id): d for d in po.order_details.all()}
 
-            product_variant_ids = list(set(d.product_variant.id for d in po.order_details.all()))
+            product_variant_ids = list(
+                set(d.product_variant.id for d in po.order_details.all() if d.product_variant_id is not None)  # type: ignore[union-attr, attr-defined]
+            )
 
             pvw_map = {
                 str(pvw.product_variant.id): pvw
@@ -466,6 +596,8 @@ class PurchaseOrderService:
                 existing_detail = existing_details_map.get(detail_id)
                 if not existing_detail:
                     continue
+                if existing_detail.product_variant_id is None:  # type: ignore[attr-defined]
+                    continue  # draft lines have no received_qty to check
 
                 ordered_qty = detail_data.get("ordered_qty", existing_detail.ordered_qty)
                 received_qty = detail_data.get("received_qty", existing_detail.received_qty or 0)
@@ -473,23 +605,23 @@ class PurchaseOrderService:
 
                 if received_qty < existing_received_qty:
                     qty_decrease = existing_received_qty - received_qty
-                    pvw = pvw_map.get(str(existing_detail.product_variant.id))
+                    pvw = pvw_map.get(str(existing_detail.product_variant.id))  # type: ignore[union-attr]
                     if pvw:
                         if pvw.physical_qty < qty_decrease:
                             raise ValidationError(
                                 {
-                                    "order_details": f"Cannot decrease received_qty for {existing_detail.product_variant.name}. "
+                                    "order_details": f"Cannot decrease received_qty for {existing_detail.product_variant.name}. "  # type: ignore[union-attr]
                                     f"Physical qty ({pvw.physical_qty}) is less than the decrease amount ({qty_decrease}). "
                                     f"There may be sales on this item."
                                 }
                             )
 
-                    cogs = cogs_map.get(str(existing_detail.product_variant.id))
+                    cogs = cogs_map.get(str(existing_detail.product_variant.id))  # type: ignore[union-attr]
                     if cogs:
                         if cogs.remaining_qty < qty_decrease:
                             raise ValidationError(
                                 {
-                                    "order_details": f"Cannot decrease received_qty for {existing_detail.product_variant.name}. "
+                                    "order_details": f"Cannot decrease received_qty for {existing_detail.product_variant.name}. "  # type: ignore[union-attr]
                                     f"COGS remaining_qty ({cogs.remaining_qty}) is less than the decrease amount ({qty_decrease}). "
                                     f"There may be sales on this item."
                                 }
@@ -500,7 +632,7 @@ class PurchaseOrderService:
                     if not remarks:
                         raise ValidationError(
                             {
-                                "order_details": f"Remarks is required for {existing_detail.product_variant.name} when received_qty ({received_qty}) exceeds ordered_qty ({ordered_qty})."
+                                "order_details": f"Remarks is required for {existing_detail.product_variant.name} when received_qty ({received_qty}) exceeds ordered_qty ({ordered_qty})."  # type: ignore[union-attr]
                             }
                         )
 
@@ -509,7 +641,7 @@ class PurchaseOrderService:
                     if not remarks:
                         raise ValidationError(
                             {
-                                "order_details": f"Remarks is required for {existing_detail.product_variant.name} when moving to COMPLETED status with partial delivery (received_qty: {received_qty}, ordered_qty: {ordered_qty})."
+                                "order_details": f"Remarks is required for {existing_detail.product_variant.name} when moving to COMPLETED status with partial delivery (received_qty: {received_qty}, ordered_qty: {ordered_qty})."  # type: ignore[union-attr]
                             }
                         )
 
@@ -527,9 +659,11 @@ class PurchaseOrderService:
         inventory_data = []
         if new_status == PurchaseOrder.POStatus.ORDERED:
             for detail in po.order_details.all():
+                if detail.product_variant_id is None:  # type: ignore[attr-defined]
+                    continue
                 inventory_data.append(
                     {
-                        "product_variant_id": detail.product_variant.id,
+                        "product_variant_id": detail.product_variant.id,  # type: ignore[union-attr]
                         "ordered_qty": detail.ordered_qty,
                         "note": f"Stock movement for PO {po.purchase_order_number} purchase",
                     }
@@ -587,9 +721,11 @@ class PurchaseOrderService:
 
         elif new_status == PurchaseOrder.POStatus.COMPLETED:
             for detail in po.order_details.all():
+                if detail.product_variant_id is None:  # type: ignore[attr-defined]
+                    continue
                 inventory_data.append(
                     {
-                        "product_variant_id": detail.product_variant.id,
+                        "product_variant_id": detail.product_variant.id,  # type: ignore[union-attr]
                         "ordered_qty": detail.ordered_qty,
                         "received_qty": detail.received_qty or 0,
                         "updated_qty": detail.received_qty or 0,
@@ -830,7 +966,8 @@ class PurchaseOrderService:
 
         if po.status in [PurchaseOrder.POStatus.DRAFT, PurchaseOrder.POStatus.ORDERED]:
             ids_to_keep = [d.id for d in update_details] + [d.id for d in new_details]
-            po.order_details.exclude(id__in=ids_to_keep).delete()
+            # Only delete non-draft lines (product_variant is set); draft lines are managed separately
+            po.order_details.filter(product_variant__isnull=False).exclude(id__in=ids_to_keep).delete()
 
         if update_details:
             update_fields_list = list(update_fields_set) + ["udate"]
@@ -842,36 +979,39 @@ class PurchaseOrderService:
         if new_details:
             from apps.inventory.models import ProductSupplier as PS
 
-            variant_ids = [d.product_variant.id for d in new_details]
+            real_new_details = [d for d in new_details if d.product_variant_id is not None]  # type: ignore[attr-defined]
+            variant_ids = [d.product_variant.id for d in real_new_details]  # type: ignore[union-attr]
             raw_pairs = list(
                 ProductVariant.objects.filter(id__in=variant_ids).values_list("id", "product_id")
-            )
+            ) if variant_ids else []
             variant_product_map: dict[str, str] = {str(vid): str(pid) for vid, pid in raw_pairs}
             product_ids = list(set(variant_product_map.values()))
             link_map: dict[str, str | None] = {}
-            if po.supplier:
+            if po.supplier and product_ids:
                 for row in PS.objects.filter(
                     product_id__in=product_ids,
                     supplier=po.supplier,
                     supplier_link__isnull=False,
                 ).values("product_id", "supplier_link"):
                     link_map[str(row["product_id"])] = row["supplier_link"]
-            missing = [pid for pid in product_ids if pid not in link_map]
-            if missing:
-                for row in PS.objects.filter(
-                    product_id__in=missing,
-                    supplier_link__isnull=False,
-                ).values("product_id", "supplier_link"):
-                    link_map.setdefault(str(row["product_id"]), row["supplier_link"])
-            for detail in new_details:
+                missing = [pid for pid in product_ids if pid not in link_map]
+                if missing:
+                    for row in PS.objects.filter(
+                        product_id__in=missing,
+                        supplier_link__isnull=False,
+                    ).values("product_id", "supplier_link"):
+                        link_map.setdefault(str(row["product_id"]), row["supplier_link"])
+            for detail in real_new_details:
                 if not detail.supplier_link:
-                    product_id = variant_product_map.get(str(detail.product_variant.id))
+                    product_id = variant_product_map.get(str(detail.product_variant.id))  # type: ignore[union-attr]
                     if product_id:
                         detail.supplier_link = link_map.get(product_id)
 
         if new_details:
             PurchaseOrderDetail.objects.bulk_create(new_details, batch_size=100)
-            new_variant_ids = [str(d.product_variant.id) for d in new_details]
+            new_variant_ids = [
+                str(d.product_variant.id) for d in new_details if d.product_variant_id is not None  # type: ignore[union-attr, attr-defined]
+            ]
             self._ensure_product_supplier_links(po, new_variant_ids)
 
         if po.status in (PurchaseOrder.POStatus.DRAFT, PurchaseOrder.POStatus.ORDERED):
@@ -889,11 +1029,13 @@ class PurchaseOrderService:
         now = timezone.now()
 
         for detail in all_details:
+            if detail.product_variant_id is None:  # type: ignore[attr-defined]
+                continue
             if not detail.unit_price_foreign:
                 continue
             currency = po.currency or ""
             ProductVariant.objects.filter(
-                id=detail.product_variant.id,
+                id=detail.product_variant.id,  # type: ignore[union-attr]
             ).filter(Q(price_updated_at__isnull=True) | Q(price_updated_at__lt=now)).update(
                 last_unit_price_foreign=detail.unit_price_foreign,
                 last_discounted_unit_price_foreign=detail.discounted_unit_price_foreign or None,
@@ -961,7 +1103,9 @@ class PurchaseOrderService:
         total_cbm = Decimal("0")
         has_dimensions = False
         for detail in po.order_details.all().select_related("product_variant__product"):
-            product = detail.product_variant.product
+            if detail.product_variant_id is None:  # type: ignore[attr-defined]
+                continue
+            product = detail.product_variant.product  # type: ignore[union-attr]
             if product.length > 0 and product.width > 0 and product.height > 0:
                 has_dimensions = True
                 volume_m3 = (
