@@ -1074,6 +1074,8 @@ class SourcingPoolItemSerializer(serializers.ModelSerializer):
         source="category.category_code", read_only=True, allow_null=True
     )
     image_proxy_url = serializers.SerializerMethodField()
+    variant_id = serializers.CharField(read_only=True, allow_null=True)
+    variant_code = serializers.CharField(read_only=True, allow_null=True)
 
     def get_image_proxy_url(self, obj: SourcingPoolItem) -> str | None:
         if not obj.image_file:
@@ -1104,7 +1106,17 @@ class SourcingPoolItemSerializer(serializers.ModelSerializer):
             "image_download_status",
             "notes",
             "times_ordered",
+            "variant_id",
+            "variant_code",
             "cdate",
             "udate",
         ]
-        read_only_fields = ["id", "image_download_status", "times_ordered", "cdate", "udate"]
+        read_only_fields = [
+            "id",
+            "image_download_status",
+            "times_ordered",
+            "variant_id",
+            "variant_code",
+            "cdate",
+            "udate",
+        ]

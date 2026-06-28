@@ -10,7 +10,7 @@ from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.db import transaction
 
-from apps.inventory.models import Category, Supplier
+from apps.inventory.models import Category, ProductVariant, Supplier
 from apps.purchasing.models import SourcingPool, SourcingPoolItem
 from core.models import Company
 
@@ -38,6 +38,7 @@ class SourcingService:
         ws_items.title = "Items"
         ws_items.append(
             [
+                "variant_code",
                 "product_name",
                 "variant_name",
                 "category_code",
@@ -110,6 +111,25 @@ class SourcingService:
             for cat in Category.objects.filter(company=company, is_active=True)
         }
 
+        # Single-query pre-pass to resolve all variant codes (avoids N+1).
+        # get_cell is not yet defined here, so use raw index access.
+        _vc_idx = col_index.get("variant_code")
+        all_variant_codes: set[str] = set()
+        for _row in rows[1:]:
+            if _vc_idx is not None and _vc_idx < len(_row) and _row[_vc_idx]:
+                _vc_raw = str(_row[_vc_idx]).strip()
+                if _vc_raw:
+                    all_variant_codes.add(_vc_raw)
+
+        variant_code_map: dict[str, str] = {}  # sku_variant_code → variant_id str
+        if all_variant_codes:
+            # ProductVariant extends DefaultModel so has a direct company FK — no JOIN needed
+            for pv in ProductVariant.objects.filter(
+                sku_variant_code__in=all_variant_codes,
+                company=company,
+            ).only("id", "sku_variant_code"):
+                variant_code_map[pv.sku_variant_code] = str(pv.id)
+
         valid: list[dict] = []
         errors: list[dict] = []
 
@@ -125,8 +145,10 @@ class SourcingService:
             variant_name = get_cell(row, "variant_name")
             category_code = get_cell(row, "category_code")
             unit_price_raw = get_cell(row, "unit_price")
+            variant_code = get_cell(row, "variant_code")
 
-            if not any([product_name, variant_name, category_code, unit_price_raw]):
+            # Skip blank rows — include variant_code in the check
+            if not any([product_name, variant_name, category_code, unit_price_raw, variant_code]):
                 continue
 
             row_errors: list[str] = []
@@ -135,9 +157,11 @@ class SourcingService:
                 row_errors.append("product_name is required")
             if not variant_name:
                 row_errors.append("variant_name is required")
-            if not category_code:
+
+            # category_code is required only when no variant_code is provided
+            if not variant_code and not category_code:
                 row_errors.append("category_code is required")
-            elif category_code not in category_map:
+            elif category_code and category_code not in category_map:
                 row_errors.append(
                     f"category_code '{category_code}' not found — check the Categories sheet"
                 )
@@ -208,19 +232,35 @@ class SourcingService:
                     )
                     continue
 
-            cat_info = category_map[category_code]  # type: ignore[index]
+            # Resolve variant_code using the pre-built map (no per-row DB query)
+            variant_id: str | None = None
+            if variant_code:
+                variant_id = variant_code_map.get(variant_code)
+                if variant_id is None:
+                    errors.append({
+                        "row": row_num,
+                        "message": (
+                            f"variant_code '{variant_code}' not found — "
+                            "no product variant with this SKU exists"
+                        ),
+                    })
+                    continue
+
+            # Category info (may be None for mapped rows where category_code was blank)
+            cat_info = category_map.get(category_code) if category_code else None
+
             valid.append(
                 {
                     "row": row_num,
                     "product_name": product_name,
                     "variant_name": variant_name,
+                    "variant_code": variant_code,
+                    "variant_id": variant_id,
                     "category_code": category_code,
-                    "category_id": cat_info["id"],
-                    "category_name": cat_info["name"],
+                    "category_id": cat_info["id"] if cat_info else None,
+                    "category_name": cat_info["name"] if cat_info else None,
                     "unit_price": str(unit_price),
-                    "discounted_price": str(discounted_price)
-                    if discounted_price is not None
-                    else None,
+                    "discounted_price": str(discounted_price) if discounted_price is not None else None,
                     "qty_suggested": qty_suggested,
                     "supplier_link": get_cell(row, "supplier_link"),
                     "image_url": get_cell(row, "image_url"),
@@ -254,12 +294,27 @@ class SourcingService:
         to_create: list[SourcingPoolItem] = []
         to_update: list[SourcingPoolItem] = []
 
+        variant_ids = {str(row["variant_id"]) for row in rows if row.get("variant_id")}
+        if variant_ids:
+            valid_variant_ids = set(
+                ProductVariant.objects.filter(id__in=variant_ids, company=company).values_list(
+                    "id", flat=True
+                )
+            )
+            invalid_variant_ids = variant_ids - {str(vid) for vid in valid_variant_ids}
+            if invalid_variant_ids:
+                raise ValueError(
+                    f"variant_id(s) no longer exist: {', '.join(invalid_variant_ids)}"
+                )
+
         for row in rows:
             try:
                 product_name: str = str(row["product_name"]).strip()
                 variant_name: str = str(row["variant_name"]).strip()
-                category_id: str = str(row["category_id"])
+                category_id_val: str | None = row.get("category_id") or None
                 unit_price = Decimal(str(row["unit_price"]))
+                variant_code_val: str | None = row.get("variant_code") or None
+                variant_id_val: str | None = row.get("variant_id") or None
             except (KeyError, InvalidOperation) as exc:
                 raise ValueError(f"Invalid row data: {exc}") from exc
 
@@ -304,12 +359,14 @@ class SourcingService:
                 image_url_changed = existing.image_url != image_url
                 existing.product_name = product_name
                 existing.variant_name = variant_name
-                existing.category_id = category_id  # type: ignore[attr-defined]
+                existing.category_id = category_id_val  # type: ignore[attr-defined]
                 existing.unit_price = unit_price
                 existing.discounted_price = discounted_price
                 existing.qty_suggested = qty_suggested
                 existing.supplier_link = supplier_link
                 existing.notes = notes
+                existing.variant_code = variant_code_val
+                existing.variant_id = variant_id_val  # type: ignore[attr-defined]
                 if image_url_changed:
                     existing.image_url = image_url
                     existing.image_file = None
@@ -322,7 +379,7 @@ class SourcingService:
                     company=company,
                     product_name=product_name,
                     variant_name=variant_name,
-                    category_id=category_id,
+                    category_id=category_id_val,
                     unit_price=unit_price,
                     discounted_price=discounted_price,
                     qty_suggested=qty_suggested,
@@ -330,6 +387,8 @@ class SourcingService:
                     image_url=image_url,
                     image_download_status=SourcingPoolItem.ImageDownloadStatus.PENDING,
                     notes=notes,
+                    variant_code=variant_code_val,
+                    variant_id=variant_id_val,
                 )
                 in_progress_creates[key] = new_item
                 to_create.append(new_item)
@@ -351,6 +410,8 @@ class SourcingService:
                     "image_file",
                     "image_download_status",
                     "notes",
+                    "variant_code",
+                    "variant_id",
                 ],
             )
 

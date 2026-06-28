@@ -4318,12 +4318,16 @@ class TestSourcingService(TestCase):
         row.update(overrides)
         return row
 
-    def _build_workbook(self, rows: list[list | tuple]) -> bytes:
+    def _build_workbook(
+        self, rows: list[list | tuple], header: list[str] | None = None
+    ) -> bytes:
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Items"
         ws.append(
-            [
+            header
+            if header is not None
+            else [
                 "product_name",
                 "variant_name",
                 "category_code",
@@ -5428,6 +5432,244 @@ class TestSourcingService(TestCase):
 
         self.assertEqual(response.status_code, 404)
         self.assertIn("Pool not found", str(response.data))
+
+    # --- variant_code mapping tests ---
+
+    def test_preview_variant_code_found_returns_valid_row_with_variant_id(self):
+        variant = ProductVariantFactory(
+            company=self.company,
+            sku_variant_code="TEST-RED-L",
+        )
+        file_bytes = self._build_workbook(
+            [
+                ["TEST-RED-L", "Widget", "Red/L", None, "10"],
+            ],
+            header=[
+                "variant_code", "product_name", "variant_name", "category_code",
+                "unit_price", "discounted_price", "qty_suggested", "supplier_link",
+                "image_url", "notes",
+            ],
+        )
+        result = self.service.parse_excel_preview(file_bytes, company=self.company)
+        self.assertEqual(len(result["valid"]), 1)
+        self.assertEqual(result["valid"][0]["variant_id"], str(variant.id))
+        self.assertIsNone(result["valid"][0]["category_id"])
+        self.assertEqual(len(result["errors"]), 0)
+
+    def test_preview_variant_code_not_found_returns_error_row(self):
+        file_bytes = self._build_workbook(
+            [
+                ["NONEXISTENT-SKU", "X", "Y", None, "5"],
+            ],
+            header=[
+                "variant_code", "product_name", "variant_name", "category_code",
+                "unit_price", "discounted_price", "qty_suggested", "supplier_link",
+                "image_url", "notes",
+            ],
+        )
+        result = self.service.parse_excel_preview(file_bytes, company=self.company)
+        self.assertEqual(len(result["errors"]), 1)
+        self.assertIn("NONEXISTENT-SKU", result["errors"][0]["message"])
+        self.assertEqual(len(result["valid"]), 0)
+
+    def test_preview_variant_code_missing_category_code_is_valid(self):
+        ProductVariantFactory(
+            company=self.company,
+            sku_variant_code="TEST-RED-L",
+        )
+        file_bytes = self._build_workbook(
+            [
+                ["TEST-RED-L", "Widget", "Red/L", None, "10"],
+            ],
+            header=[
+                "variant_code", "product_name", "variant_name", "category_code",
+                "unit_price", "discounted_price", "qty_suggested", "supplier_link",
+                "image_url", "notes",
+            ],
+        )
+        result = self.service.parse_excel_preview(file_bytes, company=self.company)
+        self.assertEqual(len(result["valid"]), 1)
+        self.assertIsNone(result["valid"][0]["category_id"])
+        self.assertEqual(len(result["errors"]), 0)
+
+    def test_preview_no_variant_code_category_code_still_required(self):
+        file_bytes = self._build_workbook(
+            [
+                [None, "Widget", "Red/L", None, "10"],
+            ],
+            header=[
+                "variant_code", "product_name", "variant_name", "category_code",
+                "unit_price", "discounted_price", "qty_suggested", "supplier_link",
+                "image_url", "notes",
+            ],
+        )
+        result = self.service.parse_excel_preview(file_bytes, company=self.company)
+        self.assertEqual(len(result["errors"]), 1)
+        self.assertIn("category_code is required", result["errors"][0]["message"])
+        self.assertEqual(len(result["valid"]), 0)
+
+    def test_preview_variant_code_only_row_not_silently_skipped(self):
+        file_bytes = self._build_workbook(
+            [
+                ["NONEXISTENT", None, None, None, None],
+            ],
+            header=[
+                "variant_code", "product_name", "variant_name", "category_code",
+                "unit_price", "discounted_price", "qty_suggested", "supplier_link",
+                "image_url", "notes",
+            ],
+        )
+        result = self.service.parse_excel_preview(file_bytes, company=self.company)
+        self.assertGreater(len(result["errors"]), 0)
+        self.assertEqual(len(result["valid"]), 0)
+
+    def test_import_rows_create_stores_variant_code_and_variant_fk(self):
+        variant = ProductVariantFactory(company=self.company, sku_variant_code="SKU-X")
+        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
+        result = self.service.import_rows(
+            company=self.company,
+            supplier=self.supplier,
+            rows=[
+                {
+                    "product_name": "Test Product",
+                    "variant_name": "Test Variant",
+                    "category_id": str(self.category.id),
+                    "category_code": self.category.category_code,
+                    "unit_price": "10.000",
+                    "variant_code": "SKU-X",
+                    "variant_id": str(variant.id),
+                }
+            ],
+        )
+        self.assertEqual(result["created"], 1)
+        item = SourcingPoolItem.objects.get(pool=pool, product_name="Test Product")
+        self.assertEqual(item.variant_code, "SKU-X")
+        self.assertEqual(item.variant_id, variant.id)
+
+    def test_import_rows_update_sets_variant_code_and_variant_fk(self):
+        variant = ProductVariantFactory(company=self.company, sku_variant_code="SKU-Y")
+        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
+        SourcingPoolItemFactory(
+            pool=pool,
+            company=self.company,
+            product_name="Existing",
+            variant_name="Var",
+            category=self.category,
+            unit_price=Decimal("10.000"),
+        )
+        result = self.service.import_rows(
+            company=self.company,
+            supplier=self.supplier,
+            rows=[
+                {
+                    "product_name": "Existing",
+                    "variant_name": "Var",
+                    "category_id": str(self.category.id),
+                    "category_code": self.category.category_code,
+                    "unit_price": "10.000",
+                    "variant_code": "SKU-Y",
+                    "variant_id": str(variant.id),
+                }
+            ],
+        )
+        self.assertEqual(result["updated"], 1)
+        item = SourcingPoolItem.objects.get(pool=pool, product_name="Existing")
+        self.assertEqual(item.variant_code, "SKU-Y")
+        self.assertEqual(item.variant_id, variant.id)
+
+    def test_import_rows_mapped_row_with_null_category_succeeds(self):
+        variant = ProductVariantFactory(company=self.company, sku_variant_code="SKU-Z")
+        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
+        result = self.service.import_rows(
+            company=self.company,
+            supplier=self.supplier,
+            rows=[
+                {
+                    "product_name": "Mapped",
+                    "variant_name": "Var",
+                    "category_id": None,
+                    "unit_price": "10.000",
+                    "variant_code": "SKU-Z",
+                    "variant_id": str(variant.id),
+                }
+            ],
+        )
+        self.assertEqual(result["created"], 1)
+        item = SourcingPoolItem.objects.get(pool=pool, product_name="Mapped")
+        self.assertIsNone(item.category)
+        self.assertEqual(item.variant_code, "SKU-Z")
+
+    def test_import_rows_raises_if_variant_id_deleted_between_preview_and_import(self):
+        with self.assertRaises(ValueError) as ctx:
+            self.service.import_rows(
+                company=self.company,
+                supplier=self.supplier,
+                rows=[
+                    {
+                        "product_name": "Ghost",
+                        "variant_name": "Var",
+                        "category_id": str(self.category.id),
+                        "category_code": self.category.category_code,
+                        "unit_price": "10.000",
+                        "variant_code": "GHOST",
+                        "variant_id": "00000000000000000000000000",
+                    }
+                ],
+            )
+        self.assertIn("00000000000000000000000000", str(ctx.exception))
+
+    def test_serializer_exposes_variant_id_and_variant_code(self):
+        variant = ProductVariantFactory(company=self.company, sku_variant_code="SER-TEST")
+        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
+        item = SourcingPoolItemFactory(
+            pool=pool,
+            company=self.company,
+            product_name="Serializer Test",
+            variant_name="Var",
+            category=self.category,
+            unit_price=Decimal("10.000"),
+            variant_code="SER-TEST",
+            variant=variant,
+        )
+        from apps.purchasing.serializers import SourcingPoolItemSerializer
+
+        serializer = SourcingPoolItemSerializer(item)
+        self.assertEqual(serializer.data["variant_id"], str(variant.id))
+        self.assertEqual(serializer.data["variant_code"], "SER-TEST")
+
+        null_item = SourcingPoolItemFactory(
+            pool=pool,
+            company=self.company,
+            product_name="Null Variant",
+            variant_name="Var",
+            category=self.category,
+            unit_price=Decimal("10.000"),
+            variant_code=None,
+            variant=None,
+        )
+        null_serializer = SourcingPoolItemSerializer(null_item)
+        self.assertIsNone(null_serializer.data["variant_id"])
+        self.assertIsNone(null_serializer.data["variant_code"])
+
+    def test_preview_variant_code_from_different_company_not_matched(self):
+        """A variant_code belonging to a different company must not resolve for this company."""
+        other_company = CompanyFactory()
+        ProductVariantFactory(
+            company=other_company,
+            sku_variant_code="CROSS-COMPANY-SKU",
+        )
+        file_bytes = self._build_workbook(
+            [["CROSS-COMPANY-SKU", "Widget", "Red/L", None, "10"]],
+            header=[
+                "variant_code", "product_name", "variant_name", "category_code",
+                "unit_price", "discounted_price", "qty_suggested", "supplier_link",
+                "image_url", "notes",
+            ],
+        )
+        result = self.service.parse_excel_preview(file_bytes, company=self.company)
+        self.assertEqual(len(result["errors"]), 1)
+        self.assertIn("CROSS-COMPANY-SKU", result["errors"][0]["message"])
+        self.assertEqual(len(result["valid"]), 0)
 
 
 class TestPhase3DraftLines(TestCase):

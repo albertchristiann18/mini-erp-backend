@@ -372,6 +372,14 @@ class SourcingPoolItem(DefaultModel):
         default=ImageDownloadStatus.PENDING,
     )
     notes = models.TextField(blank=True, null=True)
+    variant_code = models.CharField(max_length=100, blank=True, null=True)
+    variant = models.ForeignKey(
+        "inventory.ProductVariant",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sourcing_items",
+    )
     times_ordered = models.IntegerField(default=0)
 
     class Meta:
