@@ -16,7 +16,7 @@ from core.models import Company
 
 logger = logging.getLogger(__name__)
 
-REQUIRED_COLUMNS = {"product_name", "variant_name", "category_code", "unit_price"}
+REQUIRED_COLUMNS = {"product_name", "variant_name", "unit_price"}
 
 CONTENT_TYPE_EXT: dict[str, str] = {
     "image/jpeg": ".jpg",
@@ -237,13 +237,15 @@ class SourcingService:
             if variant_code:
                 variant_id = variant_code_map.get(variant_code)
                 if variant_id is None:
-                    errors.append({
-                        "row": row_num,
-                        "message": (
-                            f"variant_code '{variant_code}' not found — "
-                            "no product variant with this SKU exists"
-                        ),
-                    })
+                    errors.append(
+                        {
+                            "row": row_num,
+                            "message": (
+                                f"variant_code '{variant_code}' not found — "
+                                "no product variant with this SKU exists"
+                            ),
+                        }
+                    )
                     continue
 
             # Category info (may be None for mapped rows where category_code was blank)
@@ -260,7 +262,9 @@ class SourcingService:
                     "category_id": cat_info["id"] if cat_info else None,
                     "category_name": cat_info["name"] if cat_info else None,
                     "unit_price": str(unit_price),
-                    "discounted_price": str(discounted_price) if discounted_price is not None else None,
+                    "discounted_price": str(discounted_price)
+                    if discounted_price is not None
+                    else None,
                     "qty_suggested": qty_suggested,
                     "supplier_link": get_cell(row, "supplier_link"),
                     "image_url": get_cell(row, "image_url"),
@@ -284,6 +288,7 @@ class SourcingService:
         if invalid_ids:
             raise ValueError(f"category_id(s) not found for this company: {', '.join(invalid_ids)}")
 
+        # Lock all pool items upfront to prevent duplicate-key races on concurrent imports
         existing_map: dict[tuple[str, str], SourcingPoolItem] = {
             (item.product_name.lower(), item.variant_name.lower()): item
             for item in SourcingPoolItem.objects.filter(pool=pool).select_for_update()
@@ -303,9 +308,7 @@ class SourcingService:
             )
             invalid_variant_ids = variant_ids - {str(vid) for vid in valid_variant_ids}
             if invalid_variant_ids:
-                raise ValueError(
-                    f"variant_id(s) no longer exist: {', '.join(invalid_variant_ids)}"
-                )
+                raise ValueError(f"variant_id(s) no longer exist: {', '.join(invalid_variant_ids)}")
 
         for row in rows:
             try:
@@ -359,7 +362,10 @@ class SourcingService:
                 image_url_changed = existing.image_url != image_url
                 existing.product_name = product_name
                 existing.variant_name = variant_name
-                existing.category_id = category_id_val  # type: ignore[attr-defined]
+                # Preserve the existing category when re-importing a mapped row that carries no
+                # category_code — only update category if a new one is provided or this is not a mapped row.
+                if category_id_val is not None or variant_id_val is None:
+                    existing.category_id = category_id_val  # type: ignore[attr-defined]
                 existing.unit_price = unit_price
                 existing.discounted_price = discounted_price
                 existing.qty_suggested = qty_suggested
