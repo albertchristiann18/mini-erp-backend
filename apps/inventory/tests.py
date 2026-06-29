@@ -4,6 +4,7 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import connection
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
@@ -18,6 +19,7 @@ _real_auth_has_permission = IsAuthenticatedPermission.has_permission
 from apps.inventory.factories import (
     CategoryFactory,
     ProductCogsFactory,
+    ProductDimensionImageFactory,
     ProductFactory,
     ProductPhotoFactory,
     ProductSupplierFactory,
@@ -31,6 +33,7 @@ from apps.inventory.models import (
     Product,
     ProductBusinessEntity,
     ProductCogs,
+    ProductDimensionImage,
     ProductSupplier,
     ProductVariant,
     ProductVariantWarehouse,
@@ -4012,3 +4015,242 @@ class QCPPhase7Test(APITestCase):
             detail_response.data["order_details"][0]["product_supplier_link"],
             "https://po-supplier.com",
         )
+
+
+class DimensionImageAPITest(APITestCase):
+    def setUp(self):
+        from core.models import UserProfile
+
+        self.company = CompanyFactory()
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(
+            category=self.category, company=self.company, dim1_key="Warna"
+        )
+        self.user = User.objects.create_user(
+            username="dim_api_user", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def test_product_dim_fields_default_to_empty_string_and_list(self):
+        product = ProductFactory(company=self.company, category=self.category)
+        self.assertEqual(product.dim1_key, "")
+        self.assertEqual(product.dim2_key, "")
+        self.assertEqual(product.dim1_options, [])
+        self.assertEqual(product.dim2_options, [])
+
+    def test_dimension_image_upload_creates_record(self):
+        photo = SimpleUploadedFile("w.jpg", b"imgdata", content_type="image/jpeg")
+        url = f"/product/{self.product.id}/dimension-image/"
+        response = self.client.post(
+            url,
+            {"dim_key": "Warna", "dim_value": "White", "photo": photo},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(
+            ProductDimensionImage.objects.filter(
+                product=self.product, dim_key="Warna", dim_value="White"
+            ).exists()
+        )
+        self.assertIn("photo_url", response.data)
+        created = ProductDimensionImage.objects.get(product=self.product, dim_key="Warna", dim_value="White")
+        self.assertEqual(created.company, self.product.company)
+
+    def test_dimension_image_upload_replaces_existing_for_same_key_and_value(self):
+        existing = ProductDimensionImageFactory(
+            product=self.product, dim_key="Warna", dim_value="White"
+        )
+        original_pk = existing.pk
+        photo = SimpleUploadedFile("w2.jpg", b"newdata", content_type="image/jpeg")
+        url = f"/product/{self.product.id}/dimension-image/"
+        response = self.client.post(
+            url,
+            {"dim_key": "Warna", "dim_value": "White", "photo": photo},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            ProductDimensionImage.objects.filter(
+                product=self.product, dim_key="Warna", dim_value="White"
+            ).count(),
+            1,
+        )
+        updated = ProductDimensionImage.objects.get(
+            product=self.product, dim_key="Warna", dim_value="White"
+        )
+        self.assertEqual(updated.pk, original_pk)
+
+    def test_dimension_image_delete_removes_record(self):
+        ProductDimensionImageFactory(
+            product=self.product, dim_key="Warna", dim_value="White"
+        )
+        url = f"/product/{self.product.id}/dimension-image/"
+        response = self.client.delete(
+            url, {"dim_key": "Warna", "dim_value": "White"}, format="json"
+        )
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(
+            ProductDimensionImage.objects.filter(
+                product=self.product, dim_key="Warna", dim_value="White"
+            ).exists()
+        )
+
+    def test_dimension_image_delete_missing_returns_404(self):
+        url = f"/product/{self.product.id}/dimension-image/"
+        response = self.client.delete(
+            url, {"dim_key": "Warna", "dim_value": "NonExistent"}, format="json"
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_photo_proxy_returns_dimension_image_when_dim_key_and_value_provided(self):
+        ProductDimensionImageFactory(
+            product=self.product, dim_key="Warna", dim_value="White"
+        )
+        url = f"/product/{self.product.id}/photo-proxy/?dim_key=Warna&dim_value=White"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+
+    def test_photo_proxy_falls_back_to_gallery_when_no_dimension_image_matches(self):
+        from apps.inventory.factories import ProductPhotoFactory
+        ProductPhotoFactory(product=self.product, company=self.company, order=0)
+        url = f"/product/{self.product.id}/photo-proxy/?dim_key=Warna&dim_value=NonExistent"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+
+    def test_dimension_image_upload_missing_dim_key_returns_400(self):
+        photo = SimpleUploadedFile("w.jpg", b"imgdata", content_type="image/jpeg")
+        url = f"/product/{self.product.id}/dimension-image/"
+        response = self.client.post(
+            url, {"dim_value": "White", "photo": photo}, format="multipart"
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_dimension_image_upload_missing_dim_value_returns_400(self):
+        photo = SimpleUploadedFile("w.jpg", b"imgdata", content_type="image/jpeg")
+        url = f"/product/{self.product.id}/dimension-image/"
+        response = self.client.post(
+            url, {"dim_key": "Warna", "photo": photo}, format="multipart"
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_dimension_image_upload_missing_photo_returns_400(self):
+        url = f"/product/{self.product.id}/dimension-image/"
+        response = self.client.post(
+            url, {"dim_key": "Warna", "dim_value": "White"}, format="multipart"
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_product_detail_response_includes_dim_fields_and_dimension_images(self):
+        response = self.client.get(f"/product/{self.product.id}/")
+        self.assertEqual(response.status_code, 200)
+        for field in ("dim1_key", "dim2_key", "dim1_options", "dim2_options", "dimension_images"):
+            self.assertIn(field, response.data)
+        self.assertIsInstance(response.data["dimension_images"], list)
+
+    def test_dimension_image_upload_rejected_for_product_from_other_company(self):
+        """A user from company A cannot upload a dimension image on a product from company B."""
+        other_company = CompanyFactory()
+        other_category = CategoryFactory(company=other_company)
+        other_product = ProductFactory(company=other_company, category=other_category)
+        photo = SimpleUploadedFile("w.jpg", b"imgdata", content_type="image/jpeg")
+        url = f"/product/{other_product.id}/dimension-image/"
+        response = self.client.post(
+            url,
+            {"dim_key": "Warna", "dim_value": "White", "photo": photo},
+            format="multipart",
+        )
+        # get_queryset filters by company, so this returns 404 (not 403)
+        self.assertEqual(response.status_code, 404)
+
+
+class PODetailDimensionPhotoTest(APITestCase):
+    def setUp(self):
+        from core.models import UserProfile
+
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(
+            category=self.category, company=self.company, dim1_key="Warna"
+        )
+        self.variant = ProductVariantFactory(
+            product=self.product,
+            company=self.company,
+            variant_values={"Warna": "White"},
+        )
+        self.user = User.objects.create_user(
+            username="po_dim_user", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def test_po_detail_returns_dimension_image_url_when_variant_has_matching_dim_value(self):
+        from apps.inventory.factories import ProductDimensionImageFactory
+        from apps.purchasing.factories import PurchaseOrderDetailFactory, PurchaseOrderFactory
+
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        PurchaseOrderDetailFactory(
+            purchase_order=po, product_variant=self.variant, company=self.company
+        )
+        ProductDimensionImageFactory(
+            product=self.product, dim_key="Warna", dim_value="White"
+        )
+
+        response = self.client.get(f"/purchase-order/{po.id}/", format="json")
+        self.assertEqual(response.status_code, 200)
+        detail_data = response.data["order_details"][0]
+        self.assertIn("product_photo_url", detail_data)
+        self.assertIsNotNone(detail_data["product_photo_url"])
+        self.assertIn("dimension_images", detail_data["product_photo_url"])
+
+    def test_po_detail_falls_back_to_variant_photo_when_no_dimension_image(self):
+        from django.core.files.base import ContentFile
+
+        from apps.purchasing.factories import PurchaseOrderDetailFactory, PurchaseOrderFactory
+
+        self.variant.photo.save("variant.jpg", ContentFile(b"variant_img"), save=True)
+
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        PurchaseOrderDetailFactory(
+            purchase_order=po, product_variant=self.variant, company=self.company
+        )
+
+        response = self.client.get(f"/purchase-order/{po.id}/", format="json")
+        self.assertEqual(response.status_code, 200)
+        detail_data = response.data["order_details"][0]
+        self.assertIsNotNone(detail_data["product_photo_url"])
+        self.assertIn("variants/photos/", detail_data["product_photo_url"])
+
+    def test_po_detail_returns_product_dim1_key_field(self):
+        from apps.purchasing.factories import PurchaseOrderDetailFactory, PurchaseOrderFactory
+
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        PurchaseOrderDetailFactory(
+            purchase_order=po, product_variant=self.variant, company=self.company
+        )
+
+        response = self.client.get(f"/purchase-order/{po.id}/", format="json")
+        self.assertEqual(response.status_code, 200)
+        detail_data = response.data["order_details"][0]
+        self.assertIn("product_dim1_key", detail_data)
+        self.assertEqual(detail_data["product_dim1_key"], "Warna")
+
+    def test_po_detail_product_dim1_key_is_none_for_product_without_dim1_key(self):
+        from apps.purchasing.factories import PurchaseOrderDetailFactory, PurchaseOrderFactory
+
+        product_no_dim = ProductFactory(
+            category=self.category, company=self.company, dim1_key=""
+        )
+        variant_no_dim = ProductVariantFactory(
+            product=product_no_dim, company=self.company, variant_values={}
+        )
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        PurchaseOrderDetailFactory(
+            purchase_order=po, product_variant=variant_no_dim, company=self.company
+        )
+
+        response = self.client.get(f"/purchase-order/{po.id}/", format="json")
+        self.assertEqual(response.status_code, 200)
+        detail_data = response.data["order_details"][0]
+        self.assertIsNone(detail_data["product_dim1_key"])

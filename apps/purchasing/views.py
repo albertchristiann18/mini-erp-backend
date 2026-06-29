@@ -107,6 +107,7 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
             "order_details__product_variant",
             "order_details__product_variant__product",
             "order_details__product_variant__product__photos",
+            "order_details__product_variant__product__dimension_images",
         )
 
     def list(self, request: Request, *args: Any, **kwargs: Any) -> Response:
@@ -253,10 +254,12 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
         if unit_price_foreign is not None:
             try:
                 from decimal import Decimal as D
+
                 price_decimal = D(str(unit_price_foreign))
             except Exception:
                 return Response(
-                    {"error": "unit_price_foreign must be a number"}, status=status.HTTP_400_BAD_REQUEST
+                    {"error": "unit_price_foreign must be a number"},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
 
         try:

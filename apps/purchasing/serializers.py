@@ -32,7 +32,9 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
     """Serializer for Purchase Order Details"""
 
     id = serializers.CharField(required=False)
-    product_variant_id = serializers.CharField(write_only=True, required=False, allow_null=True, allow_blank=True)
+    product_variant_id = serializers.CharField(
+        write_only=True, required=False, allow_null=True, allow_blank=True
+    )
     variant_id = serializers.SerializerMethodField()
     product_variant_name = serializers.SerializerMethodField()
     sku_variant_code = serializers.SerializerMethodField()
@@ -50,6 +52,12 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
     sourcing_item_id = serializers.SerializerMethodField()
     is_draft = serializers.SerializerMethodField()
     draft_product_name = serializers.CharField(read_only=True)
+    product_dim1_key = serializers.SerializerMethodField()
+
+    def get_product_dim1_key(self, obj: "PurchaseOrderDetail") -> str | None:
+        if not obj.product_variant_id:  # type: ignore[attr-defined]
+            return None
+        return obj.product_variant.product.dim1_key or None  # type: ignore[union-attr]
 
     class Meta:
         model = PurchaseOrderDetail
@@ -86,6 +94,7 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
             "sourcing_item_id",
             "is_draft",
             "draft_product_name",
+            "product_dim1_key",
         ]
         read_only_fields = [
             "updated_qty",
@@ -97,6 +106,7 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
             "sourcing_item_id",
             "is_draft",
             "draft_product_name",
+            "product_dim1_key",
         ]
 
     def get_variant_id(self, obj: PurchaseOrderDetail) -> str | None:
@@ -123,17 +133,35 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
     def get_is_draft(self, obj: PurchaseOrderDetail) -> bool:
         return obj.sourcing_item_id is not None and obj.product_variant_id is None  # type: ignore[attr-defined]
 
-    def get_product_photo_url(self, obj: PurchaseOrderDetail) -> str | None:
+    def get_product_photo_url(self, obj: "PurchaseOrderDetail") -> str | None:
         if not obj.product_variant_id:  # type: ignore[attr-defined]
             return None
         variant = obj.product_variant
+        product = variant.product  # type: ignore[union-attr]
+
+        # 1. Per-dimension-value image (highest priority)
+        dim1_key = product.dim1_key  # type: ignore[union-attr]
+        if dim1_key:
+            dim1_value = (variant.variant_values or {}).get(dim1_key)  # type: ignore[union-attr]
+            if dim1_value:
+                # Iterate the prefetch cache — do NOT call .filter() or .order_by()
+                for dim_img in product.dimension_images.all():  # type: ignore[union-attr]
+                    if dim_img.dim_key == dim1_key and dim_img.dim_value == dim1_value:
+                        return dim_img.photo.url  # type: ignore[no-any-return]
+
+        # 2. Variant-level photo
         if variant.photo:  # type: ignore[union-attr]
             return variant.photo.url  # type: ignore[union-attr, no-any-return]
-        gallery = list(variant.product.photos.order_by("order").all())  # type: ignore[union-attr]
+
+        # 3. Product gallery — use prefetch cache, sort in Python (avoids bypassing prefetch)
+        gallery = sorted(product.photos.all(), key=lambda p: p.order)  # type: ignore[union-attr]
         if gallery:
             return gallery[0].image.url  # type: ignore[no-any-return]
+
+        # 4. Product-level photo field
         if variant.product.product_photo:  # type: ignore[union-attr]
             return variant.product.product_photo.url  # type: ignore[union-attr, no-any-return]
+
         return None
 
     def get_last_unit_price_foreign(self, obj: PurchaseOrderDetail) -> str | None:

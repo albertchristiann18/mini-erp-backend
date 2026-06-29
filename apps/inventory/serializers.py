@@ -95,6 +95,22 @@ class ProductSerializer(serializers.ModelSerializer):
     variants = VariantSerializer(many=True, read_only=True)
     photos = ProductPhotoSerializer(many=True, read_only=True)
 
+    dim1_key = serializers.CharField(read_only=True)
+    dim2_key = serializers.CharField(read_only=True)
+    dim1_options = serializers.JSONField(read_only=True)
+    dim2_options = serializers.JSONField(read_only=True)
+    dimension_images = serializers.SerializerMethodField()
+
+    def get_dimension_images(self, obj: Product) -> list[dict]:
+        return [
+            {
+                "dim_key": di.dim_key,
+                "dim_value": di.dim_value,
+                "photo_url": di.photo.url if di.photo else None,
+            }
+            for di in obj.dimension_images.all()
+        ]
+
     class Meta:
         model = Product
         fields = [
@@ -108,6 +124,11 @@ class ProductSerializer(serializers.ModelSerializer):
             "total_qty",
             "total_cogs",
             "variant_options",
+            "dim1_key",
+            "dim2_key",
+            "dim1_options",
+            "dim2_options",
+            "dimension_images",
             "specifications",
             "weight",
             "length",
@@ -238,7 +259,7 @@ class ProductVariantStockSerializer(serializers.ModelSerializer):
     def get_product_photo_url(self, obj: ProductVariant) -> str | None:
         if obj.photo:
             return obj.photo.url  # type: ignore[no-any-return]
-        gallery = list(obj.product.photos.order_by("order").all())
+        gallery = sorted(obj.product.photos.all(), key=lambda p: p.order)
         if gallery:
             return gallery[0].image.url  # type: ignore[no-any-return]
         if obj.product.product_photo:

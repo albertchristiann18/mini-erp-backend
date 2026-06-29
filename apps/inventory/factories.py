@@ -9,6 +9,7 @@ from apps.inventory.models import (
     Product,
     ProductBusinessEntity,
     ProductCogs,
+    ProductDimensionImage,
     ProductPhoto,
     ProductSupplier,
     ProductVariant,
@@ -182,3 +183,14 @@ class ProductBusinessEntityFactory(factory.django.DjangoModelFactory):
     company = factory.LazyAttribute(  # type: ignore[attr-defined,no-untyped-call]
         lambda o: o.product.company
     )
+
+
+class ProductDimensionImageFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = ProductDimensionImage
+
+    product = factory.SubFactory(ProductFactory)  # type: ignore[no-untyped-call]
+    company = factory.LazyAttribute(lambda o: o.product.company if o.product else None)  # type: ignore[attr-defined,no-untyped-call]
+    dim_key = "Warna"
+    dim_value = "White"
+    photo = factory.django.FileField(data=b"x", filename="test_dim_image.jpg")  # type: ignore[no-untyped-call]

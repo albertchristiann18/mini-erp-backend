@@ -258,6 +258,49 @@ class ProductService:
         variant.save(update_fields=["base_price", "udate"])
         return {"id": str(variant.id), "base_price": variant.base_price}
 
+    def upsert_dimension_image(
+        self,
+        product: "Product",
+        dim_key: str,
+        dim_value: str,
+        photo_file: Any,
+    ) -> Any:
+        from apps.inventory.models import ProductDimensionImage
+
+        existing = ProductDimensionImage.objects.filter(
+            product=product, dim_key=dim_key, dim_value=dim_value
+        ).first()
+        if existing:
+            if existing.photo:
+                existing.photo.delete(save=False)
+            existing.photo = photo_file
+            existing.save(update_fields=["photo", "udate"])
+            return existing
+        return ProductDimensionImage.objects.create(
+            product=product,
+            company_id=product.company_id,  # type: ignore[attr-defined]
+            dim_key=dim_key,
+            dim_value=dim_value,
+            photo=photo_file,
+        )
+
+    def delete_dimension_image(
+        self,
+        product: "Product",
+        dim_key: str,
+        dim_value: str,
+    ) -> None:
+        from apps.inventory.models import ProductDimensionImage
+
+        dim_img = ProductDimensionImage.objects.filter(
+            product=product, dim_key=dim_key, dim_value=dim_value
+        ).first()
+        if dim_img is None:
+            raise ValueError("Dimension image not found")
+        if dim_img.photo:
+            dim_img.photo.delete(save=False)
+        dim_img.delete()
+
     def _trigger_shopee_price_update(self, listing_ids: list[str], company_id: str) -> None:
         from apps.inventory.models import ProductVariantMarketplace
         from apps.omnichannel.vendor.shopee.product_push import ShopeeProductPushService
