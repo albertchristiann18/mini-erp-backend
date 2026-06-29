@@ -1,4 +1,5 @@
 from typing import Any
+from urllib.parse import quote
 
 from rest_framework import serializers
 
@@ -95,21 +96,31 @@ class ProductSerializer(serializers.ModelSerializer):
     variants = VariantSerializer(many=True, read_only=True)
     photos = ProductPhotoSerializer(many=True, read_only=True)
 
-    dim1_key = serializers.CharField(read_only=True)
-    dim2_key = serializers.CharField(read_only=True)
+    dim1_key = serializers.CharField(required=False, allow_blank=True, default="")
+    dim2_key = serializers.CharField(required=False, allow_blank=True, default="")
     dim1_options = serializers.JSONField(read_only=True)
     dim2_options = serializers.JSONField(read_only=True)
     dimension_images = serializers.SerializerMethodField()
 
     def get_dimension_images(self, obj: Product) -> list[dict]:
-        return [
-            {
-                "dim_key": di.dim_key,
-                "dim_value": di.dim_value,
-                "photo_url": di.photo.url if di.photo else None,
-            }
-            for di in obj.dimension_images.all()
-        ]
+        request = self.context.get("request")
+        results = []
+        for di in obj.dimension_images.all():
+            if request is not None:
+                proxy_url = request.build_absolute_uri(
+                    f"/product/{obj.id}/photo-proxy/"
+                    f"?dim_key={quote(di.dim_key)}&dim_value={quote(di.dim_value)}"
+                )
+            else:
+                proxy_url = di.photo.url if di.photo else None
+            results.append(
+                {
+                    "dim_key": di.dim_key,
+                    "dim_value": di.dim_value,
+                    "photo_url": proxy_url,
+                }
+            )
+        return results
 
     class Meta:
         model = Product

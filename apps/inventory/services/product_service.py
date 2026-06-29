@@ -267,6 +267,13 @@ class ProductService:
     ) -> Any:
         from apps.inventory.models import ProductDimensionImage
 
+        allowed_keys = {k for k in [product.dim1_key, product.dim2_key] if k}
+        if allowed_keys and dim_key not in allowed_keys:
+            raise ValueError(
+                f"dim_key '{dim_key}' is not a configured dimension for this product "
+                f"(allowed: {', '.join(sorted(allowed_keys))})"
+            )
+
         existing = ProductDimensionImage.objects.filter(
             product=product, dim_key=dim_key, dim_value=dim_value
         ).first()
@@ -300,6 +307,35 @@ class ProductService:
         if dim_img.photo:
             dim_img.photo.delete(save=False)
         dim_img.delete()
+
+    def cleanup_orphan_dimension_images(
+        self, product_id: str, old_dim1_key: str, old_dim2_key: str
+    ) -> None:
+        from apps.inventory.models import Product, ProductDimensionImage
+
+        try:
+            product = Product.objects.get(id=product_id)
+        except Product.DoesNotExist:
+            return
+
+        keys_to_clean: set[str] = set()
+        if old_dim1_key and old_dim1_key != product.dim1_key:
+            keys_to_clean.add(old_dim1_key)
+        if old_dim2_key and old_dim2_key != product.dim2_key:
+            keys_to_clean.add(old_dim2_key)
+
+        if not keys_to_clean:
+            return
+
+        orphans = list(
+            ProductDimensionImage.objects.filter(product=product, dim_key__in=keys_to_clean)
+        )
+        for orphan in orphans:
+            if orphan.photo:
+                orphan.photo.delete(save=False)
+        ProductDimensionImage.objects.filter(
+            product=product, dim_key__in=keys_to_clean
+        ).delete()
 
     def _trigger_shopee_price_update(self, listing_ids: list[str], company_id: str) -> None:
         from apps.inventory.models import ProductVariantMarketplace

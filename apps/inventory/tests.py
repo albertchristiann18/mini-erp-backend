@@ -4163,6 +4163,66 @@ class DimensionImageAPITest(APITestCase):
         # get_queryset filters by company, so this returns 404 (not 403)
         self.assertEqual(response.status_code, 404)
 
+    def test_dimension_image_upload_rejected_when_dim_key_not_configured_on_product(self):
+        photo = SimpleUploadedFile("c.jpg", b"imgdata", content_type="image/jpeg")
+        url = f"/product/{self.product.id}/dimension-image/"
+        response = self.client.post(
+            url,
+            {"dim_key": "Color", "dim_value": "White", "photo": photo},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Color", response.data["error"])
+
+    def test_dimension_image_upload_allowed_when_product_has_no_configured_dims(self):
+        product_no_dims = ProductFactory(company=self.company, category=self.category)
+        photo = SimpleUploadedFile("x.jpg", b"imgdata", content_type="image/jpeg")
+        url = f"/product/{product_no_dims.id}/dimension-image/"
+        response = self.client.post(
+            url,
+            {"dim_key": "AnyKey", "dim_value": "AnyValue", "photo": photo},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 200)
+
+    def test_dimension_image_delete_strips_whitespace_from_dim_key_and_value(self):
+        ProductDimensionImageFactory(product=self.product, dim_key="Warna", dim_value="White")
+        url = f"/product/{self.product.id}/dimension-image/"
+        response = self.client.delete(
+            url, {"dim_key": " Warna ", "dim_value": " White "}, format="json"
+        )
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(
+            ProductDimensionImage.objects.filter(
+                product=self.product, dim_key="Warna", dim_value="White"
+            ).exists()
+        )
+
+    def test_product_detail_dimension_images_returns_proxy_urls(self):
+        ProductDimensionImageFactory(product=self.product, dim_key="Warna", dim_value="White")
+        response = self.client.get(f"/product/{self.product.id}/")
+        self.assertEqual(response.status_code, 200)
+        dim_images = response.data["dimension_images"]
+        self.assertEqual(len(dim_images), 1)
+        photo_url = dim_images[0]["photo_url"]
+        self.assertIsNotNone(photo_url)
+        self.assertIn("photo-proxy", photo_url)
+        self.assertIn("dim_key=Warna", photo_url)
+        self.assertIn("dim_value=White", photo_url)
+
+    def test_changing_dim1_key_removes_orphan_dimension_images(self):
+        ProductDimensionImageFactory(product=self.product, dim_key="Warna", dim_value="White")
+        self.assertEqual(
+            ProductDimensionImage.objects.filter(product=self.product, dim_key="Warna").count(), 1
+        )
+        url = f"/product/{self.product.id}/"
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.patch(url, {"dim1_key": "Color"}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            ProductDimensionImage.objects.filter(product=self.product, dim_key="Warna").count(), 0
+        )
+
 
 class PODetailDimensionPhotoTest(APITestCase):
     def setUp(self):

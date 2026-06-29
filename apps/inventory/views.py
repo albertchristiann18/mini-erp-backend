@@ -108,14 +108,22 @@ class ProductViewSet(viewsets.ModelViewSet):
         return ProductSerializer
 
     def update(self, request: Request, *args: Any, **kwargs: Any) -> Response:
-        from django.db import transaction
-
         from apps.inventory.services.product_service import ProductService
 
+        current = self.get_object()
+        old_dim1_key = current.dim1_key
+        old_dim2_key = current.dim2_key
+        _product_id = str(current.id)
+
         response = super().update(request, *args, **kwargs)
-        instance = self.get_object()
+
         transaction.on_commit(
-            lambda: ProductService()._trigger_shopee_product_update(str(instance.id))
+            lambda: ProductService()._trigger_shopee_product_update(_product_id)
+        )
+        transaction.on_commit(
+            lambda: ProductService().cleanup_orphan_dimension_images(
+                _product_id, old_dim1_key, old_dim2_key
+            )
         )
         return response
 
@@ -332,8 +340,8 @@ class ProductViewSet(viewsets.ModelViewSet):
     ) -> Response:
         product = self.get_object()
         if request.method == "DELETE":
-            dim_key = request.data.get("dim_key", "")
-            dim_value = request.data.get("dim_value", "")
+            dim_key = (request.data.get("dim_key") or "").strip()
+            dim_value = (request.data.get("dim_value") or "").strip()
 
             if not dim_key:
                 return Response({'error': 'dim_key is required'}, status=status.HTTP_400_BAD_REQUEST)
@@ -364,7 +372,10 @@ class ProductViewSet(viewsets.ModelViewSet):
 
         from apps.inventory.services.product_service import ProductService
 
-        dim_img = ProductService().upsert_dimension_image(product, dim_key, dim_value, photo_file)
+        try:
+            dim_img = ProductService().upsert_dimension_image(product, dim_key, dim_value, photo_file)
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(
             {
                 "id": str(dim_img.id),

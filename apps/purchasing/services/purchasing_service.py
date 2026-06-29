@@ -53,7 +53,9 @@ class PurchaseOrderService:
             )
 
         draft_product_name = f"{sourcing_item.product_name} / {sourcing_item.variant_name}"
-        effective_price = unit_price_foreign if unit_price_foreign is not None else sourcing_item.unit_price
+        effective_price = (
+            unit_price_foreign if unit_price_foreign is not None else sourcing_item.unit_price
+        )
 
         detail = PurchaseOrderDetail.objects.create(
             purchase_order=po,
@@ -119,7 +121,13 @@ class PurchaseOrderService:
                     "length": 0,
                     "width": 0,
                     "height": 0,
-                    "variants": [{"variant_values": {}, "sku_variant_code": sku_suffix.strip(), "base_price": 0}],
+                    "variants": [
+                        {
+                            "variant_values": {},
+                            "sku_variant_code": sku_suffix.strip(),
+                            "base_price": 0,
+                        }
+                    ],
                 }
             )
         except IntegrityError:
@@ -133,7 +141,9 @@ class PurchaseOrderService:
         detail.product_variant = variant
         detail.sourcing_item = None
         detail.draft_product_name = ""
-        detail.save(update_fields=["product_variant", "sourcing_item", "draft_product_name", "udate"])
+        detail.save(
+            update_fields=["product_variant", "sourcing_item", "draft_product_name", "udate"]
+        )
 
         # Recompute IDR base prices for this line now that it has a real variant.
         po = detail.purchase_order
@@ -450,7 +460,9 @@ class PurchaseOrderService:
                     }
                 )
 
-            if po.order_details.filter(sourcing_item__isnull=False, product_variant__isnull=True).exists():
+            if po.order_details.filter(
+                sourcing_item__isnull=False, product_variant__isnull=True
+            ).exists():
                 missing.append(
                     {
                         "field": "order_details",
@@ -570,7 +582,11 @@ class PurchaseOrderService:
             existing_details_map = {str(d.id): d for d in po.order_details.all()}
 
             product_variant_ids = list(
-                set(d.product_variant.id for d in po.order_details.all() if d.product_variant_id is not None)  # type: ignore[union-attr, attr-defined]
+                set(
+                    d.product_variant.id
+                    for d in po.order_details.all()
+                    if d.product_variant_id is not None
+                )  # type: ignore[union-attr, attr-defined]
             )
 
             pvw_map = {
@@ -967,7 +983,9 @@ class PurchaseOrderService:
         if po.status in [PurchaseOrder.POStatus.DRAFT, PurchaseOrder.POStatus.ORDERED]:
             ids_to_keep = [d.id for d in update_details] + [d.id for d in new_details]
             # Only delete non-draft lines (product_variant is set); draft lines are managed separately
-            po.order_details.filter(product_variant__isnull=False).exclude(id__in=ids_to_keep).delete()
+            po.order_details.filter(product_variant__isnull=False).exclude(
+                id__in=ids_to_keep
+            ).delete()
 
         if update_details:
             update_fields_list = list(update_fields_set) + ["udate"]
@@ -981,9 +999,15 @@ class PurchaseOrderService:
 
             real_new_details = [d for d in new_details if d.product_variant_id is not None]  # type: ignore[attr-defined]
             variant_ids = [d.product_variant.id for d in real_new_details]  # type: ignore[union-attr]
-            raw_pairs = list(
-                ProductVariant.objects.filter(id__in=variant_ids).values_list("id", "product_id")
-            ) if variant_ids else []
+            raw_pairs = (
+                list(
+                    ProductVariant.objects.filter(id__in=variant_ids).values_list(
+                        "id", "product_id"
+                    )
+                )
+                if variant_ids
+                else []
+            )
             variant_product_map: dict[str, str] = {str(vid): str(pid) for vid, pid in raw_pairs}
             product_ids = list(set(variant_product_map.values()))
             link_map: dict[str, str | None] = {}
@@ -1010,7 +1034,9 @@ class PurchaseOrderService:
         if new_details:
             PurchaseOrderDetail.objects.bulk_create(new_details, batch_size=100)
             new_variant_ids = [
-                str(d.product_variant.id) for d in new_details if d.product_variant_id is not None  # type: ignore[union-attr, attr-defined]
+                str(d.product_variant.id)
+                for d in new_details
+                if d.product_variant_id is not None  # type: ignore[union-attr, attr-defined]
             ]
             self._ensure_product_supplier_links(po, new_variant_ids)
 
