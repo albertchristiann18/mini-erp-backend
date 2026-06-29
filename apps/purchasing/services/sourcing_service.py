@@ -44,7 +44,7 @@ class SourcingService:
                 "category_code",
                 "unit_price",
                 "discounted_price",
-                "qty_suggested",
+                "order_qty",
                 "supplier_link",
                 "image_url",
                 "notes",
@@ -55,6 +55,58 @@ class SourcingService:
         ws_cats.append(["category_code", "category_name"])
         for cat in Category.objects.filter(company=company, is_active=True).order_by("name"):
             ws_cats.append([cat.category_code, cat.name])
+
+        ws_guide = wb.create_sheet("Guide")
+
+        ws_guide.column_dimensions["A"].width = 20
+        ws_guide.column_dimensions["B"].width = 60
+
+        guide_rows = [
+            ["PANDUAN IMPORT SOURCING POOL", ""],
+            ["", ""],
+            ["KOLOM", "KETERANGAN"],
+            ["variant_code", "Opsional. SKU varian yang sudah ada di sistem. Jika diisi, baris ini ditautkan ke produk yang sudah ada."],
+            ["product_name", "Nama produk. Wajib jika supplier_link kosong. Semua baris dengan product_name yang sama dikelompokkan sebagai satu produk."],
+            ["variant_name", "Nama varian. Wajib diisi. Untuk produk dengan 2 dimensi (mis. Warna & Ukuran), gabungkan nilainya dengan tanda hubung, mis. 'Putih-S'."],
+            ["category_code", "Kode kategori dari sheet Categories. Wajib diisi jika variant_code tidak diisi."],
+            ["unit_price", "Harga beli per unit (angka saja, mis. 50000)."],
+            ["discounted_price", "Harga diskon. Harus lebih kecil dari unit_price. Boleh kosong."],
+            ["order_qty", "Jumlah yang disarankan untuk dipesan. Boleh kosong."],
+            ["supplier_link", "URL halaman produk supplier. Wajib jika product_name kosong."],
+            ["image_url", "URL gambar produk. Gambar akan diunduh otomatis. Boleh kosong."],
+            ["notes", "Catatan tambahan. Boleh kosong."],
+            ["", ""],
+            ["CONTOH: PRODUK DENGAN 2 VARIASI (Warna + Ukuran)", ""],
+            ["", ""],
+            ["Untuk produk 'Kaos Polo' dengan Warna (Putih, Merah) dan Ukuran (S, M, L),", ""],
+            ["buat 6 baris dengan product_name yang sama dan variant_name berisi kombinasi:", ""],
+            ["", ""],
+            ["product_name", "variant_name | unit_price | order_qty"],
+            ["Kaos Polo", "Putih-S     | 50000      | 5"],
+            ["Kaos Polo", "Putih-M     | 50000      | 10"],
+            ["Kaos Polo", "Putih-L     | 50000      | 8"],
+            ["Kaos Polo", "Merah-S     | 50000      | 5"],
+            ["Kaos Polo", "Merah-M     | 50000      | 10"],
+            ["Kaos Polo", "Merah-L     | 50000      | 8"],
+            ["", ""],
+            ["Saat finalisasi draft, isi:", ""],
+            ["  Variasi 1 Nama", "Warna"],
+            ["  Variasi 1 Nilai", "Putih  (bagian pertama sebelum tanda hubung di variant_name)"],
+            ["  Variasi 2 Nama", "Ukuran"],
+            ["  Variasi 2 Nilai", "S  (bagian kedua setelah tanda hubung)"],
+            ["", ""],
+            ["PRODUK DENGAN 1 VARIASI", ""],
+            ["", ""],
+            ["Jika produk hanya punya 1 dimensi (mis. hanya Ukuran),", ""],
+            ["isi variant_name langsung dengan nilai dimensinya:", ""],
+            ["", ""],
+            ["product_name", "variant_name | unit_price | order_qty"],
+            ["Celana Cargo", "S            | 80000      | 5"],
+            ["Celana Cargo", "M            | 80000      | 10"],
+            ["Celana Cargo", "L            | 80000      | 8"],
+        ]
+        for row_data in guide_rows:
+            ws_guide.append(row_data)
 
         return wb
 
@@ -222,21 +274,22 @@ class SourcingService:
                 )
                 continue
 
-            qty_suggested_raw = get_cell(row, "qty_suggested")
+            # Accept new column name "order_qty"; fall back to old "qty_suggested" for backward compat
+            order_qty_raw = get_cell(row, "order_qty") or get_cell(row, "qty_suggested")
             qty_suggested: int | None = None
-            if qty_suggested_raw:
+            if order_qty_raw:
                 try:
-                    qty_suggested = int(float(qty_suggested_raw))
+                    qty_suggested = int(float(order_qty_raw))
                     if qty_suggested < 0:
                         errors.append(
-                            {"row": row_num, "message": "qty_suggested must be 0 or greater"}
+                            {"row": row_num, "message": "order_qty must be 0 or greater"}
                         )
                         continue
                 except ValueError:
                     errors.append(
                         {
                             "row": row_num,
-                            "message": f"qty_suggested '{qty_suggested_raw}' must be a whole number",
+                            "message": f"order_qty '{order_qty_raw}' must be a whole number",
                         }
                     )
                     continue

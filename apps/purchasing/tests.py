@@ -4331,7 +4331,7 @@ class TestSourcingService(TestCase):
                 "category_code",
                 "unit_price",
                 "discounted_price",
-                "qty_suggested",
+                "order_qty",
                 "supplier_link",
                 "image_url",
                 "notes",
@@ -4393,6 +4393,14 @@ class TestSourcingService(TestCase):
         self.assertEqual(len(cat_rows), 4)  # header + 3 categories (TEST + CAT1 + CAT2)
         self.assertIn(("CAT1", "Category One"), cat_rows[1:])
         self.assertIn(("CAT2", "Category Two"), cat_rows[1:])
+
+    def test_build_template_workbook_has_order_qty_column_and_guide_sheet(self):
+        wb = self.service.build_template_workbook(company=self.company)
+        ws_items = wb["Items"]
+        header = [cell.value for cell in ws_items[1]]
+        self.assertIn("order_qty", header)
+        self.assertNotIn("qty_suggested", header)
+        self.assertIn("Guide", wb.sheetnames)
 
     def test_parse_excel_preview_returns_valid_rows_for_correct_input(self):
         file_bytes = self._build_workbook(
@@ -4588,7 +4596,7 @@ class TestSourcingService(TestCase):
         self.assertEqual(len(result["valid"]), 0)
         self.assertTrue(any("discounted_price" in e["message"] for e in result["errors"]))
 
-    def test_parse_excel_preview_rejects_negative_qty_suggested(self):
+    def test_parse_excel_preview_rejects_negative_order_qty(self):
         file_bytes = self._build_workbook(
             [
                 ["Prod", "Var", self.category.category_code, "10.000", "", "-3"],
@@ -4596,9 +4604,9 @@ class TestSourcingService(TestCase):
         )
         result = self.service.parse_excel_preview(file_bytes, company=self.company)
         self.assertEqual(len(result["valid"]), 0)
-        self.assertTrue(any("qty_suggested" in e["message"] for e in result["errors"]))
+        self.assertTrue(any("order_qty" in e["message"] for e in result["errors"]))
 
-    def test_parse_excel_preview_accepts_zero_qty_suggested(self):
+    def test_parse_excel_preview_accepts_zero_order_qty(self):
         file_bytes = self._build_workbook(
             [
                 ["Prod", "Var", self.category.category_code, "10.000", "", "0"],
@@ -4613,6 +4621,20 @@ class TestSourcingService(TestCase):
             [
                 ["Prod", "Var", self.category.category_code, "10.000", "", 5.0],
             ]
+        )
+        result = self.service.parse_excel_preview(file_bytes, company=self.company)
+        self.assertEqual(len(result["valid"]), 1)
+        self.assertEqual(result["valid"][0]["qty_suggested"], 5)
+
+    def test_parse_excel_preview_accepts_legacy_qty_suggested_column_header(self):
+        """Old files using qty_suggested column header are still accepted."""
+        file_bytes = self._build_workbook(
+            [["Prod", "Var", self.category.category_code, "10.000", "", "5"]],
+            header=[
+                "product_name", "variant_name", "category_code",
+                "unit_price", "discounted_price", "qty_suggested",
+                "supplier_link", "image_url", "notes",
+            ],
         )
         result = self.service.parse_excel_preview(file_bytes, company=self.company)
         self.assertEqual(len(result["valid"]), 1)
@@ -5445,7 +5467,7 @@ class TestSourcingService(TestCase):
                 "category_code",
                 "unit_price",
                 "discounted_price",
-                "qty_suggested",
+                "order_qty",
                 "supplier_link",
                 "image_url",
                 "notes",
@@ -5469,7 +5491,7 @@ class TestSourcingService(TestCase):
                 "category_code",
                 "unit_price",
                 "discounted_price",
-                "qty_suggested",
+                "order_qty",
                 "supplier_link",
                 "image_url",
                 "notes",
@@ -5496,7 +5518,7 @@ class TestSourcingService(TestCase):
                 "category_code",
                 "unit_price",
                 "discounted_price",
-                "qty_suggested",
+                "order_qty",
                 "supplier_link",
                 "image_url",
                 "notes",
@@ -5519,7 +5541,7 @@ class TestSourcingService(TestCase):
                 "category_code",
                 "unit_price",
                 "discounted_price",
-                "qty_suggested",
+                "order_qty",
                 "supplier_link",
                 "image_url",
                 "notes",
@@ -5542,7 +5564,7 @@ class TestSourcingService(TestCase):
                 "category_code",
                 "unit_price",
                 "discounted_price",
-                "qty_suggested",
+                "order_qty",
                 "supplier_link",
                 "image_url",
                 "notes",
@@ -5701,7 +5723,7 @@ class TestSourcingService(TestCase):
                 "category_code",
                 "unit_price",
                 "discounted_price",
-                "qty_suggested",
+                "order_qty",
                 "supplier_link",
                 "image_url",
                 "notes",
@@ -5723,7 +5745,7 @@ class TestSourcingService(TestCase):
                 "category_code",
                 "unit_price",
                 "discounted_price",
-                "qty_suggested",
+                "order_qty",
                 "supplier_link",
                 "image_url",
                 "notes",
