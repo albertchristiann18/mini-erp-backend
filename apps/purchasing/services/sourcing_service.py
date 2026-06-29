@@ -16,7 +16,7 @@ from core.models import Company
 
 logger = logging.getLogger(__name__)
 
-REQUIRED_COLUMNS = {"product_name", "variant_name", "unit_price"}
+REQUIRED_COLUMNS = {"variant_name", "unit_price"}
 
 CONTENT_TYPE_EXT: dict[str, str] = {
     "image/jpeg": ".jpg",
@@ -148,13 +148,22 @@ class SourcingService:
             variant_code = get_cell(row, "variant_code")
 
             # Skip blank rows — include variant_code in the check
-            if not any([product_name, variant_name, category_code, unit_price_raw, variant_code]):
+            if not any([
+                product_name,
+                variant_name,
+                category_code,
+                unit_price_raw,
+                variant_code,
+                get_cell(row, "supplier_link"),
+                get_cell(row, "image_url"),
+            ]):
                 continue
 
             row_errors: list[str] = []
 
-            if not product_name:
-                row_errors.append("product_name is required")
+            supplier_link_raw = get_cell(row, "supplier_link")
+            if not product_name and not supplier_link_raw:
+                row_errors.append("product_name or supplier_link is required")
             if not variant_name:
                 row_errors.append("variant_name is required")
 
@@ -255,6 +264,7 @@ class SourcingService:
                 {
                     "row": row_num,
                     "product_name": product_name,
+                    "product_name_derived": not bool(product_name),
                     "variant_name": variant_name,
                     "variant_code": variant_code,
                     "variant_id": variant_id,
@@ -289,8 +299,12 @@ class SourcingService:
             raise ValueError(f"category_id(s) not found for this company: {', '.join(invalid_ids)}")
 
         # Lock all pool items upfront to prevent duplicate-key races on concurrent imports
+        def _item_merge_key(item: SourcingPoolItem) -> tuple[str, str]:
+            key_part = (item.supplier_link or item.product_name or "").lower()
+            return (key_part, item.variant_name.lower())
+
         existing_map: dict[tuple[str, str], SourcingPoolItem] = {
-            (item.product_name.lower(), item.variant_name.lower()): item
+            _item_merge_key(item): item
             for item in SourcingPoolItem.objects.filter(pool=pool).select_for_update()
         }
 
@@ -312,7 +326,8 @@ class SourcingService:
 
         for row in rows:
             try:
-                product_name: str = str(row["product_name"]).strip()
+                product_name_raw = row.get("product_name")
+                product_name_val: str | None = str(product_name_raw).strip() if product_name_raw else None
                 variant_name: str = str(row["variant_name"]).strip()
                 category_id_val: str | None = row.get("category_id") or None
                 unit_price = Decimal(str(row["unit_price"]))
@@ -321,8 +336,12 @@ class SourcingService:
             except (KeyError, InvalidOperation) as exc:
                 raise ValueError(f"Invalid row data: {exc}") from exc
 
-            if not product_name or not variant_name:
-                raise ValueError("product_name and variant_name must not be empty")
+            if not variant_name:
+                raise ValueError("variant_name must not be empty")
+
+            supplier_link: str | None = row.get("supplier_link") or None
+            if not product_name_val and not supplier_link:
+                raise ValueError("product_name or supplier_link is required")
             if unit_price <= 0:
                 raise ValueError(f"unit_price must be > 0, got {unit_price}")
 
@@ -348,11 +367,11 @@ class SourcingService:
                 if qty_suggested < 0:
                     raise ValueError(f"qty_suggested must be >= 0, got {qty_suggested}")
 
-            supplier_link: str | None = row.get("supplier_link") or None
             image_url: str | None = row.get("image_url") or None
             notes: str | None = row.get("notes") or None
 
-            key = (product_name.lower(), variant_name.lower())
+            key_part = (supplier_link or product_name_val or "").lower()
+            key = (key_part, variant_name.lower())
 
             existing_in_db = existing_map.get(key)
             existing_in_batch = in_progress_creates.get(key)
@@ -360,7 +379,7 @@ class SourcingService:
 
             if existing:
                 image_url_changed = existing.image_url != image_url
-                existing.product_name = product_name
+                existing.product_name = product_name_val
                 existing.variant_name = variant_name
                 # Preserve the existing category when re-importing a mapped row that carries no
                 # category_code — only update category if a new one is provided or this is not a mapped row.
@@ -383,7 +402,7 @@ class SourcingService:
                 new_item = SourcingPoolItem(
                     pool=pool,
                     company=company,
-                    product_name=product_name,
+                    product_name=product_name_val,
                     variant_name=variant_name,
                     category_id=category_id_val,
                     unit_price=unit_price,

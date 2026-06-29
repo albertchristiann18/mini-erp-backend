@@ -288,6 +288,10 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
         sku_suffix = request.data.get("sku_suffix", "").strip()
         category_id = request.data.get("category_id") or None
         product_name = request.data.get("product_name") or None
+        dim1_key = (request.data.get("dim1_key") or "").strip() or None
+        dim1_value = (request.data.get("dim1_value") or "").strip() or None
+        dim2_key = (request.data.get("dim2_key") or "").strip() or None
+        dim2_value = (request.data.get("dim2_value") or "").strip() or None
 
         if not sku_suffix:
             return Response({"error": "sku_suffix is required"}, status=status.HTTP_400_BAD_REQUEST)
@@ -303,6 +307,10 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
                 sku_suffix=sku_suffix,
                 category_id=category_id,
                 product_name=product_name,
+                dim1_key=dim1_key,
+                dim1_value=dim1_value,
+                dim2_key=dim2_key,
+                dim2_value=dim2_value,
             )
             return Response(
                 {"detail_id": str(detail.id), "variant_id": str(detail.product_variant.id)},  # type: ignore[union-attr]

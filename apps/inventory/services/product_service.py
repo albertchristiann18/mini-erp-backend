@@ -41,6 +41,10 @@ class ProductService:
                 length=data.get("length", 0),
                 width=data.get("width", 0),
                 height=data.get("height", 0),
+                dim1_key=data.get("dim1_key", ""),
+                dim2_key=data.get("dim2_key", ""),
+                dim1_options=data.get("dim1_options", []),
+                dim2_options=data.get("dim2_options", []),
             )
             for data in data_list
         ]

@@ -5553,7 +5553,7 @@ class TestSourcingService(TestCase):
         self.assertEqual(len(result["valid"]), 0)
         # Pin specific required-field messages so refactors can't silently change error types
         error_message = result["errors"][0]["message"]
-        self.assertIn("product_name is required", error_message)
+        self.assertIn("product_name or supplier_link is required", error_message)
         self.assertIn("variant_name is required", error_message)
         self.assertIn("unit_price is required", error_message)
 
@@ -5838,6 +5838,253 @@ class TestSourcingService(TestCase):
         item.refresh_from_db()
         self.assertIsNone(item.variant_code)
         self.assertIsNone(item.variant_id)
+
+    # --- Phase D: null product_name / supplier_link grouping ---
+
+    def test_parse_excel_preview_accepts_row_with_empty_product_name_when_supplier_link_provided(self):
+        file_bytes = self._build_workbook(
+            header=["product_name", "variant_name", "category_code", "unit_price", "supplier_link"],
+            rows=[
+                ["", "Red", self.category.category_code, "10", "https://shop.com/x"],
+            ],
+        )
+        result = self.service.parse_excel_preview(file_bytes, company=self.company)
+        self.assertEqual(len(result["valid"]), 1)
+        self.assertEqual(len(result["errors"]), 0)
+        row = result["valid"][0]
+        self.assertIsNone(row["product_name"])
+        self.assertTrue(row["product_name_derived"])
+
+    def test_parse_excel_preview_rejects_row_when_both_product_name_and_supplier_link_empty(self):
+        file_bytes = self._build_workbook(
+            header=["product_name", "variant_name", "category_code", "unit_price", "supplier_link"],
+            rows=[
+                ["", "Red", self.category.category_code, "10", ""],
+            ],
+        )
+        result = self.service.parse_excel_preview(file_bytes, company=self.company)
+        self.assertEqual(len(result["valid"]), 0)
+        self.assertEqual(len(result["errors"]), 1)
+        self.assertIn("product_name or supplier_link is required", result["errors"][0]["message"])
+
+    def test_parse_excel_preview_blank_row_semantics(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Items"
+        ws.append(["product_name", "variant_name", "category_code", "unit_price", "variant_code", "supplier_link", "image_url"])
+        # Row A: all 7 fields empty
+        ws.append([None, None, None, None, None, None, None])
+        # Row B: only image_url filled
+        ws.append([None, None, None, None, None, None, "http://img.com"])
+        # Row C: only supplier_link filled
+        ws.append([None, None, None, None, None, "https://shop.com", None])
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        result = self.service.parse_excel_preview(buf.read(), company=self.company)
+        # Row A: skipped — no errors, not in valid
+        row_a_errors = [e for e in result["errors"] if e["row"] == 2]
+        self.assertEqual(len(row_a_errors), 0)
+        # Row B: errors for missing variant_name + unit_price + product_name/supplier_link
+        row_b_errors = [e for e in result["errors"] if e["row"] == 3]
+        self.assertTrue(len(row_b_errors) > 0)
+        combined = "; ".join(e["message"] for e in row_b_errors)
+        self.assertIn("variant_name", combined)
+        self.assertIn("unit_price", combined)
+        self.assertIn("product_name or supplier_link", combined)
+        # Row C: errors for missing variant_name + unit_price
+        row_c_errors = [e for e in result["errors"] if e["row"] == 4]
+        self.assertTrue(len(row_c_errors) > 0)
+        combined_c = "; ".join(e["message"] for e in row_c_errors)
+        self.assertIn("variant_name", combined_c)
+        self.assertIn("unit_price", combined_c)
+
+    def test_import_rows_stores_null_product_name_grouped_by_supplier_link(self):
+        result = self.service.import_rows(
+            company=self.company,
+            supplier=self.supplier,
+            rows=[
+                {
+                    "product_name": None,
+                    "variant_name": "Red",
+                    "unit_price": "10",
+                    "supplier_link": "https://shop.com/item",
+                    "category_id": str(self.category.id),
+                }
+            ],
+        )
+        self.assertEqual(result["created"], 1)
+        pool = SourcingPool.objects.get(company=self.company, supplier=self.supplier)
+        item = pool.items.first()
+        self.assertIsNone(item.product_name)
+        self.assertEqual(item.variant_name, "Red")
+        self.assertEqual(item.supplier_link, "https://shop.com/item")
+        # Re-import same supplier_link + variant_name with new price
+        result2 = self.service.import_rows(
+            company=self.company,
+            supplier=self.supplier,
+            rows=[
+                {
+                    "product_name": None,
+                    "variant_name": "Red",
+                    "unit_price": "20",
+                    "supplier_link": "https://shop.com/item",
+                    "category_id": str(self.category.id),
+                }
+            ],
+        )
+        self.assertEqual(result2["created"], 0)
+        self.assertEqual(result2["updated"], 1)
+        self.assertEqual(pool.items.count(), 1)
+        item.refresh_from_db()
+        self.assertEqual(item.unit_price, Decimal("20"))
+
+    def test_import_rows_raises_when_product_name_and_supplier_link_both_absent(self):
+        with self.assertRaises(ValueError) as ctx:
+            self.service.import_rows(
+                company=self.company,
+                supplier=self.supplier,
+                rows=[
+                    {
+                        "product_name": None,
+                        "variant_name": "Red",
+                        "unit_price": "10",
+                        "supplier_link": None,
+                        "category_id": str(self.category.id),
+                    }
+                ],
+            )
+        self.assertIn("product_name or supplier_link is required", str(ctx.exception))
+
+
+class TestPhaseD(TestCase):
+    """Phase D — add_draft_line and finalize_draft_line with null product_name and dim fields."""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(category=self.category, company=self.company)
+        self.product_variant = ProductVariantFactory(product=self.product)
+        self.service = PurchaseOrderService()
+
+    def test_add_draft_line_uses_unnamed_prefix_when_product_name_null(self):
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        pool = SourcingPoolFactory(company=self.company, supplier=SupplierFactory(company=self.company))
+        sourcing_item = SourcingPoolItemFactory(
+            pool=pool,
+            company=self.company,
+            product_name=None,
+            variant_name="White",
+            category=self.category,
+            unit_price=Decimal("10.000"),
+        )
+        detail = self.service.add_draft_line(
+            po=po,
+            sourcing_item_id=str(sourcing_item.id),
+            ordered_qty=5,
+        )
+        self.assertEqual(detail.draft_product_name, "(Unnamed) / White")
+
+    def test_finalize_draft_line_requires_product_name_when_pool_item_has_none(self):
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        pool = SourcingPoolFactory(company=self.company, supplier=SupplierFactory(company=self.company))
+        sourcing_item = SourcingPoolItemFactory(
+            pool=pool,
+            company=self.company,
+            product_name=None,
+            variant_name="Blue",
+            category=self.category,
+            unit_price=Decimal("10.000"),
+        )
+        detail = self.service.add_draft_line(
+            po=po,
+            sourcing_item_id=str(sourcing_item.id),
+            ordered_qty=5,
+        )
+        # Call without product_name — should raise
+        with self.assertRaises(ValidationError) as ctx:
+            self.service.finalize_draft_line(
+                detail=detail,
+                sku_suffix="X",
+                product_name=None,
+            )
+        self.assertIn("product_name is required", str(ctx.exception))
+
+        # Call with product_name — should succeed
+        result = self.service.finalize_draft_line(
+            detail=detail,
+            sku_suffix="X",
+            product_name="My Product",
+            category_id=str(self.category.id),
+        )
+        self.assertIsNotNone(result.product_variant)
+        self.assertEqual(result.product_variant.product.name, "My Product")
+
+    def test_finalize_draft_line_sets_dim1_on_created_product(self):
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        pool = SourcingPoolFactory(company=self.company, supplier=SupplierFactory(company=self.company))
+        sourcing_item = SourcingPoolItemFactory(
+            pool=pool,
+            company=self.company,
+            product_name="Dim Product",
+            variant_name="Default",
+            category=self.category,
+            unit_price=Decimal("10.000"),
+        )
+        detail = self.service.add_draft_line(
+            po=po,
+            sourcing_item_id=str(sourcing_item.id),
+            ordered_qty=5,
+        )
+        result = self.service.finalize_draft_line(
+            detail=detail,
+            sku_suffix="DIM1",
+            category_id=str(self.category.id),
+            product_name="Dim Product",
+            dim1_key="Warna",
+            dim1_value="Putih",
+        )
+        created_product = result.product_variant.product
+        self.assertEqual(created_product.dim1_key, "Warna")
+        self.assertEqual(created_product.dim1_options, ["Putih"])
+        self.assertEqual(result.product_variant.variant_values, {"Warna": "Putih"})
+
+    def test_finalize_draft_line_with_two_dimensions(self):
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        pool = SourcingPoolFactory(company=self.company, supplier=SupplierFactory(company=self.company))
+        sourcing_item = SourcingPoolItemFactory(
+            pool=pool,
+            company=self.company,
+            product_name="2Dim Product",
+            variant_name="Default",
+            category=self.category,
+            unit_price=Decimal("10.000"),
+        )
+        detail = self.service.add_draft_line(
+            po=po,
+            sourcing_item_id=str(sourcing_item.id),
+            ordered_qty=5,
+        )
+        result = self.service.finalize_draft_line(
+            detail=detail,
+            sku_suffix="DIM2",
+            category_id=str(self.category.id),
+            product_name="2Dim Product",
+            dim1_key="Warna",
+            dim1_value="Putih",
+            dim2_key="Ukuran",
+            dim2_value="M",
+        )
+        created_product = result.product_variant.product
+        self.assertEqual(created_product.dim1_key, "Warna")
+        self.assertEqual(created_product.dim2_key, "Ukuran")
+        self.assertEqual(created_product.dim1_options, ["Putih"])
+        self.assertEqual(created_product.dim2_options, ["M"])
+        self.assertEqual(
+            result.product_variant.variant_values,
+            {"Warna": "Putih", "Ukuran": "M"},
+        )
 
 
 class TestPhase3DraftLines(TestCase):

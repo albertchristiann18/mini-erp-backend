@@ -47,12 +47,14 @@ class PurchaseOrderService:
             id=sourcing_item_id, company=po.company
         )
 
+        display_name = sourcing_item.product_name or "(Unnamed)"
+
         if po.order_details.filter(sourcing_item=sourcing_item).exists():
             raise ValidationError(
-                f"'{sourcing_item.product_name} / {sourcing_item.variant_name}' is already in this PO."
+                f"'{display_name} / {sourcing_item.variant_name}' is already in this PO."
             )
 
-        draft_product_name = f"{sourcing_item.product_name} / {sourcing_item.variant_name}"
+        draft_product_name = f"{display_name} / {sourcing_item.variant_name}"
         effective_price = (
             unit_price_foreign if unit_price_foreign is not None else sourcing_item.unit_price
         )
@@ -75,13 +77,16 @@ class PurchaseOrderService:
         return detail
 
     @transaction.atomic
-    @transaction.atomic
     def finalize_draft_line(
         self,
         detail: PurchaseOrderDetail,
         sku_suffix: str,
         category_id: str | None = None,
         product_name: str | None = None,
+        dim1_key: str | None = None,
+        dim1_value: str | None = None,
+        dim2_key: str | None = None,
+        dim2_value: str | None = None,
     ) -> PurchaseOrderDetail:
         """Convert a draft sourcing line into a real Product+Variant and link it."""
         from django.db import IntegrityError
@@ -99,7 +104,12 @@ class PurchaseOrderService:
             raise ValidationError("sku_suffix is required.")
 
         item = detail.sourcing_item
-        final_product_name = (product_name or "").strip() or item.product_name  # type: ignore[union-attr]
+        final_product_name = (product_name or "").strip() or (item.product_name or "").strip()  # type: ignore[union-attr]
+        if not final_product_name:
+            raise ValidationError(
+                "product_name is required to finalize this line — "
+                "the pool item has no product name."
+            )
         final_category_id = category_id or (str(item.category_id) if item.category_id else None)  # type: ignore[union-attr]
 
         if not final_category_id:
@@ -107,6 +117,16 @@ class PurchaseOrderService:
                 "category_id is required to finalize this line. "
                 "The pool item has no category — provide one explicitly."
             )
+
+        dim1k = (dim1_key or "").strip()
+        dim2k = (dim2_key or "").strip()
+        dim1v = (dim1_value or "").strip()
+        dim2v = (dim2_value or "").strip()
+        variant_values: dict[str, str] = {}
+        if dim1k and dim1v:
+            variant_values[dim1k] = dim1v
+        if dim2k and dim2v:
+            variant_values[dim2k] = dim2v
 
         try:
             result = ProductService().create_product_with_variants(
@@ -121,9 +141,13 @@ class PurchaseOrderService:
                     "length": 0,
                     "width": 0,
                     "height": 0,
+                    "dim1_key": dim1k if dim1v else "",
+                    "dim2_key": dim2k if dim2v else "",
+                    "dim1_options": [dim1v] if dim1v else [],
+                    "dim2_options": [dim2v] if dim2v else [],
                     "variants": [
                         {
-                            "variant_values": {},
+                            "variant_values": variant_values,
                             "sku_variant_code": sku_suffix.strip(),
                             "base_price": 0,
                         }

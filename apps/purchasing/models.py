@@ -351,7 +351,7 @@ class SourcingPoolItem(DefaultModel):
     )
     pool = models.ForeignKey(SourcingPool, on_delete=models.CASCADE, related_name="items")
 
-    product_name = models.CharField(max_length=255)
+    product_name = models.CharField(max_length=255, null=True, blank=True)
     variant_name = models.CharField(max_length=255)
     category = models.ForeignKey(
         "inventory.Category",
@@ -383,7 +383,19 @@ class SourcingPoolItem(DefaultModel):
     times_ordered = models.IntegerField(default=0)
 
     class Meta:
-        unique_together = [("pool", "product_name", "variant_name")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["pool", "supplier_link", "variant_name"],
+                condition=models.Q(supplier_link__isnull=False) & ~models.Q(supplier_link=""),
+                name="unique_pool_supplier_link_variant",
+            ),
+            models.UniqueConstraint(
+                fields=["pool", "product_name", "variant_name"],
+                condition=models.Q(supplier_link__isnull=True) | models.Q(supplier_link=""),
+                name="unique_pool_product_name_variant",
+            ),
+        ]
 
     def __str__(self) -> str:
-        return f"{self.pool.supplier.name} — {self.product_name} / {self.variant_name}"
+        name = self.product_name or "(Unnamed)"
+        return f"{self.pool.supplier.name} — {name} / {self.variant_name}"
