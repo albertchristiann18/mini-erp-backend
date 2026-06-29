@@ -5956,6 +5956,44 @@ class TestSourcingService(TestCase):
             )
         self.assertIn("product_name or supplier_link is required", str(ctx.exception))
 
+    def test_reimport_with_supplier_link_added_updates_not_duplicates(self):
+        """Re-importing same item with supplier_link added must update, not create a duplicate."""
+        self.service.import_rows(
+            company=self.company,
+            supplier=self.supplier,
+            rows=[
+                {
+                    "product_name": "Widget A",
+                    "variant_name": "Red",
+                    "unit_price": "10",
+                    "supplier_link": None,
+                    "category_id": str(self.category.id),
+                }
+            ],
+        )
+        pool = SourcingPool.objects.get(company=self.company, supplier=self.supplier)
+        self.assertEqual(pool.items.count(), 1)
+
+        result = self.service.import_rows(
+            company=self.company,
+            supplier=self.supplier,
+            rows=[
+                {
+                    "product_name": "Widget A",
+                    "variant_name": "Red",
+                    "unit_price": "20",
+                    "supplier_link": "https://shop.com/x",
+                    "category_id": str(self.category.id),
+                }
+            ],
+        )
+        self.assertEqual(result["created"], 0)
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(pool.items.count(), 1)
+        item = pool.items.first()
+        self.assertEqual(item.unit_price, Decimal("20"))
+        self.assertEqual(item.supplier_link, "https://shop.com/x")
+
 
 class TestPhaseD(TestCase):
     """Phase D — add_draft_line and finalize_draft_line with null product_name and dim fields."""

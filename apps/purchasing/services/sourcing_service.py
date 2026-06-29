@@ -303,9 +303,16 @@ class SourcingService:
             key_part = (item.supplier_link or item.product_name or "").lower()
             return (key_part, item.variant_name.lower())
 
+        existing_items = list(SourcingPoolItem.objects.filter(pool=pool).select_for_update())
         existing_map: dict[tuple[str, str], SourcingPoolItem] = {
-            _item_merge_key(item): item
-            for item in SourcingPoolItem.objects.filter(pool=pool).select_for_update()
+            _item_merge_key(item): item for item in existing_items
+        }
+        # Secondary index: look up by (product_name, variant_name) so that re-importing
+        # the same item with supplier_link added doesn't create a duplicate.
+        existing_product_name_map: dict[tuple[str, str], SourcingPoolItem] = {
+            (item.product_name.lower(), item.variant_name.lower()): item
+            for item in existing_items
+            if item.product_name
         }
 
         in_progress_creates: dict[tuple[str, str], SourcingPoolItem] = {}
@@ -374,6 +381,11 @@ class SourcingService:
             key = (key_part, variant_name.lower())
 
             existing_in_db = existing_map.get(key)
+            # Fallback: row now has supplier_link but was previously stored under product_name key.
+            # Without this, adding a supplier_link to a row on re-import would create a duplicate.
+            if existing_in_db is None and supplier_link and product_name_val:
+                fallback_key = (product_name_val.lower(), variant_name.lower())
+                existing_in_db = existing_product_name_map.get(fallback_key)
             existing_in_batch = in_progress_creates.get(key)
             existing = existing_in_db or existing_in_batch
 
