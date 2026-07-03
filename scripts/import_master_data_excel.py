@@ -16,7 +16,7 @@ import ulid as ulid_lib
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-EXCEL_PATH = "/Users/jtf01644/personal/mini-erp-project/data/Mirakokids FinOps.xlsx"
+EXCEL_PATH = "/Users/jtf01644/personal/mini-erp-project/mirako_data/Mirakokids FinOps.xlsx"
 
 DB_PARAMS = dict(
     host="localhost",

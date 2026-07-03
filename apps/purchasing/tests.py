@@ -1401,6 +1401,7 @@ class PurchaseOrderServiceTest(TestCase):
             warehouse=self.warehouse,
             company=self.company,
             status=PurchaseOrder.POStatus.DRAFT,
+            has_discount=True,
             commission_fee_pct=5,
             delivery_fee=Decimal("0"),
             cbm=Decimal("0"),
@@ -1709,6 +1710,74 @@ class PurchaseOrderServiceTest(TestCase):
         self.assertEqual(po.total_item_amount, 2200000)
         self.assertEqual(po.total_order_amount, 2200000)
         self.assertEqual(po.total_amount, 2200000)
+
+    def test_recalculate_po_totals_respects_has_discount_false_with_zero_discounted(self):
+        """_recalculate_po_totals uses base prices when has_discount=False, even if discounted prices are 0."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DRAFT,
+            has_discount=False,
+            commission_fee_pct=0,
+            delivery_fee=0,
+            cbm=0,
+            shipping_fee_per_cbm=0,
+            exchange_rate=2200,
+        )
+        PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            ordered_qty=10,
+            unit_price_foreign=Decimal("100"),
+            unit_price_base=220000,
+            total_price_foreign=Decimal("1000"),
+            total_price_base=2200000,
+            discounted_unit_price_foreign=Decimal("0"),
+            discounted_unit_price_base=0,
+            discounted_total_price_foreign=Decimal("0"),
+            discounted_total_price_base=0,
+        )
+
+        po = self.service.update_purchase_order(po, {})
+        po.refresh_from_db()
+
+        self.assertEqual(po.total_item_amount, 2200000)
+        self.assertEqual(po.total_order_amount, 2200000)
+        self.assertEqual(po.total_amount, 2200000)
+
+    def test_recalculate_po_totals_uses_discounted_when_has_discount_true(self):
+        """_recalculate_po_totals uses discounted prices when has_discount=True."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DRAFT,
+            has_discount=True,
+            commission_fee_pct=0,
+            delivery_fee=0,
+            cbm=0,
+            shipping_fee_per_cbm=0,
+            exchange_rate=2200,
+        )
+        PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            ordered_qty=10,
+            unit_price_foreign=Decimal("100"),
+            unit_price_base=220000,
+            total_price_foreign=Decimal("1000"),
+            total_price_base=2200000,
+            discounted_unit_price_foreign=Decimal("70"),
+            discounted_unit_price_base=150000,
+            discounted_total_price_foreign=Decimal("700"),
+            discounted_total_price_base=1500000,
+        )
+
+        po = self.service.update_purchase_order(po, {})
+        po.refresh_from_db()
+
+        self.assertEqual(po.total_item_amount, 1500000)
+        self.assertEqual(po.total_order_amount, 1500000)
+        self.assertEqual(po.total_amount, 1500000)
 
 
 class PurchaseOrderSerializerValidationTest(TestCase):
