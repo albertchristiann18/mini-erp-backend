@@ -12,6 +12,7 @@ Steps:
     1. Reset      — truncate all business tables
     2. Seed       — create company Mirako + superuser admin/admin123
     3. Master     — products, variants, categories, suppliers
+    3b. Links     — 1688 supplier URLs per product (from PO Detail Overview)
     4. PO         — purchase orders + line items + FIFO
     5. PO enrich  — invoice numbers, delivery orders, fees from PO Tracker
     6. Sales      — sales orders from Sales Order Tracker
@@ -210,6 +211,64 @@ def step_master_data() -> None:
     )
     conn.close()
     print("[OK] Default dimensions set on all products (200g, 1×30×30 cm)")
+
+
+# ---------------------------------------------------------------------------
+# Step 3b — Product supplier links (1688 URLs)
+# ---------------------------------------------------------------------------
+def step_product_links() -> None:
+    header("Step 3b: Product supplier links (1688 URLs)")
+    po_detail_path = MIRAKO_DATA / "Purchase Order Detail Overview (1).xlsx"
+    wb = openpyxl.load_workbook(po_detail_path, data_only=True)
+    ws = wb["Master DATA All Item"]
+    rows = list(ws.iter_rows(values_only=True))
+    # Header at row index 1, data from row 2
+    # col 9: variant SKU CODE (e.g. "DRS-008-100-BLU")
+    # col 1: 1688 Product Link
+
+    # Build map: product SKU prefix (first two dash-parts) -> first non-null link
+    link_map: dict[str, str] = {}
+    for row in rows[2:]:
+        sku_code = row[9]
+        link = row[1]
+        if not sku_code or not link:
+            continue
+        sku_str = str(sku_code).strip()
+        link_str = str(link).strip()
+        if not link_str.startswith("http"):
+            continue
+        parts = sku_str.split("-")
+        if len(parts) < 2:
+            continue
+        product_prefix = f"{parts[0]}-{parts[1]}"
+        if product_prefix not in link_map:
+            link_map[product_prefix] = link_str
+
+    print(f"  Found {len(link_map)} product links in Excel")
+
+    conn = psycopg.connect(**DB_PARAMS, autocommit=True)
+    cur = conn.cursor()
+
+    updated = 0
+    for sku_code, link in link_map.items():
+        cur.execute(
+            """
+            UPDATE inventory_productsupplier ps
+            SET supplier_link = %s
+            FROM inventory_product p
+            WHERE ps.product_id = p.product_id
+              AND p.sku_code = %s
+            """,
+            (link, sku_code),
+        )
+        if cur.rowcount:
+            print(f"  ✓ {sku_code}: {link[:70]}")
+            updated += cur.rowcount
+        else:
+            print(f"  SKIP {sku_code}: no product-supplier record found")
+
+    conn.close()
+    print(f"\n[OK] Updated supplier_link on {updated} product-supplier records")
 
 
 # ---------------------------------------------------------------------------
@@ -485,6 +544,10 @@ def step_reconciliation() -> None:
             "SELECT COUNT(*) FROM purchasing_purchaseorder WHERE delivery_order_invoice_file IS NOT NULL",
         ),
         (
+            "Product-supplier links",
+            "SELECT COUNT(*) FROM inventory_productsupplier WHERE supplier_link IS NOT NULL AND supplier_link != ''",
+        ),
+        (
             "Negative FIFO qty",
             "SELECT COUNT(*) FROM inventory_productcogs WHERE remaining_qty < 0",
         ),
@@ -520,6 +583,7 @@ def main() -> None:
     step_reset()
     step_seed_user()
     step_master_data()
+    step_product_links()
     step_purchase_orders()
     step_enrich_po_tracker()
     step_sales_orders()
