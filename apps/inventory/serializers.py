@@ -98,8 +98,8 @@ class ProductSerializer(serializers.ModelSerializer):
 
     dim1_key = serializers.CharField(required=False, allow_blank=True, default="")
     dim2_key = serializers.CharField(required=False, allow_blank=True, default="")
-    dim1_options = serializers.JSONField(read_only=True)
-    dim2_options = serializers.JSONField(read_only=True)
+    dim1_options = serializers.JSONField(required=False, default=list)
+    dim2_options = serializers.JSONField(required=False, default=list)
     dimension_images = serializers.SerializerMethodField()
 
     def get_dimension_images(self, obj: Product) -> list[dict]:
