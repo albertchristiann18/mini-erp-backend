@@ -253,7 +253,8 @@ def parse_po_tracker() -> dict:
         po_invoice_file = po_inv_raw if po_inv_raw.lower().endswith(".pdf") else None
 
         # Aggregate per-delivery values (sum across all delivery rows for this PO)
-        delivery_fee = sum((row[15] or 0) for row in po_rows)
+        # delivery_fee: take first row only (IDR), kept as IDR for later RMB conversion
+        delivery_fee_idr_first_row = float(po_rows[0][15] or 0)
         shipping_fee = int(sum((row[16] or 0) for row in po_rows))
         cbm = round(sum((row[20] or 0) for row in po_rows), 3)
         weight = round(sum((row[23] or 0) for row in po_rows), 3)
@@ -266,7 +267,7 @@ def parse_po_tracker() -> dict:
             "forwarder_name": str(first[9]) if first[9] else None,
             "shop_services": str(first[10]) if first[10] else None,
             "commission_fee_pct": int(round((first[11] or 0) * 100)),
-            "delivery_fee": delivery_fee,
+            "delivery_fee_idr_first_row": delivery_fee_idr_first_row,
             "shipping_fee": shipping_fee,
             "cbm": cbm,
             "weight": weight,
@@ -288,9 +289,9 @@ def step_enrich_po_tracker() -> None:
 
     updated = 0
     for po_number, m in metadata.items():
-        # Fetch current total_item_amount to recalculate totals
+        # Fetch current total_item_amount and exchange_rate to recalculate totals
         cur.execute(
-            "SELECT total_item_amount FROM purchasing_purchaseorder "
+            "SELECT total_item_amount, exchange_rate FROM purchasing_purchaseorder "
             "WHERE purchase_order_number = %s",
             (po_number,),
         )
@@ -299,12 +300,15 @@ def step_enrich_po_tracker() -> None:
             print(f"  WARNING: PO {po_number} not found — skipping enrichment")
             continue
         total_item_amount = row[0] or 0
+        exchange_rate = float(row[1] or 1)
 
+        # Convert delivery_fee from IDR (first row) to RMB for DB storage
+        delivery_fee_rmb = round(m["delivery_fee_idr_first_row"] / exchange_rate, 3)
+        delivery_fee_idr_calc = int(round(delivery_fee_rmb * exchange_rate))
         commission_fee = round(m["commission_fee_pct"] / 100 * total_item_amount)
-        delivery_fee = m["delivery_fee"]
         shipping_fee = m["shipping_fee"]
-        total_order_amount = total_item_amount + commission_fee + int(delivery_fee)
-        total_amount = total_item_amount + commission_fee + shipping_fee + int(delivery_fee)
+        total_order_amount = total_item_amount + commission_fee + delivery_fee_idr_calc
+        total_amount = total_item_amount + commission_fee + shipping_fee + delivery_fee_idr_calc
 
         cur.execute(
             """
@@ -332,7 +336,7 @@ def step_enrich_po_tracker() -> None:
                 m["forwarder_name"],
                 m["shop_services"],
                 m["commission_fee_pct"],
-                m["delivery_fee"],
+                delivery_fee_rmb,
                 m["shipping_fee"],
                 m["cbm"],
                 m["weight"],
