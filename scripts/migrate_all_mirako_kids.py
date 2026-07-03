@@ -15,6 +15,7 @@ Steps:
     3b. Links     — 1688 supplier URLs per product (from PO Detail Overview)
     4. PO         — purchase orders + line items + FIFO
     5. PO enrich  — invoice numbers, delivery orders, fees from PO Tracker
+    5b. Split     — create split-delivery POs (PO-2025-001B/002B, PO-2026-001B)
     6. Sales      — sales orders from Sales Order Tracker
     7. Cash       — cash transactions from FinOps Finance sheet
     8. Files      — upload PO invoices, resi, DO invoices to R2
@@ -41,6 +42,7 @@ django.setup()
 
 import openpyxl
 import psycopg
+import ulid as ulid_lib
 from django.contrib.auth import get_user_model
 from django.core.files import File
 from django.core.files.storage import default_storage
@@ -319,8 +321,8 @@ def parse_po_tracker() -> dict:
         po_invoice_file = po_inv_raw if po_inv_raw.lower().endswith(".pdf") else None
 
         # Aggregate per-delivery values (sum across all delivery rows for this PO)
-        # delivery_fee: take first row only (IDR), kept as IDR for later RMB conversion
-        delivery_fee_idr_first_row = float(po_rows[0][15] or 0)
+        # delivery_fee: col 30 = "shipping 1688" which is already in RMB (China-side fee)
+        delivery_fee_rmb = round(float(po_rows[0][30] or 0), 3)
         shipping_fee = int(sum((row[16] or 0) for row in po_rows))
         cbm = round(sum((row[20] or 0) for row in po_rows), 3)
         weight = round(sum((row[23] or 0) for row in po_rows), 3)
@@ -328,12 +330,13 @@ def parse_po_tracker() -> dict:
         result[po_number] = {
             "invoice_number": str(first[2]) if first[2] else None,
             "invoice_date": _to_date(first[3]),
+            "created_date": _to_date(first[1]),
             "delivery_order_number": resi_number or None,
             "delivery_date": _to_date(first[5]),
             "forwarder_name": str(first[9]) if first[9] else None,
             "shop_services": str(first[10]) if first[10] else None,
             "commission_fee_pct": int(round((first[11] or 0) * 100)),
-            "delivery_fee_idr_first_row": delivery_fee_idr_first_row,
+            "delivery_fee_rmb": delivery_fee_rmb,
             "shipping_fee": shipping_fee,
             "cbm": cbm,
             "weight": weight,
@@ -368,13 +371,23 @@ def step_enrich_po_tracker() -> None:
         total_item_amount = row[0] or 0
         exchange_rate = float(row[1] or 1)
 
-        # Convert delivery_fee from IDR (first row) to RMB for DB storage
-        delivery_fee_rmb = round(m["delivery_fee_idr_first_row"] / exchange_rate, 3)
+        # delivery_fee is already in RMB (shipping_1688 col); convert to IDR for totals
+        delivery_fee_rmb = m["delivery_fee_rmb"]
         delivery_fee_idr_calc = int(round(delivery_fee_rmb * exchange_rate))
         commission_fee = round(m["commission_fee_pct"] / 100 * total_item_amount)
         shipping_fee = m["shipping_fee"]
         total_order_amount = total_item_amount + commission_fee + delivery_fee_idr_calc
         total_amount = total_item_amount + commission_fee + shipping_fee + delivery_fee_idr_calc
+
+        # Build cdate from tracker "created date" col, fall back to invoice_date
+        created_ts = None
+        if m["created_date"]:
+            from datetime import (
+                datetime as _dt,
+                timezone as _tz,
+            )
+
+            created_ts = _dt.combine(m["created_date"], _dt.min.time()).replace(tzinfo=_tz.utc)
 
         cur.execute(
             """
@@ -391,7 +404,8 @@ def step_enrich_po_tracker() -> None:
                 cbm                   = %s,
                 weight                = %s,
                 total_order_amount    = %s,
-                total_amount          = %s
+                total_amount          = %s,
+                cdate                 = COALESCE(%s, cdate)
             WHERE purchase_order_number = %s
             """,
             (
@@ -408,11 +422,19 @@ def step_enrich_po_tracker() -> None:
                 m["weight"],
                 total_order_amount,
                 total_amount,
+                created_ts,
                 po_number,
             ),
         )
         print(f"  ✓ {po_number}: inv={m['invoice_number']}, DO={m['delivery_order_number']}")
         updated += 1
+
+    # Set DRAFT status for POs that are not yet completed
+    cur.execute(
+        "UPDATE purchasing_purchaseorder SET status = 'DRAFT' "
+        "WHERE purchase_order_number IN ('PO-2026-006', 'PO-2026-007')"
+    )
+    print("  ✓ Set PO-2026-006 and PO-2026-007 to DRAFT")
 
     conn.close()
     print(f"\n[OK] Enriched {updated} POs from tracker")
@@ -478,6 +500,17 @@ def step_attach_files(skip_files: bool) -> None:
         (IMPORTED_PO_NUMBERS,),
     )
 
+    # Also clear split POs
+    split_po_numbers = [c["split_po"] for c in SPLIT_DELIVERY_CONFIG]
+    cur.execute(
+        """
+        UPDATE purchasing_purchaseorder
+        SET delivery_order_file = NULL, delivery_order_invoice_file = NULL
+        WHERE purchase_order_number = ANY(%s)
+        """,
+        (split_po_numbers,),
+    )
+
     po_inv_count = do_count = doi_count = 0
 
     for po_number, m in metadata.items():
@@ -502,8 +535,319 @@ def step_attach_files(skip_files: bool) -> None:
             if _upload_file(cur, local, key, po_number, "delivery_order_invoice_file"):
                 doi_count += 1
 
+    # Attach RESI and DO invoice for split POs (second tracker row per split no)
+    wb_t = openpyxl.load_workbook(MIRAKO_DATA / "Purchase Order Tracker (1).xlsx", data_only=True)
+    ws_t = wb_t["Master Tracker Purchase Order"]
+    t_rows = list(ws_t.iter_rows(values_only=True))
+    by_no: dict[int, list] = defaultdict(list)
+    for row in t_rows[7:]:
+        no = row[0]
+        if isinstance(no, (int, float)) and int(no) in TRACKER_NO_TO_PO:
+            by_no[int(no)].append(row)
+
+    for cfg in SPLIT_DELIVERY_CONFIG:
+        rows_for_no = by_no.get(cfg["tracker_no"], [])
+        if len(rows_for_no) < 2:
+            continue
+        split_row = rows_for_no[1]
+        split_po = cfg["split_po"]
+
+        raw_do = str(split_row[4]) if split_row[4] else ""
+        resi_fn = _clean_resi_filename(raw_do) if raw_do else ""
+        if resi_fn:
+            local = OPEX_DOCS / "resi" / resi_fn
+            key = "po/delivery_orders/" + resi_fn.replace(" ", "_")
+            if _upload_file(cur, local, key, split_po, "delivery_order_file"):
+                do_count += 1
+
+        raw_doi = str(split_row[19]) if split_row[19] else ""
+        doi_fn = _clean_doi_filename(raw_doi) if raw_doi else ""
+        if doi_fn:
+            local = OPEX_DOCS / "invoice delivery file" / doi_fn
+            key = "po/do_invoices/" + doi_fn.replace(" ", "_")
+            if _upload_file(cur, local, key, split_po, "delivery_order_invoice_file"):
+                doi_count += 1
+
     conn.close()
     print(f"\n[OK] Attached: {po_inv_count} PO invoices, {do_count} resi, {doi_count} DO invoices")
+
+
+# ---------------------------------------------------------------------------
+# Step 5b — Split delivery POs
+# ---------------------------------------------------------------------------
+# POs 1, 2, and 8 each had two physical shipments. The per-item delivery date
+# in the PO-specific recap sheets identifies which items belong to each batch.
+# Items with the split_date go to the split PO; remaining (or null date) stay
+# in the parent PO.
+
+
+def _new_ulid() -> str:
+    return str(ulid_lib.new().uuid)
+
+
+SPLIT_DELIVERY_CONFIG = [
+    {
+        "parent_po": "PO-2025-001",
+        "split_po": "PO-2025-001B",
+        "sheet": "PO Recap 2 April 2025",
+        "sku_col": 8,
+        "date_col": 16,
+        "split_date": date(2025, 5, 15),
+        "tracker_no": 1,
+    },
+    {
+        "parent_po": "PO-2025-002",
+        "split_po": "PO-2025-002B",
+        "sheet": "PO Recap 2 Juni 2025",
+        "sku_col": 9,
+        "date_col": 17,
+        "split_date": date(2025, 8, 15),
+        "tracker_no": 2,
+    },
+    {
+        "parent_po": "PO-2026-001",
+        "split_po": "PO-2026-001B",
+        "sheet": "Recap 9 Jan 2026",
+        "sku_col": 9,
+        "date_col": 17,
+        "split_date": date(2026, 5, 7),
+        "tracker_no": 8,
+    },
+]
+
+
+def step_split_deliveries() -> None:
+    header("Step 5b: Split delivery POs")
+
+    # Load tracker (need second row per split no)
+    wb_tracker = openpyxl.load_workbook(
+        MIRAKO_DATA / "Purchase Order Tracker (1).xlsx", data_only=True
+    )
+    ws_tracker = wb_tracker["Master Tracker Purchase Order"]
+    tracker_rows = list(ws_tracker.iter_rows(values_only=True))
+
+    # Group tracker rows by "no" (preserving order → second row is the split)
+    by_no: dict[int, list] = defaultdict(list)
+    for row in tracker_rows[7:]:
+        no = row[0]
+        if isinstance(no, (int, float)) and int(no) in TRACKER_NO_TO_PO:
+            by_no[int(no)].append(row)
+
+    # Load PO detail Excel
+    wb_detail = openpyxl.load_workbook(
+        MIRAKO_DATA / "Purchase Order Detail Overview (1).xlsx", data_only=True
+    )
+
+    conn = psycopg.connect(**DB_PARAMS, autocommit=True)
+    cur = conn.cursor()
+
+    # Disable PO number auto-generation trigger so we can set explicit PO numbers
+    cur.execute("ALTER TABLE purchasing_purchaseorder DISABLE TRIGGER trg_generate_po_number")
+
+    for cfg in SPLIT_DELIVERY_CONFIG:
+        parent_po = cfg["parent_po"]
+        split_po = cfg["split_po"]
+        tracker_no = cfg["tracker_no"]
+        split_date = cfg["split_date"]
+
+        # Fetch parent PO metadata from DB
+        cur.execute(
+            """
+            SELECT purchase_order_id, company_id, warehouse_id, supplier_id,
+                   exchange_rate, invoice_number, invoice_date, commission_fee_pct
+            FROM purchasing_purchaseorder
+            WHERE purchase_order_number = %s
+            """,
+            (parent_po,),
+        )
+        parent_row = cur.fetchone()
+        if not parent_row:
+            print(f"  SKIP {split_po}: parent {parent_po} not found")
+            continue
+        (
+            parent_po_id,
+            company_id,
+            warehouse_id,
+            supplier_id,
+            exchange_rate,
+            invoice_number,
+            invoice_date,
+            commission_fee_pct,
+        ) = parent_row
+        # Get second tracker row for this no (the split delivery)
+        rows_for_no = by_no.get(tracker_no, [])
+        if len(rows_for_no) < 2:
+            print(f"  SKIP {split_po}: no second tracker row for no={tracker_no}")
+            continue
+        split_row = rows_for_no[1]
+
+        # Parse split RESI
+        raw_do = str(split_row[4]) if split_row[4] else ""
+        resi_filename = _clean_resi_filename(raw_do) if raw_do else ""
+        resi_number = re.sub(r"\.pdf.*$", "", resi_filename, flags=re.IGNORECASE).strip()
+
+        # Parse split DO invoice
+        raw_doi = str(split_row[19]) if split_row[19] else ""
+        doi_filename = _clean_doi_filename(raw_doi) if raw_doi else ""
+
+        # delivery_fee for split row (col 30 = shipping_1688 in RMB)
+        delivery_fee_rmb = round(float(split_row[30] or 0), 3)
+        shipping_fee = int(split_row[16] or 0)
+        delivery_date = _to_date(split_row[5])
+        created_date = _to_date(split_row[1])
+
+        # Read per-item delivery dates from PO sheet to find split variants
+        ws = wb_detail[cfg["sheet"]]
+        sheet_rows = list(ws.iter_rows(values_only=True))
+        split_variant_skus: set[str] = set()
+        for row in sheet_rows[2:]:
+            sku = row[cfg["sku_col"]]
+            item_date = row[cfg["date_col"]]
+            if not sku:
+                continue
+            item_date_d = _to_date(item_date)
+            if item_date_d == split_date:
+                split_variant_skus.add(str(sku).strip())
+
+        if not split_variant_skus:
+            print(f"  SKIP {split_po}: no items with delivery date {split_date}")
+            continue
+
+        print(f"  {split_po}: {len(split_variant_skus)} variant SKUs for split date {split_date}")
+
+        # Resolve variant IDs from DB
+        cur.execute(
+            """
+            SELECT pv.product_variant_id, pv.sku_variant_code
+            FROM inventory_productvariant pv
+            WHERE pv.sku_variant_code = ANY(%s)
+            """,
+            (list(split_variant_skus),),
+        )
+        variant_rows = cur.fetchall()
+        split_variant_ids = [r[0] for r in variant_rows]
+        found_skus = {r[1] for r in variant_rows}
+        missing = split_variant_skus - found_skus
+        if missing:
+            print(f"    WARNING: {len(missing)} SKUs not in DB: {list(missing)[:5]}")
+        if not split_variant_ids:
+            print(f"  SKIP {split_po}: no variant IDs resolved")
+            continue
+
+        # Count how many details will move
+        cur.execute(
+            """
+            SELECT COUNT(*) FROM purchasing_purchaseorderdetail
+            WHERE purchase_order_id = %s AND product_variant_id = ANY(%s)
+            """,
+            (parent_po_id, split_variant_ids),
+        )
+        n_moving = cur.fetchone()[0]
+        print(f"    Moving {n_moving} PO detail rows to {split_po}")
+
+        # Create the split PO record (copy metadata from parent, override delivery fields)
+        split_po_id = _new_ulid()
+        from datetime import (
+            datetime as _dt,
+            timezone as _tz,
+        )
+
+        ts = _dt.now(_tz.utc)
+        created_ts = (
+            _dt.combine(created_date, _dt.min.time()).replace(tzinfo=_tz.utc)
+            if created_date
+            else ts
+        )
+        cur.execute(
+            """
+            INSERT INTO purchasing_purchaseorder (
+                purchase_order_id, company_id, purchase_order_number, status,
+                invoice_number, invoice_date, delivery_order_number, delivery_date,
+                warehouse_id, supplier_id, supplier_name,
+                currency, exchange_rate,
+                commission_fee_pct, delivery_fee, shipping_fee,
+                total_ordered_qty, total_received_qty,
+                total_item_amount, procure_amount, total_order_amount, total_amount,
+                has_discount, cdate, udate
+            ) VALUES (
+                %s, %s, %s, 'COMPLETED',
+                %s, %s, %s, %s,
+                %s, %s, 'Ancorelala',
+                'CNY', %s,
+                %s, %s, %s,
+                0, 0,
+                0, 0, 0, 0,
+                FALSE, %s, %s
+            )
+            """,
+            (
+                split_po_id,
+                company_id,
+                split_po,
+                invoice_number,
+                invoice_date,
+                resi_number or None,
+                delivery_date,
+                warehouse_id,
+                supplier_id,
+                exchange_rate,
+                commission_fee_pct,
+                delivery_fee_rmb,
+                shipping_fee,
+                created_ts,
+                ts,
+            ),
+        )
+
+        # Move matching PO details to the split PO
+        cur.execute(
+            """
+            UPDATE purchasing_purchaseorderdetail
+            SET purchase_order_id = %s
+            WHERE purchase_order_id = %s AND product_variant_id = ANY(%s)
+            """,
+            (split_po_id, parent_po_id, split_variant_ids),
+        )
+
+        # Update FIFO reference_number for moved variants
+        cur.execute(
+            """
+            UPDATE inventory_productcogs
+            SET reference_number = %s
+            WHERE reference_number = %s AND product_variant_id = ANY(%s)
+            """,
+            (split_po, parent_po, split_variant_ids),
+        )
+
+        # Recalculate totals for both POs from their remaining details
+        for po_id, po_num in [(parent_po_id, parent_po), (split_po_id, split_po)]:
+            cur.execute(
+                """
+                SELECT
+                    COALESCE(SUM(ordered_qty), 0),
+                    COALESCE(SUM(total_price_base), 0)
+                FROM purchasing_purchaseorderdetail
+                WHERE purchase_order_id = %s
+                """,
+                (po_id,),
+            )
+            qty_total, item_amount = cur.fetchone()
+            cur.execute(
+                "UPDATE purchasing_purchaseorder SET "
+                "total_ordered_qty = %s, total_received_qty = %s, "
+                "total_item_amount = %s, procure_amount = %s "
+                "WHERE purchase_order_id = %s",
+                (qty_total, qty_total, item_amount, item_amount, po_id),
+            )
+
+        print(
+            f"  ✓ Created {split_po} (RESI={resi_number or 'none'}, DO_inv={doi_filename or 'none'})"
+        )
+
+    # Re-enable trigger
+    cur.execute("ALTER TABLE purchasing_purchaseorder ENABLE TRIGGER trg_generate_po_number")
+    conn.close()
+    print("\n[OK] Split delivery POs created")
 
 
 # ---------------------------------------------------------------------------
@@ -586,6 +930,7 @@ def main() -> None:
     step_product_links()
     step_purchase_orders()
     step_enrich_po_tracker()
+    step_split_deliveries()
     step_sales_orders()
     step_cash_transactions()
     step_attach_files(args.skip_files)

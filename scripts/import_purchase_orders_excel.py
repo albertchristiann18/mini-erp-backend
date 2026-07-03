@@ -399,7 +399,7 @@ def main():
                         %s, %s, %s, 'COMPLETED',
                         %s, %s,
                         %s, %s, 'Ancorelala',
-                        'RMB', %s,
+                        'CNY', %s,
                         0, 0,
                         0, 0,
                         0, FALSE,
