@@ -480,7 +480,6 @@ def main():
         cur.execute("ALTER TABLE inventory_productvariant ENABLE TRIGGER trg_generate_variant_sku")
         conn.commit()
 
-        print()
         print("✓ Import complete.")
         print(f"  Company    : Mirako Kids  ({COMPANY_ID})")
         print(f"  Warehouse  : Gudang Utama ({WAREHOUSE_ID})")
