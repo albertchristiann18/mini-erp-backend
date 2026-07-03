@@ -4631,9 +4631,15 @@ class TestSourcingService(TestCase):
         file_bytes = self._build_workbook(
             [["Prod", "Var", self.category.category_code, "10.000", "", "5"]],
             header=[
-                "product_name", "variant_name", "category_code",
-                "unit_price", "discounted_price", "qty_suggested",
-                "supplier_link", "image_url", "notes",
+                "product_name",
+                "variant_name",
+                "category_code",
+                "unit_price",
+                "discounted_price",
+                "qty_suggested",
+                "supplier_link",
+                "image_url",
+                "notes",
             ],
         )
         result = self.service.parse_excel_preview(file_bytes, company=self.company)
@@ -5863,7 +5869,9 @@ class TestSourcingService(TestCase):
 
     # --- Phase D: null product_name / supplier_link grouping ---
 
-    def test_parse_excel_preview_accepts_row_with_empty_product_name_when_supplier_link_provided(self):
+    def test_parse_excel_preview_accepts_row_with_empty_product_name_when_supplier_link_provided(
+        self,
+    ):
         file_bytes = self._build_workbook(
             header=["product_name", "variant_name", "category_code", "unit_price", "supplier_link"],
             rows=[
@@ -5893,7 +5901,17 @@ class TestSourcingService(TestCase):
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Items"
-        ws.append(["product_name", "variant_name", "category_code", "unit_price", "variant_code", "supplier_link", "image_url"])
+        ws.append(
+            [
+                "product_name",
+                "variant_name",
+                "category_code",
+                "unit_price",
+                "variant_code",
+                "supplier_link",
+                "image_url",
+            ]
+        )
         # Row A: all 7 fields empty
         ws.append([None, None, None, None, None, None, None])
         # Row B: only image_url filled
@@ -6030,7 +6048,9 @@ class TestPhaseD(TestCase):
 
     def test_add_draft_line_uses_unnamed_prefix_when_product_name_null(self):
         po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
-        pool = SourcingPoolFactory(company=self.company, supplier=SupplierFactory(company=self.company))
+        pool = SourcingPoolFactory(
+            company=self.company, supplier=SupplierFactory(company=self.company)
+        )
         sourcing_item = SourcingPoolItemFactory(
             pool=pool,
             company=self.company,
@@ -6048,7 +6068,9 @@ class TestPhaseD(TestCase):
 
     def test_finalize_draft_line_requires_product_name_when_pool_item_has_none(self):
         po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
-        pool = SourcingPoolFactory(company=self.company, supplier=SupplierFactory(company=self.company))
+        pool = SourcingPoolFactory(
+            company=self.company, supplier=SupplierFactory(company=self.company)
+        )
         sourcing_item = SourcingPoolItemFactory(
             pool=pool,
             company=self.company,
@@ -6083,7 +6105,9 @@ class TestPhaseD(TestCase):
 
     def test_finalize_draft_line_sets_dim1_on_created_product(self):
         po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
-        pool = SourcingPoolFactory(company=self.company, supplier=SupplierFactory(company=self.company))
+        pool = SourcingPoolFactory(
+            company=self.company, supplier=SupplierFactory(company=self.company)
+        )
         sourcing_item = SourcingPoolItemFactory(
             pool=pool,
             company=self.company,
@@ -6112,7 +6136,9 @@ class TestPhaseD(TestCase):
 
     def test_finalize_draft_line_with_two_dimensions(self):
         po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
-        pool = SourcingPoolFactory(company=self.company, supplier=SupplierFactory(company=self.company))
+        pool = SourcingPoolFactory(
+            company=self.company, supplier=SupplierFactory(company=self.company)
+        )
         sourcing_item = SourcingPoolItemFactory(
             pool=pool,
             company=self.company,

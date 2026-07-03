@@ -235,7 +235,7 @@ def main():
             )
             zero_count = cur.fetchone()[0]
             assert zero_count == 0, f"Found {zero_count} records with amount = 0"
-            print(f"  [PASS] No zero-amount records")
+            print("  [PASS] No zero-amount records")
 
             # Spot-check first row
             cur.execute(
@@ -255,11 +255,17 @@ def main():
             assert str(expected_date) == "2025-04-08", (
                 f"First row date expected 2025-04-08, got {expected_date}"
             )
-            assert desc == "Chip In Albert", f"First row desc expected 'Chip In Albert', got '{desc}'"
+            assert desc == "Chip In Albert", (
+                f"First row desc expected 'Chip In Albert', got '{desc}'"
+            )
             assert amt == 25000000, f"First row amount expected 25000000, got {amt}"
             assert ttype == "INFLOW", f"First row type expected INFLOW, got {ttype}"
-            assert cat == "EQUITY_INJECTION", f"First row category expected EQUITY_INJECTION, got {cat}"
-            print(f"  [PASS] Spot-check: first row = {expected_date}, {desc}, {amt}, {ttype}, {cat}")
+            assert cat == "EQUITY_INJECTION", (
+                f"First row category expected EQUITY_INJECTION, got {cat}"
+            )
+            print(
+                f"  [PASS] Spot-check: first row = {expected_date}, {desc}, {amt}, {ttype}, {cat}"
+            )
 
             print("\n" + "=" * 60)
             print("ALL VALIDATIONS PASSED")

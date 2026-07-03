@@ -10,6 +10,10 @@ sys.path.insert(0, "/Users/jtf01644/personal/mini-erp-project/mini-erp-backend")
 os.environ["DJANGO_SETTINGS_MODULE"] = "core.settings"
 django.setup()
 
+IMPORTED_PO_NUMBERS = [f"PO-2025-{i:03d}" for i in range(1, 8)] + [
+    f"PO-2026-{i:03d}" for i in range(1, 8)
+]
+
 from django.db.models import Count, Q, Sum
 
 from apps.finance.models import CashTransaction
@@ -66,43 +70,45 @@ print(f"      Total deficit units: {neg_total}")
 # ─────────────────────────────────────────────
 print(sep("SECTION 2: PURCHASE ORDERS"))
 
-hist_pos = PurchaseOrder.objects.filter(company=company, purchase_order_number__startswith="HIST-")
+hist_pos = PurchaseOrder.objects.filter(
+    company=company, purchase_order_number__in=IMPORTED_PO_NUMBERS
+)
 hist_po_count = hist_pos.count()
-print(f"  2a. HIST POs: {hist_po_count}")
+print(f"  2a. Imported POs: {hist_po_count}")
 
 hist_po_detail_count = PurchaseOrderDetail.objects.filter(
     purchase_order__company=company,
-    purchase_order__purchase_order_number__startswith="HIST-",
+    purchase_order__purchase_order_number__in=IMPORTED_PO_NUMBERS,
 ).count()
-print(f"  2b. PO Details (HIST): {hist_po_detail_count}")
+print(f"  2b. PO Details (Imported): {hist_po_detail_count}")
 
-fifo_batches = ProductCogs.objects.filter(company=company, reference_number__startswith="HIST-")
+fifo_batches = ProductCogs.objects.filter(company=company, reference_number__in=IMPORTED_PO_NUMBERS)
 fifo_count = fifo_batches.count()
-print(f"  2c. FIFO batches (HIST-): {fifo_count}")
+print(f"  2c. FIFO batches (Imported): {fifo_count}")
 
 hist_po_stock_movements = StockMovement.objects.filter(
     company=company,
     movement_type=StockMovement.MovementType.INBOUND,
-    reference_number__startswith="HIST-",
+    reference_number__in=IMPORTED_PO_NUMBERS,
 )
 hist_sm_count = hist_po_stock_movements.count()
-print(f"  2d. StockMovements (INBOUND, HIST-): {hist_sm_count}")
+print(f"  2d. StockMovements (INBOUND, Imported): {hist_sm_count}")
 
 pos_with_attachment = hist_pos.exclude(
     Q(purchase_order_invoice_file="") | Q(purchase_order_invoice_file__isnull=True)
 ).count()
 pos_without_attachment = hist_po_count - pos_with_attachment
-print(f"  2e. HIST POs with PDF attachment: {pos_with_attachment}")
-print(f"      HIST POs without attachment: {pos_without_attachment}")
+print(f"  2e. Imported POs with PDF attachment: {pos_with_attachment}")
+print(f"      Imported POs without attachment: {pos_without_attachment}")
 
 total_received_qty = (
     PurchaseOrderDetail.objects.filter(
         purchase_order__company=company,
-        purchase_order__purchase_order_number__startswith="HIST-",
+        purchase_order__purchase_order_number__in=IMPORTED_PO_NUMBERS,
     ).aggregate(s=Sum("received_qty"))["s"]
     or 0
 )
-print(f"  2f. Total received_qty from HIST POs: {total_received_qty}")
+print(f"  2f. Total received_qty from Imported POs: {total_received_qty}")
 
 # ─────────────────────────────────────────────
 # SECTION 3: SALES ORDERS
@@ -221,7 +227,7 @@ print(f"       OUTBOUND StockMovements qty: {outbound_qty:,}")
 print(f"       Current total physical_qty (PVW): {current_stock:,}")
 
 print("  5b. FIFO batch coverage:")
-fifo_hist = ProductCogs.objects.filter(company=company, reference_number__startswith="HIST-")
+fifo_hist = ProductCogs.objects.filter(company=company, reference_number__in=IMPORTED_PO_NUMBERS)
 fifo_agg = fifo_hist.aggregate(
     total_original=Sum("original_qty"),
     total_remaining=Sum("remaining_qty"),
@@ -229,8 +235,8 @@ fifo_agg = fifo_hist.aggregate(
 fifo_original = fifo_agg["total_original"] or 0
 fifo_remaining = fifo_agg["total_remaining"] or 0
 fifo_consumed = fifo_original - fifo_remaining
-print(f"       SUM(original_qty) from HIST FIFO: {fifo_original}")
-print(f"       SUM(remaining_qty) from HIST FIFO: {fifo_remaining}")
+print(f"       SUM(original_qty) from Imported FIFO: {fifo_original}")
+print(f"       SUM(remaining_qty) from Imported FIFO: {fifo_remaining}")
 print(f"       Units consumed via FIFO: {fifo_consumed}")
 negative_fifo_count = ProductCogs.objects.filter(company=company, remaining_qty__lt=0).count()
 print(f"       Negative remaining_qty batches: {negative_fifo_count}")
@@ -254,14 +260,14 @@ for v in neg_top:
 print(sep("SECTION 6: MIGRATION COMPLETENESS SUMMARY"))
 
 checks = [
-    ("HIST POs", 14, hist_po_count, hist_po_count == 14),
+    ("Imported POs", 14, hist_po_count, hist_po_count == 14),
     ("PO Details", 491, hist_po_detail_count, hist_po_detail_count == 491),
     ("FIFO Batches", 491, fifo_count, fifo_count == 491),
     ("PO Receipt StockMovements", 491, hist_sm_count, hist_sm_count == 491),
     ("SalesOrders", ">= 4000", so_total, so_total >= 4000),
     ("SalesOrderItems", ">= 5000", so_items_total, so_items_total >= 5000),
     ("CashTransactions", 278, ct_total, ct_total == 278),
-    ("HIST POs with PDF", 12, pos_with_attachment, pos_with_attachment == 12),
+    ("Imported POs with PDF", 12, pos_with_attachment, pos_with_attachment == 12),
     ("Negative FIFO batches", 0, negative_fifo_count, negative_fifo_count == 0),
     ("Net cash balance", "> 0", net_balance, net_balance > 0),
 ]

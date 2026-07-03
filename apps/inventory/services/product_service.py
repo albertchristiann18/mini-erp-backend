@@ -337,9 +337,7 @@ class ProductService:
         for orphan in orphans:
             if orphan.photo:
                 orphan.photo.delete(save=False)
-        ProductDimensionImage.objects.filter(
-            product=product, dim_key__in=keys_to_clean
-        ).delete()
+        ProductDimensionImage.objects.filter(product=product, dim_key__in=keys_to_clean).delete()
 
     def _trigger_shopee_price_update(self, listing_ids: list[str], company_id: str) -> None:
         from apps.inventory.models import ProductVariantMarketplace

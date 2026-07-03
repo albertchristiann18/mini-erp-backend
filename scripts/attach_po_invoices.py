@@ -2,7 +2,7 @@
 attach_po_invoices.py
 
 Extracts the opex docs zip, uploads purchase order invoice PDFs to Cloudflare R2,
-and sets the purchase_order_invoice_file field on the 12 HIST POs that have matching PDFs.
+and sets the purchase_order_invoice_file field on the 12 imported POs that have matching PDFs.
 
 Run from mini-erp-backend/ with:
     uv run python scripts/attach_po_invoices.py
@@ -25,6 +25,10 @@ import psycopg
 from django.core.files import File
 from django.core.files.storage import default_storage
 
+IMPORTED_PO_NUMBERS = [f"PO-2025-{i:03d}" for i in range(1, 8)] + [
+    f"PO-2026-{i:03d}" for i in range(1, 8)
+]
+
 # Step 1 — Extract zip to /tmp/opex_docs/ (overwrite if exists)
 ZIP_PATH = "/Users/jtf01644/personal/mini-erp-project/data/opex docs-20260702T175419Z-3-001.zip"
 EXTRACT_DIR = "/tmp/opex_docs/"
@@ -39,7 +43,7 @@ INVOICE_DIR = os.path.join(EXTRACT_DIR, "opex docs", "purchase order invoice")
 print("Extracted zip to", EXTRACT_DIR)
 print("Invoice dir:", INVOICE_DIR)
 
-# Step 2 — Idempotency: clear existing purchase_order_invoice_file on HIST POs
+# Step 2 — Idempotency: clear existing purchase_order_invoice_file on imported POs
 conn = psycopg.connect(
     host="localhost",
     port=5433,
@@ -50,28 +54,31 @@ conn = psycopg.connect(
 )
 cur = conn.cursor()
 
-cur.execute("""
+cur.execute(
+    """
     UPDATE purchasing_purchaseorder
     SET purchase_order_invoice_file = NULL
-    WHERE purchase_order_number LIKE 'HIST-%'
+    WHERE purchase_order_number = ANY(%s)
     AND purchase_order_invoice_file IS NOT NULL
-""")
-print("Cleared existing file references on HIST POs")
+""",
+    (IMPORTED_PO_NUMBERS,),
+)
+print("Cleared existing file references on imported POs")
 
 # Step 3 — MAPPING dict (hardcoded)
 MAPPING = {
-    "mirako 1.pdf": "HIST-2025-001",
-    "mirako 3 compress.pdf": "HIST-2025-003",
-    "Sorakids 4 (1).pdf": "HIST-2025-004",
-    "Mirako 5.pdf": "HIST-2025-005",
-    "Mirako 6.pdf": "HIST-2025-006",
-    "Mirako 7.pdf": "HIST-2025-007",
-    "Mirako 8.pdf": "HIST-2026-001",
-    "Mirako 9.pdf": "HIST-2026-002",
-    "Mirako 9 PO.pdf": "HIST-2026-003",
-    "Mirako 10.pdf": "HIST-2026-004",
-    "Mirako 11.pdf": "HIST-2026-005",
-    "Mirako 12.pdf": "HIST-2026-006",
+    "mirako 1.pdf": "PO-2025-001",
+    "mirako 3 compress.pdf": "PO-2025-003",
+    "Sorakids 4 (1).pdf": "PO-2025-004",
+    "Mirako 5.pdf": "PO-2025-005",
+    "Mirako 6.pdf": "PO-2025-006",
+    "Mirako 7.pdf": "PO-2025-007",
+    "Mirako 8.pdf": "PO-2026-001",
+    "Mirako 9.pdf": "PO-2026-002",
+    "Mirako 9 PO.pdf": "PO-2026-003",
+    "Mirako 10.pdf": "PO-2026-004",
+    "Mirako 11.pdf": "PO-2026-005",
+    "Mirako 12.pdf": "PO-2026-006",
 }
 
 # Step 4 — For each entry in MAPPING, upload and update DB
@@ -112,7 +119,7 @@ for filename, po_number in MAPPING.items():
 
 # Step 5 — Print summary
 print(f"\nSuccessfully attached {attached_count} invoice files.")
-print("No PDF for HIST-2025-002 (Jun 2 2025) and HIST-2026-007 (Jun 29 2026)")
+print("No PDF for PO-2025-002 (Jun 2 2025) and PO-2026-007 (Jun 29 2026)")
 
 # Step 6 — Cleanup
 shutil.rmtree(EXTRACT_DIR)

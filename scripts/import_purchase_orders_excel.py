@@ -15,6 +15,10 @@ import openpyxl
 import psycopg
 import ulid as ulid_lib
 
+IMPORTED_PO_NUMBERS = [f"PO-2025-{i:03d}" for i in range(1, 8)] + [
+    f"PO-2026-{i:03d}" for i in range(1, 8)
+]
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -239,26 +243,36 @@ def main():
             print(f"Variant map built: {len(variant_map)} variants")
 
             # ------------------------------------------------------------------
-            # Step 0b — Disable auto PO number trigger, delete existing HIST POs
+            # Step 0b — Disable auto PO number trigger, delete existing imported POs
             # ------------------------------------------------------------------
             print("\nDisabling trigger trg_generate_po_number ...")
             cur.execute(
                 "ALTER TABLE purchasing_purchaseorder DISABLE TRIGGER trg_generate_po_number"
             )
 
-            print("Deleting existing HIST purchase orders (idempotency)...")
+            print("Deleting existing imported purchase orders (idempotency)...")
+            cur.execute(
+                "DELETE FROM inventory_stockmovement "
+                "WHERE company_id = %s AND reference_number = ANY(%s)",
+                (company_id, IMPORTED_PO_NUMBERS),
+            )
+            cur.execute(
+                "DELETE FROM inventory_productcogs "
+                "WHERE company_id = %s AND reference_number = ANY(%s)",
+                (company_id, IMPORTED_PO_NUMBERS),
+            )
             cur.execute(
                 "DELETE FROM purchasing_purchaseorderdetail "
                 "WHERE purchase_order_id IN ("
                 "  SELECT purchase_order_id FROM purchasing_purchaseorder "
-                "  WHERE company_id = %s AND purchase_order_number LIKE 'HIST-%%')",
-                (company_id,),
+                "  WHERE company_id = %s AND purchase_order_number = ANY(%s))",
+                (company_id, IMPORTED_PO_NUMBERS),
             )
             deleted_details = cur.rowcount
             cur.execute(
                 "DELETE FROM purchasing_purchaseorder "
-                "WHERE company_id = %s AND purchase_order_number LIKE 'HIST-%%'",
-                (company_id,),
+                "WHERE company_id = %s AND purchase_order_number = ANY(%s)",
+                (company_id, IMPORTED_PO_NUMBERS),
             )
             deleted_pos = cur.rowcount
             print(f"  Deleted {deleted_details} detail rows, {deleted_pos} PO headers")
@@ -366,7 +380,7 @@ def main():
 
                 year = po_date.year
                 po_year_counter[year] += 1
-                po_number = f"HIST-{year}-{po_year_counter[year]:03d}"
+                po_number = f"PO-{year}-{po_year_counter[year]:03d}"
 
                 # Create PurchaseOrder
                 po_id = new_ulid()
@@ -632,6 +646,17 @@ def main():
                 "ALTER TABLE purchasing_purchaseorder ENABLE TRIGGER trg_generate_po_number"
             )
 
+            # Seed po_number_counter so new user-created POs start at 008
+            cur.execute(
+                """
+                INSERT INTO po_number_counter (company_id, year, last_value)
+                VALUES (%s, '2025', 7), (%s, '2026', 7)
+                ON CONFLICT (company_id, year) DO UPDATE SET last_value = EXCLUDED.last_value
+            """,
+                (company_id, company_id),
+            )
+            print("Seeded po_number_counter: 2025→7, 2026→7")
+
             # ------------------------------------------------------------------
             # Step 3 — Final validation queries
             # ------------------------------------------------------------------
@@ -639,40 +664,40 @@ def main():
             print("VALIDATION")
             print("=" * 60)
 
-            # Count only HIST- POs imported by this script
+            # Count only imported POs
             cur.execute(
                 "SELECT COUNT(*) FROM purchasing_purchaseorder "
-                "WHERE company_id = %s AND purchase_order_number LIKE 'HIST-%%'",
-                (company_id,),
+                "WHERE company_id = %s AND purchase_order_number = ANY(%s)",
+                (company_id, IMPORTED_PO_NUMBERS),
             )
             po_count = cur.fetchone()[0]
-            print(f"  HIST PurchaseOrders: {po_count}")
+            print(f"  Imported PurchaseOrders: {po_count}")
 
             cur.execute(
                 "SELECT COUNT(*) FROM purchasing_purchaseorderdetail "
                 "WHERE company_id = %s AND purchase_order_id IN ("
                 "  SELECT purchase_order_id FROM purchasing_purchaseorder "
-                "  WHERE purchase_order_number LIKE 'HIST-%%')",
-                (company_id,),
+                "  WHERE purchase_order_number = ANY(%s))",
+                (company_id, IMPORTED_PO_NUMBERS),
             )
             pod_count = cur.fetchone()[0]
-            print(f"  HIST PO Details: {pod_count}")
+            print(f"  Imported PO Details: {pod_count}")
 
             cur.execute(
                 "SELECT COUNT(*) FROM inventory_productcogs "
-                "WHERE company_id = %s AND reference_number LIKE 'HIST-%%'",
-                (company_id,),
+                "WHERE company_id = %s AND reference_number = ANY(%s)",
+                (company_id, IMPORTED_PO_NUMBERS),
             )
             cogs_count = cur.fetchone()[0]
-            print(f"  HIST ProductCogs (FIFO): {cogs_count}")
+            print(f"  Imported ProductCogs (FIFO): {cogs_count}")
 
             cur.execute(
                 "SELECT COUNT(*) FROM inventory_stockmovement "
-                "WHERE company_id = %s AND reference_number LIKE 'HIST-%%'",
-                (company_id,),
+                "WHERE company_id = %s AND reference_number = ANY(%s)",
+                (company_id, IMPORTED_PO_NUMBERS),
             )
             sm_count = cur.fetchone()[0]
-            print(f"  HIST StockMovements: {sm_count}")
+            print(f"  Imported StockMovements: {sm_count}")
 
             cur.execute(
                 "SELECT SUM(physical_qty) FROM inventory_productvariantwarehouse pvw "
@@ -701,7 +726,7 @@ def main():
             print(f"  StockMovement balance chain issues: {balance_issues}")
 
             # Validation checks
-            assert po_count == 14, f"Expected 14 HIST POs, got {po_count}"
+            assert po_count == 14, f"Expected 14 imported POs, got {po_count}"
             assert pod_count == cogs_count == sm_count, (
                 f"Mismatch: Details={pod_count}, Cogs={cogs_count}, Movements={sm_count}"
             )

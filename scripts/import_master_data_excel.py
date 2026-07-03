@@ -95,11 +95,29 @@ DEFAULT_SHIPPING_CONFIG = {
     },
     "marketplaces": {
         "Shopee": {
-            "reguler": {"expeditions": [{"code": "spx_standard", "name": "SPX Standard", "is_active": False}]},
-            "cargo": {"expeditions": [{"code": "spx_hemat", "name": "SPX Hemat", "is_active": False}]},
-            "instant": {"expeditions": [{"code": "spx_instant", "name": "SPX Instant", "is_active": False}]},
-            "instant_priority": {"expeditions": [{"code": "spx_instant_prio", "name": "SPX Instant Prioritas", "is_active": False}]},
-            "sameday": {"expeditions": [{"code": "spx_sameday", "name": "SPX Sameday", "is_active": False}]},
+            "reguler": {
+                "expeditions": [
+                    {"code": "spx_standard", "name": "SPX Standard", "is_active": False}
+                ]
+            },
+            "cargo": {
+                "expeditions": [{"code": "spx_hemat", "name": "SPX Hemat", "is_active": False}]
+            },
+            "instant": {
+                "expeditions": [{"code": "spx_instant", "name": "SPX Instant", "is_active": False}]
+            },
+            "instant_priority": {
+                "expeditions": [
+                    {
+                        "code": "spx_instant_prio",
+                        "name": "SPX Instant Prioritas",
+                        "is_active": False,
+                    }
+                ]
+            },
+            "sameday": {
+                "expeditions": [{"code": "spx_sameday", "name": "SPX Sameday", "is_active": False}]
+            },
         },
         "Tokopedia_TikTok": {"use_general_config": True},
     },
@@ -155,13 +173,19 @@ def parse_variants(variant_rows):
         sku_code = str(sku_code).strip()
         sku_variant_code = str(sku_variant_code).strip()
 
-        color_code = str(row[2]).strip().lower() if row[2] else ""   # col 3
-        product_name = str(row[7]).strip() if row[7] else ""          # col 8
-        supplier_name = str(row[8]).strip() if row[8] else ""         # col 9
-        color_display = str(row[9]).strip() if row[9] else ""         # col 10
+        color_code = str(row[2]).strip().lower() if row[2] else ""  # col 3
+        product_name = str(row[7]).strip() if row[7] else ""  # col 8
+        supplier_name = str(row[8]).strip() if row[8] else ""  # col 9
+        color_display = str(row[9]).strip() if row[9] else ""  # col 10
         # col 12 = Order Size
         order_size_raw = row[12]
-        size_code = str(int(order_size_raw)) if isinstance(order_size_raw, float) else str(order_size_raw).strip() if order_size_raw else ""
+        size_code = (
+            str(int(order_size_raw))
+            if isinstance(order_size_raw, float)
+            else str(order_size_raw).strip()
+            if order_size_raw
+            else ""
+        )
         # col 13 = COGS
         cogs_raw = row[13]
         cogs = int(cogs_raw) if cogs_raw is not None else 0
@@ -175,17 +199,19 @@ def parse_variants(variant_rows):
         if supplier_name:
             all_supplier_names.add(supplier_name)
 
-        variants_by_sku[sku_code].append({
-            "sku_variant_code": sku_variant_code,
-            "product_name": product_name,
-            "supplier_name": supplier_name,
-            "color_code": color_code,
-            "color_display": color_display,
-            "size_code": size_code,
-            "cogs": cogs,
-            "base_price": base_price,
-            "stock_qty": stock_qty,
-        })
+        variants_by_sku[sku_code].append(
+            {
+                "sku_variant_code": sku_variant_code,
+                "product_name": product_name,
+                "supplier_name": supplier_name,
+                "color_code": color_code,
+                "color_display": color_display,
+                "size_code": size_code,
+                "cogs": cogs,
+                "base_price": base_price,
+                "stock_qty": stock_qty,
+            }
+        )
 
     print(f"  Variant rows skipped (empty SKU VARIANT CODE): {skipped}")
     return variants_by_sku, all_supplier_names
@@ -198,7 +224,6 @@ def build_variant_options(variant_list):
     """Build variant_options, dim1_options, dim2_options for a product."""
     # dim1 = size, dim2 = color
     sizes_seen = []
-    colors_seen = []
     size_set = set()
     color_map = {}  # color_code → color_display
 
@@ -401,7 +426,7 @@ def main():
                     continue
 
                 sku_code = str(sku_code_raw).strip()
-                cat_code = str(row[5]).strip() if row[5] else ""   # col 6
+                cat_code = str(row[5]).strip() if row[5] else ""  # col 6
                 product_name = str(row[9]).strip() if row[9] else ""  # col 10
                 supplier_name = str(row[4]).strip() if row[4] else ""  # col 5
 
@@ -438,13 +463,18 @@ def main():
                     ON CONFLICT (sku_code) DO NOTHING
                     """,
                     (
-                        pid, company_id, category_id, product_name, sku_code,
+                        pid,
+                        company_id,
+                        category_id,
+                        product_name,
+                        sku_code,
                         json.dumps(variant_options),
                         json.dumps({}),
                         json.dumps(DEFAULT_SHIPPING_CONFIG),
                         json.dumps(dim1_options),
                         json.dumps(dim2_options),
-                        ts, ts,
+                        ts,
+                        ts,
                     ),
                 )
 
@@ -462,7 +492,7 @@ def main():
                 if supplier_name:
                     product_supplier_map[sku_code] = supplier_name
 
-            print(f"Re-enabling trigger trg_generate_sku ...")
+            print("Re-enabling trigger trg_generate_sku ...")
             cur.execute("ALTER TABLE inventory_product ENABLE TRIGGER trg_generate_sku")
 
             # Reset sequence
@@ -508,7 +538,7 @@ def main():
             variants_skipped = 0
 
             for row in variant_rows[1:]:  # skip header
-                sku_variant_code = row[6]   # col 7
+                sku_variant_code = row[6]  # col 7
                 if not sku_variant_code or str(sku_variant_code).strip() == "":
                     variants_skipped += 1
                     continue
@@ -522,18 +552,26 @@ def main():
                 sku_variant_code = str(sku_variant_code).strip()
 
                 if sku_code not in product_id_map:
-                    print(f"  SKIP variant {sku_variant_code}: parent product '{sku_code}' not found")
+                    print(
+                        f"  SKIP variant {sku_variant_code}: parent product '{sku_code}' not found"
+                    )
                     variants_skipped += 1
                     continue
 
                 product_id = product_id_map[sku_code]
 
-                color_code = str(row[2]).strip().lower() if row[2] else ""   # col 3
-                product_name = str(row[7]).strip() if row[7] else ""          # col 8
-                color_display = str(row[9]).strip() if row[9] else ""         # col 10
+                color_code = str(row[2]).strip().lower() if row[2] else ""  # col 3
+                product_name = str(row[7]).strip() if row[7] else ""  # col 8
+                color_display = str(row[9]).strip() if row[9] else ""  # col 10
 
                 order_size_raw = row[12]  # col 13
-                size_code = str(int(order_size_raw)) if isinstance(order_size_raw, float) else str(order_size_raw).strip() if order_size_raw else ""
+                size_code = (
+                    str(int(order_size_raw))
+                    if isinstance(order_size_raw, float)
+                    else str(order_size_raw).strip()
+                    if order_size_raw
+                    else ""
+                )
 
                 cogs_raw = row[13]  # col 14
                 cogs = int(cogs_raw) if cogs_raw is not None else 0
@@ -566,11 +604,18 @@ def main():
                     ON CONFLICT (sku_variant_code) DO NOTHING
                     """,
                     (
-                        vid, company_id, product_id, variant_name,
-                        sku_variant_code, json.dumps(variant_values),
-                        cogs, base_price,
-                        stock_qty, stock_qty,
-                        ts, ts,
+                        vid,
+                        company_id,
+                        product_id,
+                        variant_name,
+                        sku_variant_code,
+                        json.dumps(variant_values),
+                        cogs,
+                        base_price,
+                        stock_qty,
+                        stock_qty,
+                        ts,
+                        ts,
                     ),
                 )
                 variants_inserted += 1
@@ -598,9 +643,14 @@ def main():
                     ON CONFLICT (product_variant_id, warehouse_id) DO NOTHING
                     """,
                     (
-                        pvw_id, company_id, actual_vid, warehouse_id,
-                        stock_qty, stock_qty,
-                        ts, ts,
+                        pvw_id,
+                        company_id,
+                        actual_vid,
+                        warehouse_id,
+                        stock_qty,
+                        stock_qty,
+                        ts,
+                        ts,
                     ),
                 )
                 wh_stock_inserted += 1
@@ -611,13 +661,19 @@ def main():
             # ---------------------------------------------------------------
             # Step 7 — Summary (autocommit: no explicit commit needed)
             # ---------------------------------------------------------------
-            cur.execute("SELECT COUNT(*) FROM inventory_category WHERE company_id = %s", (company_id,))
+            cur.execute(
+                "SELECT COUNT(*) FROM inventory_category WHERE company_id = %s", (company_id,)
+            )
             n_cats = cur.fetchone()[0]
 
-            cur.execute("SELECT COUNT(*) FROM inventory_product WHERE company_id = %s", (company_id,))
+            cur.execute(
+                "SELECT COUNT(*) FROM inventory_product WHERE company_id = %s", (company_id,)
+            )
             n_products = cur.fetchone()[0]
 
-            cur.execute("SELECT COUNT(*) FROM inventory_productvariant WHERE company_id = %s", (company_id,))
+            cur.execute(
+                "SELECT COUNT(*) FROM inventory_productvariant WHERE company_id = %s", (company_id,)
+            )
             n_variants = cur.fetchone()[0]
 
             cur.execute(

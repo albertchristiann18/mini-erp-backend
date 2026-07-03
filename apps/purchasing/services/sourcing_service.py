@@ -65,10 +65,22 @@ class SourcingService:
             ["PANDUAN IMPORT SOURCING POOL", ""],
             ["", ""],
             ["KOLOM", "KETERANGAN"],
-            ["variant_code", "Opsional. SKU varian yang sudah ada di sistem. Jika diisi, baris ini ditautkan ke produk yang sudah ada."],
-            ["product_name", "Nama produk. Wajib jika supplier_link kosong. Semua baris dengan product_name yang sama dikelompokkan sebagai satu produk."],
-            ["variant_name", "Nama varian. Wajib diisi. Untuk produk dengan 2 dimensi (mis. Warna & Ukuran), gabungkan nilainya dengan tanda hubung, mis. 'Putih-S'."],
-            ["category_code", "Kode kategori dari sheet Categories. Wajib diisi jika variant_code tidak diisi."],
+            [
+                "variant_code",
+                "Opsional. SKU varian yang sudah ada di sistem. Jika diisi, baris ini ditautkan ke produk yang sudah ada.",
+            ],
+            [
+                "product_name",
+                "Nama produk. Wajib jika supplier_link kosong. Semua baris dengan product_name yang sama dikelompokkan sebagai satu produk.",
+            ],
+            [
+                "variant_name",
+                "Nama varian. Wajib diisi. Untuk produk dengan 2 dimensi (mis. Warna & Ukuran), gabungkan nilainya dengan tanda hubung, mis. 'Putih-S'.",
+            ],
+            [
+                "category_code",
+                "Kode kategori dari sheet Categories. Wajib diisi jika variant_code tidak diisi.",
+            ],
             ["unit_price", "Harga beli per unit (angka saja, mis. 50000)."],
             ["discounted_price", "Harga diskon. Harus lebih kecil dari unit_price. Boleh kosong."],
             ["order_qty", "Jumlah yang disarankan untuk dipesan. Boleh kosong."],
@@ -200,15 +212,17 @@ class SourcingService:
             variant_code = get_cell(row, "variant_code")
 
             # Skip blank rows — include variant_code in the check
-            if not any([
-                product_name,
-                variant_name,
-                category_code,
-                unit_price_raw,
-                variant_code,
-                get_cell(row, "supplier_link"),
-                get_cell(row, "image_url"),
-            ]):
+            if not any(
+                [
+                    product_name,
+                    variant_name,
+                    category_code,
+                    unit_price_raw,
+                    variant_code,
+                    get_cell(row, "supplier_link"),
+                    get_cell(row, "image_url"),
+                ]
+            ):
                 continue
 
             row_errors: list[str] = []
@@ -281,9 +295,7 @@ class SourcingService:
                 try:
                     qty_suggested = int(float(order_qty_raw))
                     if qty_suggested < 0:
-                        errors.append(
-                            {"row": row_num, "message": "order_qty must be 0 or greater"}
-                        )
+                        errors.append({"row": row_num, "message": "order_qty must be 0 or greater"})
                         continue
                 except ValueError:
                     errors.append(
@@ -387,7 +399,9 @@ class SourcingService:
         for row in rows:
             try:
                 product_name_raw = row.get("product_name")
-                product_name_val: str | None = str(product_name_raw).strip() if product_name_raw else None
+                product_name_val: str | None = (
+                    str(product_name_raw).strip() if product_name_raw else None
+                )
                 variant_name: str = str(row["variant_name"]).strip()
                 category_id_val: str | None = row.get("category_id") or None
                 unit_price = Decimal(str(row["unit_price"]))

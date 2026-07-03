@@ -117,9 +117,7 @@ class ProductViewSet(viewsets.ModelViewSet):
 
         response = super().update(request, *args, **kwargs)
 
-        transaction.on_commit(
-            lambda: ProductService()._trigger_shopee_product_update(_product_id)
-        )
+        transaction.on_commit(lambda: ProductService()._trigger_shopee_product_update(_product_id))
         transaction.on_commit(
             lambda: ProductService().cleanup_orphan_dimension_images(
                 _product_id, old_dim1_key, old_dim2_key
@@ -335,18 +333,20 @@ class ProductViewSet(viewsets.ModelViewSet):
         url_path="dimension-image",
         parser_classes=[MultiPartParser, FormParser, JSONParser],
     )
-    def manage_dimension_image(
-        self, request: Request, pk: str | None = None
-    ) -> Response:
+    def manage_dimension_image(self, request: Request, pk: str | None = None) -> Response:
         product = self.get_object()
         if request.method == "DELETE":
             dim_key = (request.data.get("dim_key") or "").strip()
             dim_value = (request.data.get("dim_value") or "").strip()
 
             if not dim_key:
-                return Response({'error': 'dim_key is required'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {"error": "dim_key is required"}, status=status.HTTP_400_BAD_REQUEST
+                )
             if not dim_value:
-                return Response({'error': 'dim_value is required'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {"error": "dim_value is required"}, status=status.HTTP_400_BAD_REQUEST
+                )
 
             from apps.inventory.services.product_service import ProductService
 
@@ -373,7 +373,9 @@ class ProductViewSet(viewsets.ModelViewSet):
         from apps.inventory.services.product_service import ProductService
 
         try:
-            dim_img = ProductService().upsert_dimension_image(product, dim_key, dim_value, photo_file)
+            dim_img = ProductService().upsert_dimension_image(
+                product, dim_key, dim_value, photo_file
+            )
         except ValueError as exc:
             return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(

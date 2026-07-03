@@ -4054,7 +4054,9 @@ class DimensionImageAPITest(APITestCase):
             ).exists()
         )
         self.assertIn("photo_url", response.data)
-        created = ProductDimensionImage.objects.get(product=self.product, dim_key="Warna", dim_value="White")
+        created = ProductDimensionImage.objects.get(
+            product=self.product, dim_key="Warna", dim_value="White"
+        )
         self.assertEqual(created.company, self.product.company)
 
     def test_dimension_image_upload_replaces_existing_for_same_key_and_value(self):
@@ -4082,9 +4084,7 @@ class DimensionImageAPITest(APITestCase):
         self.assertEqual(updated.pk, original_pk)
 
     def test_dimension_image_delete_removes_record(self):
-        ProductDimensionImageFactory(
-            product=self.product, dim_key="Warna", dim_value="White"
-        )
+        ProductDimensionImageFactory(product=self.product, dim_key="Warna", dim_value="White")
         url = f"/product/{self.product.id}/dimension-image/"
         response = self.client.delete(
             url, {"dim_key": "Warna", "dim_value": "White"}, format="json"
@@ -4104,15 +4104,14 @@ class DimensionImageAPITest(APITestCase):
         self.assertEqual(response.status_code, 404)
 
     def test_photo_proxy_returns_dimension_image_when_dim_key_and_value_provided(self):
-        ProductDimensionImageFactory(
-            product=self.product, dim_key="Warna", dim_value="White"
-        )
+        ProductDimensionImageFactory(product=self.product, dim_key="Warna", dim_value="White")
         url = f"/product/{self.product.id}/photo-proxy/?dim_key=Warna&dim_value=White"
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
     def test_photo_proxy_falls_back_to_gallery_when_no_dimension_image_matches(self):
         from apps.inventory.factories import ProductPhotoFactory
+
         ProductPhotoFactory(product=self.product, company=self.company, order=0)
         url = f"/product/{self.product.id}/photo-proxy/?dim_key=Warna&dim_value=NonExistent"
         response = self.client.get(url)
@@ -4121,17 +4120,13 @@ class DimensionImageAPITest(APITestCase):
     def test_dimension_image_upload_missing_dim_key_returns_400(self):
         photo = SimpleUploadedFile("w.jpg", b"imgdata", content_type="image/jpeg")
         url = f"/product/{self.product.id}/dimension-image/"
-        response = self.client.post(
-            url, {"dim_value": "White", "photo": photo}, format="multipart"
-        )
+        response = self.client.post(url, {"dim_value": "White", "photo": photo}, format="multipart")
         self.assertEqual(response.status_code, 400)
 
     def test_dimension_image_upload_missing_dim_value_returns_400(self):
         photo = SimpleUploadedFile("w.jpg", b"imgdata", content_type="image/jpeg")
         url = f"/product/{self.product.id}/dimension-image/"
-        response = self.client.post(
-            url, {"dim_key": "Warna", "photo": photo}, format="multipart"
-        )
+        response = self.client.post(url, {"dim_key": "Warna", "photo": photo}, format="multipart")
         self.assertEqual(response.status_code, 400)
 
     def test_dimension_image_upload_missing_photo_returns_400(self):
@@ -4253,9 +4248,7 @@ class PODetailDimensionPhotoTest(APITestCase):
         PurchaseOrderDetailFactory(
             purchase_order=po, product_variant=self.variant, company=self.company
         )
-        ProductDimensionImageFactory(
-            product=self.product, dim_key="Warna", dim_value="White"
-        )
+        ProductDimensionImageFactory(product=self.product, dim_key="Warna", dim_value="White")
 
         response = self.client.get(f"/purchase-order/{po.id}/", format="json")
         self.assertEqual(response.status_code, 200)
@@ -4299,9 +4292,7 @@ class PODetailDimensionPhotoTest(APITestCase):
     def test_po_detail_product_dim1_key_is_none_for_product_without_dim1_key(self):
         from apps.purchasing.factories import PurchaseOrderDetailFactory, PurchaseOrderFactory
 
-        product_no_dim = ProductFactory(
-            category=self.category, company=self.company, dim1_key=""
-        )
+        product_no_dim = ProductFactory(category=self.category, company=self.company, dim1_key="")
         variant_no_dim = ProductVariantFactory(
             product=product_no_dim, company=self.company, variant_values={}
         )
