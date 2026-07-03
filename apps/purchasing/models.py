@@ -196,7 +196,7 @@ class PurchaseOrder(DefaultModel):
         return new_status in self.STATUS_TRANSITIONS.get(self.status, [])
 
     def get_shipping_per_qty(self) -> int:
-        if not self.shipping_fee:
+        if not self.shipping_fee or not self.total_ordered_qty:
             return 0
 
         return int(round(self.shipping_fee / self.total_ordered_qty))
