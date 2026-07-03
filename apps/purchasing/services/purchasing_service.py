@@ -1179,18 +1179,22 @@ class PurchaseOrderService:
         for detail in po.order_details.all():
             total_ordered_qty += detail.ordered_qty or 0
             total_received_qty += detail.received_qty or 0
-            total_item_amount += (
-                detail.discounted_total_price_base
-                if detail.discounted_total_price_base is not None
-                else (detail.total_price_base or 0)
-            )
-            total_item_rmb += Decimal(
-                str(
-                    detail.discounted_total_price_foreign
-                    if detail.discounted_total_price_foreign is not None
-                    else (detail.total_price_foreign or 0)
+            if po.has_discount:
+                total_item_amount += (
+                    detail.discounted_total_price_base
+                    if detail.discounted_total_price_base is not None
+                    else (detail.total_price_base or 0)
                 )
-            )
+                total_item_rmb += Decimal(
+                    str(
+                        detail.discounted_total_price_foreign
+                        if detail.discounted_total_price_foreign is not None
+                        else (detail.total_price_foreign or 0)
+                    )
+                )
+            else:
+                total_item_amount += detail.total_price_base or 0
+                total_item_rmb += Decimal(str(detail.total_price_foreign or 0))
 
         exchange_rate = Decimal(str(po.exchange_rate or 0))
         delivery_fee_idr = int(round(Decimal(str(po.delivery_fee or 0)) * exchange_rate))
