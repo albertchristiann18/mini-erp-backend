@@ -203,6 +203,13 @@ def step_seed_user() -> None:
 # ---------------------------------------------------------------------------
 def step_master_data() -> None:
     run_script("Master Data", "import_master_data_excel.py")
+    # Apply default dimensions to all products (weight in grams, dimensions in cm)
+    conn = psycopg.connect(**DB_PARAMS, autocommit=True)
+    conn.cursor().execute(
+        "UPDATE inventory_product SET weight = 200, height = 1, width = 30, length = 30"
+    )
+    conn.close()
+    print("[OK] Default dimensions set on all products (200g, 1×30×30 cm)")
 
 
 # ---------------------------------------------------------------------------
