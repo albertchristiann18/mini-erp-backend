@@ -9,8 +9,8 @@ Run from mini-erp-backend/ with:
 """
 
 import os
-import sys
 import shutil
+import sys
 import zipfile
 
 # Step 0 — Load Django settings to get R2 storage
@@ -18,11 +18,12 @@ sys.path.insert(0, "/Users/jtf01644/personal/mini-erp-project/mini-erp-backend")
 os.environ["DJANGO_SETTINGS_MODULE"] = "core.settings"
 
 import django
+
 django.setup()
 
-from django.core.files.storage import default_storage
-from django.core.files import File
 import psycopg
+from django.core.files import File
+from django.core.files.storage import default_storage
 
 # Step 1 — Extract zip to /tmp/opex_docs/ (overwrite if exists)
 ZIP_PATH = "/Users/jtf01644/personal/mini-erp-project/data/opex docs-20260702T175419Z-3-001.zip"
@@ -59,18 +60,18 @@ print("Cleared existing file references on HIST POs")
 
 # Step 3 — MAPPING dict (hardcoded)
 MAPPING = {
-    "mirako 1.pdf":          "HIST-2025-001",
+    "mirako 1.pdf": "HIST-2025-001",
     "mirako 3 compress.pdf": "HIST-2025-003",
-    "Sorakids 4 (1).pdf":    "HIST-2025-004",
-    "Mirako 5.pdf":          "HIST-2025-005",
-    "Mirako 6.pdf":          "HIST-2025-006",
-    "Mirako 7.pdf":          "HIST-2025-007",
-    "Mirako 8.pdf":          "HIST-2026-001",
-    "Mirako 9.pdf":          "HIST-2026-002",
-    "Mirako 9 PO.pdf":       "HIST-2026-003",
-    "Mirako 10.pdf":         "HIST-2026-004",
-    "Mirako 11.pdf":         "HIST-2026-005",
-    "Mirako 12.pdf":         "HIST-2026-006",
+    "Sorakids 4 (1).pdf": "HIST-2025-004",
+    "Mirako 5.pdf": "HIST-2025-005",
+    "Mirako 6.pdf": "HIST-2025-006",
+    "Mirako 7.pdf": "HIST-2025-007",
+    "Mirako 8.pdf": "HIST-2026-001",
+    "Mirako 9.pdf": "HIST-2026-002",
+    "Mirako 9 PO.pdf": "HIST-2026-003",
+    "Mirako 10.pdf": "HIST-2026-004",
+    "Mirako 11.pdf": "HIST-2026-005",
+    "Mirako 12.pdf": "HIST-2026-006",
 }
 
 # Step 4 — For each entry in MAPPING, upload and update DB

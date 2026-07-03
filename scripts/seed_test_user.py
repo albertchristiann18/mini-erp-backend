@@ -8,9 +8,11 @@ or:
 """
 
 import django
+
 django.setup()  # noqa: E402 — safe to call if already set up
 
 from django.contrib.auth import get_user_model
+
 from core.models import Company, UserProfile
 
 User = get_user_model()
@@ -48,7 +50,9 @@ if not profile_created and profile.company != company:
     profile.company = company
     profile.save(update_fields=["company"])
 
-print(f"{'Created' if profile_created else 'Existing'} profile — role={profile.role}, company={profile.company.name}")
+print(
+    f"{'Created' if profile_created else 'Existing'} profile — role={profile.role}, company={profile.company.name}"
+)
 
 print()
 print("─" * 48)

@@ -3,7 +3,6 @@
 
 import os
 import sys
-from collections import defaultdict
 
 import django
 
@@ -11,17 +10,17 @@ sys.path.insert(0, "/Users/jtf01644/personal/mini-erp-project/mini-erp-backend")
 os.environ["DJANGO_SETTINGS_MODULE"] = "core.settings"
 django.setup()
 
-from django.db.models import Sum, Count, Q
+from django.db.models import Count, Q, Sum
 
+from apps.finance.models import CashTransaction
 from apps.inventory.models import (
+    ProductCogs,
     ProductVariant,
     ProductVariantWarehouse,
-    ProductCogs,
     StockMovement,
 )
 from apps.purchasing.models import PurchaseOrder, PurchaseOrderDetail
 from apps.sales.models import SalesOrder, SalesOrderItem
-from apps.finance.models import CashTransaction
 from core.models import Company
 
 company = Company.objects.get(name="Mirako")
@@ -41,9 +40,7 @@ def pass_fail(ok: bool) -> str:
 print(sep("SECTION 1: PRODUCTS & VARIANTS"))
 
 total_variants = ProductVariant.objects.filter(product__company=company).count()
-active_variants = ProductVariant.objects.filter(
-    product__company=company, is_active=True
-).count()
+active_variants = ProductVariant.objects.filter(product__company=company, is_active=True).count()
 print(f"  1a. ProductVariants: {total_variants} total, {active_variants} active")
 
 total_pvw = ProductVariantWarehouse.objects.filter(
@@ -51,9 +48,7 @@ total_pvw = ProductVariantWarehouse.objects.filter(
 ).count()
 print(f"  1b. ProductVariantWarehouse records: {total_pvw}")
 
-stock_qs = ProductVariantWarehouse.objects.filter(
-    product_variant__product__company=company
-)
+stock_qs = ProductVariantWarehouse.objects.filter(product_variant__product__company=company)
 total_physical_qty = stock_qs.aggregate(s=Sum("physical_qty"))["s"] or 0
 negative_variants = (
     stock_qs.values("product_variant__sku_variant_code")
@@ -71,9 +66,7 @@ print(f"      Total deficit units: {neg_total}")
 # ─────────────────────────────────────────────
 print(sep("SECTION 2: PURCHASE ORDERS"))
 
-hist_pos = PurchaseOrder.objects.filter(
-    company=company, purchase_order_number__startswith="HIST-"
-)
+hist_pos = PurchaseOrder.objects.filter(company=company, purchase_order_number__startswith="HIST-")
 hist_po_count = hist_pos.count()
 print(f"  2a. HIST POs: {hist_po_count}")
 
@@ -83,9 +76,7 @@ hist_po_detail_count = PurchaseOrderDetail.objects.filter(
 ).count()
 print(f"  2b. PO Details (HIST): {hist_po_detail_count}")
 
-fifo_batches = ProductCogs.objects.filter(
-    company=company, reference_number__startswith="HIST-"
-)
+fifo_batches = ProductCogs.objects.filter(company=company, reference_number__startswith="HIST-")
 fifo_count = fifo_batches.count()
 print(f"  2c. FIFO batches (HIST-): {fifo_count}")
 
@@ -129,9 +120,7 @@ print(f"  3a. SalesOrders: {so_total}")
 for status, count in sorted(so_by_status.items()):
     print(f"       - {status}: {count}")
 
-so_items_total = SalesOrderItem.objects.filter(
-    sales_order__company=company
-).count()
+so_items_total = SalesOrderItem.objects.filter(sales_order__company=company).count()
 print(f"  3b. SalesOrderItems: {so_items_total}")
 
 cogs_fifo_consumed = SalesOrderItem.objects.filter(
@@ -145,24 +134,22 @@ print(f"  3c. Items with FIFO consumed (actual_cogs_per_unit > 0): {cogs_fifo_co
 print(f"      Items with missing FIFO (actual_cogs_per_unit == 0 or NULL): {cogs_missing}")
 
 closed_statuses = ["COMPLETED", "SHIPPING"]
-closed_orders = SalesOrder.objects.filter(
-    company=company, status__in=closed_statuses
-)
+closed_orders = SalesOrder.objects.filter(company=company, status__in=closed_statuses)
 rev_agg = closed_orders.aggregate(
     total_subtotal=Sum("subtotal"),
     total_cogs_order=Sum("total_cogs"),
 )
-so_item_agg = (
-    SalesOrderItem.objects.filter(
-        sales_order__company=company,
-        sales_order__status__in=closed_statuses,
-    ).aggregate(
-        total_actual_cogs=Sum("actual_cogs_total"),
-    )
+so_item_agg = SalesOrderItem.objects.filter(
+    sales_order__company=company,
+    sales_order__status__in=closed_statuses,
+).aggregate(
+    total_actual_cogs=Sum("actual_cogs_total"),
 )
 print(f"  3d. Revenue (subtotal, COMPLETED/SHIPPING): {rev_agg['total_subtotal'] or 0:,}")
 print(f"      COGS total from SalesOrder.total_cogs: {rev_agg['total_cogs_order'] or 0:,}")
-print(f"      COGS total from SalesOrderItem.actual_cogs_total: {so_item_agg['total_actual_cogs'] or 0:,}")
+print(
+    f"      COGS total from SalesOrderItem.actual_cogs_total: {so_item_agg['total_actual_cogs'] or 0:,}"
+)
 
 # ─────────────────────────────────────────────
 # SECTION 4: CASH TRANSACTIONS
@@ -195,7 +182,7 @@ cat_breakdown = (
     .annotate(cnt=Count("id"), total=Sum("amount"))
     .order_by("category")
 )
-print(f"  4c. Category breakdown:")
+print("  4c. Category breakdown:")
 for row in cat_breakdown:
     print(f"       - {row['category']}: {row['cnt']} txns, {row['total']:,} IDR")
 
@@ -234,9 +221,7 @@ print(f"       OUTBOUND StockMovements qty: {outbound_qty:,}")
 print(f"       Current total physical_qty (PVW): {current_stock:,}")
 
 print("  5b. FIFO batch coverage:")
-fifo_hist = ProductCogs.objects.filter(
-    company=company, reference_number__startswith="HIST-"
-)
+fifo_hist = ProductCogs.objects.filter(company=company, reference_number__startswith="HIST-")
 fifo_agg = fifo_hist.aggregate(
     total_original=Sum("original_qty"),
     total_remaining=Sum("remaining_qty"),
@@ -247,9 +232,7 @@ fifo_consumed = fifo_original - fifo_remaining
 print(f"       SUM(original_qty) from HIST FIFO: {fifo_original}")
 print(f"       SUM(remaining_qty) from HIST FIFO: {fifo_remaining}")
 print(f"       Units consumed via FIFO: {fifo_consumed}")
-negative_fifo_count = ProductCogs.objects.filter(
-    company=company, remaining_qty__lt=0
-).count()
+negative_fifo_count = ProductCogs.objects.filter(company=company, remaining_qty__lt=0).count()
 print(f"       Negative remaining_qty batches: {negative_fifo_count}")
 
 print("  5c. Top 10 negative stock variants:")
@@ -263,9 +246,7 @@ neg_top = (
     .order_by("total_qty")[:10]
 )
 for v in neg_top:
-    print(
-        f"       {v['product_variant__sku_variant_code']}: {v['total_qty']}"
-    )
+    print(f"       {v['product_variant__sku_variant_code']}: {v['total_qty']}")
 
 # ─────────────────────────────────────────────
 # SECTION 6: MIGRATION COMPLETENESS SUMMARY
@@ -286,7 +267,7 @@ checks = [
 ]
 
 print(f"  {'Check':<35} {'Expected':<15} {'Actual':<15} {'Status'}")
-print(f"  {'-'*35} {'-'*15} {'-'*15} {'-'*6}")
+print(f"  {'-' * 35} {'-' * 15} {'-' * 15} {'-' * 6}")
 for name, expected, actual, ok in checks:
     exp_str = str(expected)
     act_str = f"{actual:,}" if isinstance(actual, int) else str(actual)

@@ -1,10 +1,8 @@
 name: CI
 
 on:
-  push:
-    branches: [main, develop, "**"]
   pull_request:
-    branches: [main, develop]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 env:
   PYTHONUNBUFFERED: "1"

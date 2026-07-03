@@ -607,10 +607,10 @@ class PurchaseOrderService:
 
             product_variant_ids = list(
                 set(
-                    d.product_variant.id
+                    d.product_variant.id  # type: ignore[union-attr]
                     for d in po.order_details.all()
-                    if d.product_variant_id is not None
-                )  # type: ignore[union-attr, attr-defined]
+                    if d.product_variant is not None
+                )
             )
 
             pvw_map = {
@@ -1058,9 +1058,9 @@ class PurchaseOrderService:
         if new_details:
             PurchaseOrderDetail.objects.bulk_create(new_details, batch_size=100)
             new_variant_ids = [
-                str(d.product_variant.id)
+                str(d.product_variant.id)  # type: ignore[union-attr]
                 for d in new_details
-                if d.product_variant_id is not None  # type: ignore[union-attr, attr-defined]
+                if d.product_variant is not None
             ]
             self._ensure_product_supplier_links(po, new_variant_ids)
 
