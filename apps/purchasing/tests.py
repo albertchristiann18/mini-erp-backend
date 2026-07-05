@@ -3441,10 +3441,44 @@ class EditableFieldsAndNoteTest(TestCase):
         self.assertIn("received_qty", fields["order_detail"])
 
     def test_get_editable_fields_completed(self):
-        """Assert note and has_discount are in COMPLETED header, order_detail is empty."""
+        """Assert note, has_discount, and file fields are in COMPLETED header, order_detail is empty."""
         fields = PurchaseOrder.get_editable_fields(PurchaseOrder.POStatus.COMPLETED)
+        assert "note" in fields["header"]
+        assert "has_discount" in fields["header"]
+        assert "purchase_order_invoice_file" in fields["header"]
+        assert "delivery_order_file" in fields["header"]
+        assert "delivery_order_invoice_file" in fields["header"]
+        assert "packing_list_file" in fields["header"]
+        self.assertEqual(fields["order_detail"], [])
+
+    def test_get_editable_fields_cancelled(self):
+        """Assert CANCELLED still only has note and has_discount."""
+        fields = PurchaseOrder.get_editable_fields(PurchaseOrder.POStatus.CANCELLED)
         self.assertEqual(fields["header"], ["note", "has_discount"])
         self.assertEqual(fields["order_detail"], [])
+
+    def test_patch_file_field_on_completed_po(self):
+        """PATCH a file field on a COMPLETED PO with empty file field should succeed."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.COMPLETED,
+            purchase_order_invoice_file=None,
+        )
+        file_data = b"x" * 1024
+        pdf_file = SimpleUploadedFile("test.pdf", file_data, content_type="application/pdf")
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
+            response = self.client.patch(
+                f"/purchase-order/{po.id}/",
+                {"purchase_order_invoice_file": pdf_file},
+                format="multipart",
+            )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        po.refresh_from_db()
+        self.assertIsNotNone(po.purchase_order_invoice_file)
 
     def test_note_field_in_list_response(self):
         """Create PO with note='test note', assert note appears in list API response."""
