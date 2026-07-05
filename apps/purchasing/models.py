@@ -185,7 +185,19 @@ class PurchaseOrder(DefaultModel):
                 ],
                 "order_detail": ["received_qty", "remarks"],
             }
-        else:  # COMPLETED, CANCELLED
+        elif status == cls.POStatus.COMPLETED:
+            return {
+                "header": [
+                    "note",
+                    "has_discount",
+                    "purchase_order_invoice_file",
+                    "delivery_order_file",
+                    "delivery_order_invoice_file",
+                    "packing_list_file",
+                ],
+                "order_detail": [],
+            }
+        else:  # CANCELLED
             return {"header": ["note", "has_discount"], "order_detail": []}
 
     def get_next_status(self) -> str | None:
