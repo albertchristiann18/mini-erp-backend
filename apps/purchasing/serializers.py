@@ -49,9 +49,6 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
     last_currency = serializers.SerializerMethodField()
     last_discounted_unit_price_foreign = serializers.SerializerMethodField()
     updated_qty = serializers.IntegerField(read_only=True)
-    sourcing_item_id = serializers.SerializerMethodField()
-    is_draft = serializers.SerializerMethodField()
-    draft_product_name = serializers.CharField(read_only=True)
     product_dim1_key = serializers.SerializerMethodField()
 
     def get_product_dim1_key(self, obj: "PurchaseOrderDetail") -> str | None:
@@ -91,9 +88,6 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
             "last_unit_price_foreign",
             "last_currency",
             "last_discounted_unit_price_foreign",
-            "sourcing_item_id",
-            "is_draft",
-            "draft_product_name",
             "product_dim1_key",
         ]
         read_only_fields = [
@@ -103,9 +97,6 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
             "stock_on_hand",
             "incoming_qty",
             "variant_id",
-            "sourcing_item_id",
-            "is_draft",
-            "draft_product_name",
             "product_dim1_key",
         ]
 
@@ -126,12 +117,6 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
 
     def get_variant_values(self, obj: PurchaseOrderDetail) -> dict | None:
         return obj.product_variant.variant_values if obj.product_variant_id else None  # type: ignore[union-attr, attr-defined]
-
-    def get_sourcing_item_id(self, obj: PurchaseOrderDetail) -> str | None:
-        return str(obj.sourcing_item_id) if obj.sourcing_item_id else None  # type: ignore[attr-defined]
-
-    def get_is_draft(self, obj: PurchaseOrderDetail) -> bool:
-        return obj.sourcing_item_id is not None and obj.product_variant_id is None  # type: ignore[attr-defined]
 
     def get_product_photo_url(self, obj: "PurchaseOrderDetail") -> str | None:
         if not obj.product_variant_id:  # type: ignore[attr-defined]

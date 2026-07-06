@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 from django_ulid.models import ULIDField
 
 from apps.inventory.models import ProductVariant, Warehouse
@@ -244,14 +245,6 @@ class PurchaseOrderDetail(DefaultModel):
     product_variant = models.ForeignKey(
         ProductVariant, on_delete=models.CASCADE, null=True, blank=True
     )
-    sourcing_item = models.ForeignKey(
-        "purchasing.SourcingPoolItem",
-        on_delete=models.PROTECT,
-        null=True,
-        blank=True,
-        related_name="po_details",
-    )
-    draft_product_name = models.CharField(max_length=255, blank=True, default="")
 
     ordered_qty = models.IntegerField(default=0)
     received_qty = models.IntegerField(default=0)
@@ -294,7 +287,7 @@ class PurchaseOrderDetail(DefaultModel):
     def __str__(self) -> str:
         if self.product_variant_id:  # type: ignore[attr-defined]
             return f"{self.purchase_order.purchase_order_number} - {self.product_variant.sku_variant_code}"  # type: ignore[union-attr]
-        return f"{self.purchase_order.purchase_order_number} - [Draft] {self.draft_product_name}"
+        return f"{self.purchase_order.purchase_order_number} - [No Variant]"
 
 
 class PurchaseOrderStatusHistory(DefaultModel):
@@ -393,6 +386,21 @@ class SourcingPoolItem(DefaultModel):
         related_name="sourcing_items",
     )
     times_ordered = models.IntegerField(default=0)
+    dim1_key = models.CharField(max_length=100, blank=True, default="")
+    dim1_value = models.CharField(max_length=100, blank=True, default="")
+    dim2_key = models.CharField(max_length=100, blank=True, default="")
+    dim2_value = models.CharField(max_length=100, blank=True, default="")
+    last_active_at = models.DateTimeField(default=timezone.now)
+    is_active = models.BooleanField(default=True)
+    is_used = models.BooleanField(default=False)
+    used_at = models.DateTimeField(null=True, blank=True)
+    used_in_po = models.ForeignKey(
+        "purchasing.PurchaseOrder",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="used_pool_items",
+    )
 
     class Meta:
         constraints = [
@@ -411,3 +419,20 @@ class SourcingPoolItem(DefaultModel):
     def __str__(self) -> str:
         name = self.product_name or "(Unnamed)"
         return f"{self.pool.supplier.name} — {name} / {self.variant_name}"
+
+
+class ColorAbbreviation(DefaultModel):
+    id = ULIDField(
+        primary_key=True,
+        default=generate_ulid,
+        editable=False,
+        db_column="color_abbreviation_id",
+    )
+    color_name = models.CharField(max_length=100)
+    abbreviation = models.CharField(max_length=20)
+
+    class Meta:
+        unique_together = [("company", "color_name")]
+
+    def __str__(self) -> str:
+        return f"{self.color_name} → {self.abbreviation}"
