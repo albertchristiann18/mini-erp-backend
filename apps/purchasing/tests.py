@@ -27,7 +27,14 @@ from apps.inventory.factories import (
     ProductVariantWarehouseFactory,
     SupplierFactory,
 )
-from apps.inventory.models import Category, ProductCogs, ProductSupplier, ProductVariantWarehouse
+from apps.inventory.models import (
+    Category,
+    Product,
+    ProductCogs,
+    ProductSupplier,
+    ProductVariant,
+    ProductVariantWarehouse,
+)
 from apps.inventory.services.inventory_service import InventoryService
 from apps.purchasing.factories import (
     PurchaseOrderDetailFactory,
@@ -38,6 +45,7 @@ from apps.purchasing.factories import (
 from apps.purchasing.models import (
     ColorAbbreviation,
     PurchaseOrder,
+    PurchaseOrderDetail,
     PurchaseOrderStatusHistory,
     SourcingPool,
     SourcingPoolItem,
@@ -6764,3 +6772,650 @@ class TestPhase1SourcingAutoFinalize(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class TestPhase2SourcingAutoFinalize(TestCase):
+    """Phase 2 — SKU generation, add-pool-items, resolve-sku-conflicts."""
+
+    _variant_counter = 0
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.category = CategoryFactory(
+            company=self.company, category_code="TEST", name="Test Category"
+        )
+        self.supplier = SupplierFactory(company=self.company)
+        self.pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
+        self.service = None  # imported in tests
+
+        from apps.purchasing.services.purchasing_service import PurchaseOrderService
+
+        self.po_service = PurchaseOrderService()
+
+        self.po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DRAFT,
+            exchange_rate=2000,
+            commission_fee_pct=0,
+            delivery_fee=0,
+        )
+        self.product = ProductFactory(category=self.category, company=self.company)
+        self.product_variant = ProductVariantFactory(
+            product=self.product, sku_variant_code="TEST-VAR-001"
+        )
+
+    def _make_pool_item(self, **overrides) -> SourcingPoolItem:
+        type(self)._variant_counter += 1
+        defaults = dict(
+            pool=self.pool,
+            company=self.company,
+            product_name="Test Product",
+            variant_name=f"Default-{type(self)._variant_counter}",
+            category=self.category,
+            unit_price=Decimal("10.000"),
+            is_used=False,
+            is_active=True,
+        )
+        defaults.update(overrides)
+        return SourcingPoolItemFactory(**defaults)
+
+    # ---- generate_variant_suffix tests ----
+
+    def test_2d_product_dim2_first_dim1_second_in_suffix(self):
+        from apps.purchasing.services.sourcing_service import generate_variant_suffix
+
+        result = generate_variant_suffix("Warna", "Putih", "Ukuran", "S", {"putih": "WHT"})
+        self.assertEqual(result, "S-WHT")
+
+    def test_1d_product_only_dim1_color(self):
+        from apps.purchasing.services.sourcing_service import generate_variant_suffix
+
+        result = generate_variant_suffix("Warna", "Putih", "", "", {"putih": "WHT"})
+        self.assertEqual(result, "WHT")
+
+    def test_1d_product_only_dim2_size(self):
+        from apps.purchasing.services.sourcing_service import generate_variant_suffix
+
+        result = generate_variant_suffix("", "", "Ukuran", "S", {})
+        self.assertEqual(result, "S")
+
+    def test_color_not_in_map_raw_value_uppercased(self):
+        from apps.purchasing.services.sourcing_service import generate_variant_suffix
+
+        result = generate_variant_suffix("Warna", "Dusty Rose", "", "", {})
+        self.assertEqual(result, "DUSTY ROSE")
+
+    def test_both_dims_empty_empty_suffix(self):
+        from apps.purchasing.services.sourcing_service import generate_variant_suffix
+
+        result = generate_variant_suffix("", "", "", "", {})
+        self.assertEqual(result, "")
+
+    def test_non_color_dim_key_value_uppercased_directly(self):
+        from apps.purchasing.services.sourcing_service import generate_variant_suffix
+
+        result = generate_variant_suffix("Material", "Cotton", "Size", "M", {})
+        self.assertEqual(result, "M-COTTON")
+
+    # ---- add_pool_items_to_po — direct path (variant_id set) ----
+
+    def test_pool_item_with_variant_id_po_line_created_item_marked_used(self):
+        from apps.purchasing.services.sourcing_product_service import SourcingProductService
+
+        item = self._make_pool_item(
+            variant=self.product_variant, variant_id=self.product_variant.id
+        )
+        result = SourcingProductService().add_pool_items_to_po(po=self.po, item_ids=[str(item.id)])
+        self.assertIn(str(item.id), result["added"])
+        item.refresh_from_db()
+        self.assertTrue(item.is_used)
+        self.assertEqual(item.used_in_po, self.po)
+        self.assertTrue(
+            PurchaseOrderDetail.objects.filter(
+                purchase_order=self.po, product_variant=self.product_variant
+            ).exists()
+        )
+
+    def test_pool_item_with_variant_id_and_qty_suggested_5(self):
+        from apps.purchasing.services.sourcing_product_service import SourcingProductService
+
+        item = self._make_pool_item(
+            variant=self.product_variant, variant_id=self.product_variant.id, qty_suggested=5
+        )
+        result = SourcingProductService().add_pool_items_to_po(po=self.po, item_ids=[str(item.id)])
+        self.assertIn(str(item.id), result["added"])
+        detail = PurchaseOrderDetail.objects.get(
+            purchase_order=self.po, product_variant=self.product_variant
+        )
+        self.assertEqual(detail.ordered_qty, 5)
+
+    def test_pool_item_with_variant_id_and_qty_suggested_none(self):
+        from apps.purchasing.services.sourcing_product_service import SourcingProductService
+
+        item = self._make_pool_item(
+            variant=self.product_variant, variant_id=self.product_variant.id, qty_suggested=None
+        )
+        result = SourcingProductService().add_pool_items_to_po(po=self.po, item_ids=[str(item.id)])
+        self.assertIn(str(item.id), result["added"])
+        detail = PurchaseOrderDetail.objects.get(
+            purchase_order=self.po, product_variant=self.product_variant
+        )
+        self.assertEqual(detail.ordered_qty, 1)
+
+    def test_pool_item_with_discounted_price(self):
+        from apps.purchasing.services.sourcing_product_service import SourcingProductService
+
+        item = self._make_pool_item(
+            variant=self.product_variant,
+            variant_id=self.product_variant.id,
+            unit_price=Decimal("10.000"),
+            discounted_price=Decimal("8.000"),
+        )
+        result = SourcingProductService().add_pool_items_to_po(po=self.po, item_ids=[str(item.id)])
+        self.assertIn(str(item.id), result["added"])
+        detail = PurchaseOrderDetail.objects.get(
+            purchase_order=self.po, product_variant=self.product_variant
+        )
+        self.assertEqual(detail.discounted_unit_price_foreign, Decimal("8.000"))
+        self.assertEqual(detail.discounted_unit_price_base, 16000)
+
+    # ---- Track B: auto-generate ----
+
+    def test_track_b_creates_product_with_db_generated_sku_code(self):
+        from apps.purchasing.services.sourcing_product_service import SourcingProductService
+
+        item = self._make_pool_item(
+            variant=None,
+            variant_id=None,
+            dim1_key="Warna",
+            dim1_value="Putih",
+            category=self.category,
+        )
+        result = SourcingProductService().add_pool_items_to_po(po=self.po, item_ids=[str(item.id)])
+        self.assertIn(str(item.id), result["added"])
+        detail = PurchaseOrderDetail.objects.get(purchase_order=self.po)
+        variant = detail.product_variant
+        product = variant.product
+        self.assertRegex(product.sku_code, r"^TEST-\d{3}$")
+        self.assertTrue(variant.sku_variant_code.startswith(product.sku_code))
+
+    def test_track_b_sku_variant_code_ends_with_suffix_from_dims(self):
+        from apps.purchasing.services.sourcing_product_service import SourcingProductService
+
+        ColorAbbreviation.objects.create(
+            company=self.company, color_name="Putih", abbreviation="WHT"
+        )
+        item = self._make_pool_item(
+            variant=None,
+            variant_id=None,
+            dim1_key="Warna",
+            dim1_value="Putih",
+            category=self.category,
+        )
+        result = SourcingProductService().add_pool_items_to_po(po=self.po, item_ids=[str(item.id)])
+        self.assertIn(str(item.id), result["added"])
+        detail = PurchaseOrderDetail.objects.get(purchase_order=self.po)
+        self.assertTrue(detail.product_variant.sku_variant_code.endswith("-WHT"))
+
+    def test_track_b_no_dims_sku_variant_code_ends_with_default(self):
+        from apps.purchasing.services.sourcing_product_service import SourcingProductService
+
+        item = self._make_pool_item(
+            variant=None,
+            variant_id=None,
+            dim1_key="",
+            dim1_value="",
+            dim2_key="",
+            dim2_value="",
+            category=self.category,
+        )
+        result = SourcingProductService().add_pool_items_to_po(po=self.po, item_ids=[str(item.id)])
+        self.assertIn(str(item.id), result["added"])
+        detail = PurchaseOrderDetail.objects.get(purchase_order=self.po)
+        self.assertTrue(detail.product_variant.sku_variant_code.endswith("-DEFAULT"))
+
+    def test_track_b_6_items_same_supplier_link_1_product_6_variants_6_lines(self):
+        from apps.purchasing.services.sourcing_product_service import SourcingProductService
+
+        colors = ["Putih", "Merah"]
+        sizes = ["S", "M", "L"]
+        ColorAbbreviation.objects.create(
+            company=self.company, color_name="Putih", abbreviation="WHT"
+        )
+        ColorAbbreviation.objects.create(
+            company=self.company, color_name="Merah", abbreviation="MRH"
+        )
+        items = []
+        for color in colors:
+            for size in sizes:
+                items.append(
+                    self._make_pool_item(
+                        variant=None,
+                        variant_id=None,
+                        supplier_link="https://shop.com/polo",
+                        product_name=None,
+                        dim1_key="Warna",
+                        dim1_value=color,
+                        dim2_key="Ukuran",
+                        dim2_value=size,
+                        category=self.category,
+                    )
+                )
+        item_ids = [str(i.id) for i in items]
+        svc = SourcingProductService()
+        result = svc.add_pool_items_to_po(po=self.po, item_ids=item_ids)
+        self.assertEqual(len(result["added"]), 6)
+        product = PurchaseOrderDetail.objects.first().product_variant.product
+        self.assertEqual(product.variants.count(), 6)
+        self.assertEqual(self.po.order_details.count(), 6)
+
+    def test_track_b_same_product_name_grouped_as_1_product(self):
+        from apps.purchasing.services.sourcing_product_service import SourcingProductService
+
+        items = []
+        for color in ["Putih", "Merah", "Hitam"]:
+            items.append(
+                self._make_pool_item(
+                    variant=None,
+                    variant_id=None,
+                    product_name="Kaos Polo",
+                    dim1_key="Warna",
+                    dim1_value=color,
+                    category=self.category,
+                )
+            )
+        item_ids = [str(i.id) for i in items]
+        svc = SourcingProductService()
+        result = svc.add_pool_items_to_po(po=self.po, item_ids=item_ids)
+        self.assertEqual(len(result["added"]), 3)
+        products = set(
+            PurchaseOrderDetail.objects.filter(purchase_order=self.po).values_list(
+                "product_variant__product_id", flat=True
+            )
+        )
+        self.assertEqual(len(products), 1)
+
+    def test_track_b_standalone_items_separate_products(self):
+        from apps.purchasing.services.sourcing_product_service import SourcingProductService
+
+        items = []
+        for name in ["Item A", "Item B"]:
+            items.append(
+                self._make_pool_item(
+                    variant=None,
+                    variant_id=None,
+                    product_name=name,
+                    dim1_key="",
+                    dim1_value="",
+                    dim2_key="",
+                    dim2_value="",
+                    supplier_link="",
+                    category=self.category,
+                )
+            )
+        item_ids = [str(i.id) for i in items]
+        svc = SourcingProductService()
+        result = svc.add_pool_items_to_po(po=self.po, item_ids=item_ids)
+        self.assertEqual(len(result["added"]), 2)
+        products = set(
+            PurchaseOrderDetail.objects.filter(purchase_order=self.po).values_list(
+                "product_variant__product_id", flat=True
+            )
+        )
+        self.assertEqual(len(products), 2)
+
+    # ---- Track A: explicit variant_code ----
+
+    def test_track_a_explicit_variant_code_no_existing_product_creates_both(self):
+        from apps.purchasing.services.sourcing_product_service import SourcingProductService
+
+        item = self._make_pool_item(
+            variant=None,
+            variant_id=None,
+            variant_code="TST-099-S",
+            dim1_key="Warna",
+            dim1_value="Putih",
+            category=self.category,
+        )
+        svc = SourcingProductService()
+        result = svc.add_pool_items_to_po(po=self.po, item_ids=[str(item.id)])
+        self.assertIn(str(item.id), result["added"])
+        product = Product.objects.get(company=self.company, sku_code="TST-099")
+        self.assertEqual(product.name, "Test Product")
+        variant = ProductVariant.objects.get(product=product, sku_variant_code="TST-099-S")
+        self.assertIsNotNone(variant)
+        detail = PurchaseOrderDetail.objects.get(purchase_order=self.po, product_variant=variant)
+        self.assertIsNotNone(detail)
+
+    def test_track_a_explicit_variant_code_product_exists_conflict(self):
+        from apps.purchasing.services.sourcing_product_service import SourcingProductService
+
+        Product.objects.create(
+            company=self.company,
+            category=self.category,
+            name="Existing",
+            sku_code="TST-099",
+        )
+        item = self._make_pool_item(
+            variant=None,
+            variant_id=None,
+            variant_code="TST-099-S",
+            category=self.category,
+        )
+        svc = SourcingProductService()
+        result = svc.add_pool_items_to_po(po=self.po, item_ids=[str(item.id)])
+        self.assertEqual(len(result["sku_conflicts"]), 1)
+        self.assertEqual(result["sku_conflicts"][0]["sku_code"], "TST-099")
+        self.assertEqual(len(result["added"]), 0)
+        item.refresh_from_db()
+        self.assertFalse(item.is_used)
+
+    # ---- resolve_sku_conflicts ----
+
+    def test_resolve_sku_conflicts_add_to_existing(self):
+        from apps.purchasing.services.sourcing_product_service import SourcingProductService
+
+        existing_product = Product.objects.create(
+            company=self.company,
+            category=self.category,
+            name="Existing",
+            sku_code="TST-099",
+        )
+        item = self._make_pool_item(
+            variant=None,
+            variant_id=None,
+            variant_code="TST-099-S",
+            category=self.category,
+        )
+        resolutions = [
+            {
+                "item_id": str(item.id),
+                "action": "add_to_existing",
+                "product_id": str(existing_product.id),
+            }
+        ]
+        svc = SourcingProductService()
+        result = svc.resolve_sku_conflicts(po=self.po, resolutions=resolutions)
+        self.assertIn(str(item.id), result["added"])
+        variant = ProductVariant.objects.get(product=existing_product, sku_variant_code="TST-099-S")
+        self.assertIsNotNone(variant)
+        item.refresh_from_db()
+        self.assertTrue(item.is_used)
+
+    def test_resolve_sku_conflicts_skip(self):
+        from apps.purchasing.services.sourcing_product_service import SourcingProductService
+
+        Product.objects.create(
+            company=self.company,
+            category=self.category,
+            name="Existing",
+            sku_code="TST-099",
+        )
+        item = self._make_pool_item(
+            variant=None,
+            variant_id=None,
+            variant_code="TST-099-S",
+            category=self.category,
+        )
+        resolutions = [{"item_id": str(item.id), "action": "skip"}]
+        svc = SourcingProductService()
+        result = svc.resolve_sku_conflicts(po=self.po, resolutions=resolutions)
+        self.assertIn(str(item.id), result["skipped"])
+        item.refresh_from_db()
+        self.assertFalse(item.is_used)
+        self.assertEqual(self.po.order_details.count(), 0)
+
+    def test_resolve_sku_conflicts_missing_product_id_raises(self):
+        from apps.purchasing.services.sourcing_product_service import SourcingProductService
+
+        item = self._make_pool_item(
+            variant=None, variant_id=None, variant_code="TST-099-S", category=self.category
+        )
+        resolutions = [{"item_id": str(item.id), "action": "add_to_existing"}]
+        svc = SourcingProductService()
+        with self.assertRaises(ValidationError) as ctx:
+            svc.resolve_sku_conflicts(po=self.po, resolutions=resolutions)
+        self.assertIn("product_id is required", str(ctx.exception))
+
+    def test_resolve_sku_conflicts_item_not_found_or_used(self):
+        from apps.purchasing.services.sourcing_product_service import SourcingProductService
+
+        resolutions = [
+            {
+                "item_id": "00000000000000000000000000",
+                "action": "add_to_existing",
+                "product_id": str(self.category.id),
+            }
+        ]
+        svc = SourcingProductService()
+        result = svc.resolve_sku_conflicts(po=self.po, resolutions=resolutions)
+        self.assertIn("00000000000000000000000000", result["skipped"])
+
+    # ---- status guards ----
+
+    def test_add_pool_items_on_shipped_po_raises(self):
+        from apps.purchasing.services.sourcing_product_service import SourcingProductService
+
+        shipped_po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.SHIPPED,
+        )
+        item = self._make_pool_item(
+            variant=self.product_variant, variant_id=self.product_variant.id
+        )
+        svc = SourcingProductService()
+        with self.assertRaises(ValidationError) as ctx:
+            svc.add_pool_items_to_po(po=shipped_po, item_ids=[str(item.id)])
+        self.assertIn("Cannot add items to a PO with status SHIPPED", str(ctx.exception))
+
+    def test_add_pool_items_item_from_different_company_not_found(self):
+        from apps.purchasing.services.sourcing_product_service import SourcingProductService
+
+        other_company = CompanyFactory()
+        item = SourcingPoolItemFactory(
+            pool=SourcingPoolFactory(
+                company=other_company, supplier=SupplierFactory(company=other_company)
+            ),
+            company=other_company,
+            variant=self.product_variant,
+            variant_id=self.product_variant.id,
+            is_used=False,
+            is_active=True,
+        )
+        svc = SourcingProductService()
+        with self.assertRaises(ValidationError):
+            svc.add_pool_items_to_po(po=self.po, item_ids=[str(item.id)])
+
+    # ---- PO total recalculation ----
+
+    def test_po_totals_recalculated_after_add(self):
+        from apps.purchasing.services.sourcing_product_service import SourcingProductService
+
+        item = self._make_pool_item(
+            variant=self.product_variant, variant_id=self.product_variant.id, qty_suggested=7
+        )
+        SourcingProductService().add_pool_items_to_po(po=self.po, item_ids=[str(item.id)])
+        self.po.refresh_from_db()
+        self.assertEqual(self.po.total_ordered_qty, 7)
+
+    # ---- list_items filter tests ----
+
+    def test_list_items_excludes_is_used_true_items(self):
+        item = self._make_pool_item(is_used=True)
+        from rest_framework.test import APIClient
+
+        from core.models import UserProfile
+
+        user = User.objects.create_user(username="list_used", password="p", is_staff=True)
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.get(f"/sourcing-pool/items/?supplier_id={self.supplier.id}")
+        self.assertEqual(response.status_code, 200)
+        item_ids = [i["id"] for i in response.data["results"]]
+        self.assertNotIn(str(item.id), item_ids)
+
+    def test_list_items_excludes_is_active_false_items(self):
+        item = self._make_pool_item(is_active=False)
+        from rest_framework.test import APIClient
+
+        from core.models import UserProfile
+
+        user = User.objects.create_user(username="list_inactive", password="p", is_staff=True)
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.get(f"/sourcing-pool/items/?supplier_id={self.supplier.id}")
+        self.assertEqual(response.status_code, 200)
+        item_ids = [i["id"] for i in response.data["results"]]
+        self.assertNotIn(str(item.id), item_ids)
+
+    # ---- conditional SKU trigger integration tests ----
+
+    def test_creating_product_with_explicit_sku_code_preserved(self):
+        product = Product.objects.create(
+            company=self.company,
+            category=self.category,
+            name="Explicit SKU",
+            sku_code="EXPLICIT-001",
+        )
+        product.refresh_from_db()
+        self.assertEqual(product.sku_code, "EXPLICIT-001")
+
+    def test_creating_product_without_sku_code_trigger_generates(self):
+        product = Product.objects.create(
+            company=self.company,
+            category=self.category,
+            name="Auto SKU",
+        )
+        product.refresh_from_db(fields=["sku_code"])
+        self.assertRegex(product.sku_code, r"^TEST-\d{3}$")
+
+    # ---- Track A: product AND variant both exist (Gap 3) ----
+
+    def test_track_a_product_and_variant_both_exist_use_existing(self):
+        from apps.purchasing.services.sourcing_product_service import SourcingProductService
+
+        existing_product = Product.objects.create(
+            company=self.company,
+            category=self.category,
+            name="Existing",
+            sku_code="TST-099",
+        )
+        existing_variant = ProductVariant.objects.create(
+            product=existing_product,
+            company=self.company,
+            name="Existing Variant",
+            sku_variant_code="TST-099-S",
+            base_price=0,
+        )
+        item = self._make_pool_item(
+            variant=None,
+            variant_id=None,
+            variant_code="TST-099-S",
+            category=self.category,
+        )
+        svc = SourcingProductService()
+        result = svc.add_pool_items_to_po(po=self.po, item_ids=[str(item.id)])
+        self.assertEqual(len(result["sku_conflicts"]), 0)
+        self.assertIn(str(item.id), result["added"])
+        detail = PurchaseOrderDetail.objects.get(
+            purchase_order=self.po, product_variant=existing_variant
+        )
+        self.assertIsNotNone(detail)
+        item.refresh_from_db()
+        self.assertTrue(item.is_used)
+
+    # ---- dim_mismatch_resolutions ----
+
+    def test_dim_mismatch_resolutions_variant_code_kept(self):
+        from apps.purchasing.services.sourcing_product_service import SourcingProductService
+
+        item = self._make_pool_item(
+            variant=None,
+            variant_id=None,
+            variant_code="SEG-001-S",
+            dim1_key="Warna",
+            dim1_value="Putih",
+            category=self.category,
+        )
+        svc = SourcingProductService()
+        result = svc.add_pool_items_to_po(
+            po=self.po,
+            item_ids=[str(item.id)],
+            dim_mismatch_resolutions={str(item.id): "variant_code"},
+        )
+        self.assertIn(str(item.id), result["added"])
+        product = Product.objects.get(company=self.company, sku_code="SEG-001")
+        self.assertIsNotNone(product)
+        variant = ProductVariant.objects.get(company=self.company, sku_variant_code="SEG-001-S")
+        self.assertIsNotNone(variant)
+
+    def test_dim_mismatch_resolutions_dims_used(self):
+        from apps.purchasing.services.sourcing_product_service import SourcingProductService
+
+        ColorAbbreviation.objects.create(
+            company=self.company, color_name="Putih", abbreviation="WHT"
+        )
+        item = self._make_pool_item(
+            variant=None,
+            variant_id=None,
+            variant_code="SEG-001-S",
+            dim1_key="Warna",
+            dim1_value="Putih",
+            category=self.category,
+        )
+        svc = SourcingProductService()
+        result = svc.add_pool_items_to_po(
+            po=self.po,
+            item_ids=[str(item.id)],
+            dim_mismatch_resolutions={str(item.id): "dims"},
+        )
+        self.assertIn(str(item.id), result["added"])
+        detail = PurchaseOrderDetail.objects.get(purchase_order=self.po)
+        variant = detail.product_variant
+        self.assertNotIn("SEG-001-S", variant.sku_variant_code)
+        self.assertTrue(variant.sku_variant_code.endswith("-WHT"))
+
+    # ---- concurrency test ----
+
+    def test_concurrent_add_select_for_update_prevents_duplicate(self):
+        from django.core.exceptions import ValidationError
+
+        from apps.purchasing.services.sourcing_product_service import SourcingProductService
+
+        item = self._make_pool_item(
+            variant=self.product_variant, variant_id=self.product_variant.id
+        )
+        svc = SourcingProductService()
+
+        result1 = svc.add_pool_items_to_po(po=self.po, item_ids=[str(item.id)])
+        self.assertEqual(len(result1["added"]), 1)
+
+        item.refresh_from_db()
+        self.assertTrue(item.is_used)
+
+        with self.assertRaises(ValidationError):
+            svc.add_pool_items_to_po(po=self.po, item_ids=[str(item.id)])
+
+        self.assertEqual(
+            PurchaseOrderDetail.objects.filter(
+                purchase_order=self.po, product_variant=self.product_variant
+            ).count(),
+            1,
+        )
+
+    # ---- _mark_item_used regression guard ----
+
+    def test_mark_item_used_update_fields_does_not_include_udate(self):
+        from apps.purchasing.services.sourcing_product_service import _mark_item_used
+
+        item = self._make_pool_item()
+        _mark_item_used(item, self.po)
+        item.refresh_from_db()
+        self.assertTrue(item.is_used)
+        self.assertIsNotNone(item.used_at)
+        self.assertEqual(item.used_in_po, self.po)

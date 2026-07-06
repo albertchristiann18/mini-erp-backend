@@ -263,6 +263,60 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
             }
         )
 
+    @action(detail=True, methods=["post"], url_path="add-pool-items")
+    def add_pool_items(self, request: Request, pk: Any = None) -> Response:
+        from apps.purchasing.services.sourcing_product_service import SourcingProductService
+
+        po = self.get_object()
+        item_ids = request.data.get("item_ids")
+        if not item_ids or not isinstance(item_ids, list):
+            return Response(
+                {"error": "item_ids must be a non-empty list"}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        product_name_overrides = request.data.get("product_name_overrides") or {}
+        dim_mismatch_resolutions = request.data.get("dim_mismatch_resolutions") or {}
+
+        if not isinstance(product_name_overrides, dict):
+            return Response(
+                {"error": "product_name_overrides must be a dict"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not isinstance(dim_mismatch_resolutions, dict):
+            return Response(
+                {"error": "dim_mismatch_resolutions must be a dict"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            result = SourcingProductService().add_pool_items_to_po(
+                po=po,
+                item_ids=[str(i) for i in item_ids],
+                product_name_overrides=product_name_overrides,
+                dim_mismatch_resolutions=dim_mismatch_resolutions,
+            )
+            return Response(result, status=status.HTTP_200_OK)
+        except ValidationError as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=["post"], url_path="resolve-sku-conflicts")
+    def resolve_sku_conflicts(self, request: Request, pk: Any = None) -> Response:
+        from apps.purchasing.services.sourcing_product_service import SourcingProductService
+
+        po = self.get_object()
+        resolutions = request.data.get("resolutions")
+        if not resolutions or not isinstance(resolutions, list):
+            return Response(
+                {"error": "resolutions must be a non-empty list"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            result = SourcingProductService().resolve_sku_conflicts(po=po, resolutions=resolutions)
+            return Response(result, status=status.HTTP_200_OK)
+        except ValidationError as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
 
 class ReplenishmentView(APIView):
     """
@@ -481,7 +535,7 @@ class SourcingPoolViewSet(viewsets.ViewSet):
             return Response({"pool_id": None, "items": []}, status=status.HTTP_200_OK)
 
         qs = (
-            SourcingPoolItem.objects.filter(pool=pool)
+            SourcingPoolItem.objects.filter(pool=pool, is_used=False, is_active=True)
             .select_related("category")
             .order_by("product_name", "variant_name")
         )

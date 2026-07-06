@@ -26,6 +26,34 @@ CONTENT_TYPE_EXT: dict[str, str] = {
     "image/gif": ".gif",
 }
 
+COLOR_LIKE_KEYS = {"color", "warna", "colour"}
+
+
+def generate_variant_suffix(
+    dim1_key: str,
+    dim1_value: str,
+    dim2_key: str,
+    dim2_value: str,
+    color_map: dict[str, str],
+) -> str:
+    """
+    Build the suffix portion of a sku_variant_code from dim values.
+    Suffix order: dim2 (Size) first, dim1 (Color) second, matching SKU design.
+    Color-like keys use the ColorAbbreviation map; other keys use value as-is.
+    """
+
+    def abbrev(key: str, value: str) -> str:
+        if key.lower() in COLOR_LIKE_KEYS:
+            return color_map.get(value.lower(), value).upper()
+        return value.upper()
+
+    parts = []
+    if dim2_value:
+        parts.append(abbrev(dim2_key, dim2_value))
+    if dim1_value:
+        parts.append(abbrev(dim1_key, dim1_value))
+    return "-".join(parts)
+
 
 class SourcingService:
     def get_or_create_pool(self, company: Company, supplier: Supplier) -> SourcingPool:
