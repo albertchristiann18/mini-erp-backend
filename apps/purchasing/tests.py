@@ -28,7 +28,7 @@ from apps.inventory.factories import (
     ProductVariantWarehouseFactory,
     SupplierFactory,
 )
-from apps.inventory.models import ProductCogs, ProductSupplier, ProductVariantWarehouse
+from apps.inventory.models import Category, ProductCogs, ProductSupplier, ProductVariantWarehouse
 from apps.inventory.services.inventory_service import InventoryService
 from apps.purchasing.factories import (
     PurchaseOrderDetailFactory,
@@ -4656,8 +4656,10 @@ class TestSourcingService(TestCase):
             ]
         )
         result = self.service.parse_excel_preview(file_bytes, company=self.company)
-        self.assertEqual(len(result["valid"]), 0)
-        self.assertTrue(any("DOES-NOT-EXIST" in e["message"] for e in result["errors"]))
+        self.assertEqual(len(result["errors"]), 0)
+        self.assertEqual(len(result["valid"]), 1)
+        self.assertEqual(result["valid"][0]["category_code"], "DOES-NOT-EXIST")
+        self.assertIsNone(result["valid"][0]["category_id"])
 
     def test_parse_excel_preview_flags_invalid_unit_price_non_numeric(self):
         file_bytes = self._build_workbook(
@@ -4999,8 +5001,8 @@ class TestSourcingService(TestCase):
             format="multipart",
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data["valid"]), 2)
-        self.assertEqual(len(response.data["errors"]), 1)
+        self.assertEqual(len(response.data["valid"]), 3)
+        self.assertEqual(len(response.data["errors"]), 0)
 
     def test_preview_endpoint_returns_400_when_no_file(self):
         self.client = APIClient()
@@ -6136,6 +6138,24 @@ class TestSourcingService(TestCase):
         item = pool.items.first()
         self.assertEqual(item.unit_price, Decimal("20"))
         self.assertEqual(item.supplier_link, "https://shop.com/x")
+
+    def test_parse_excel_preview_unknown_category_code_is_valid(self):
+        file_bytes = self._build_workbook([["Prod", "Var", "DOES-NOT-EXIST", "10.000"]])
+        result = self.service.parse_excel_preview(file_bytes, company=self.company)
+        self.assertEqual(len(result["errors"]), 0)
+        self.assertEqual(len(result["valid"]), 1)
+        self.assertEqual(result["valid"][0]["category_code"], "DOES-NOT-EXIST")
+        self.assertIsNone(result["valid"][0]["category_id"])
+
+    def test_unknown_category_code_auto_creates_category_on_import(self):
+        row = self._make_row(category_code="AUTOCREATED", category_id=None)
+        result = self.service.import_rows(company=self.company, supplier=self.supplier, rows=[row])
+        self.assertEqual(result["created"], 1)
+        self.assertTrue(
+            Category.objects.filter(company=self.company, category_code="AUTOCREATED").exists()
+        )
+        item = SourcingPoolItem.objects.filter(pool__company=self.company).first()
+        self.assertIsNotNone(item.category_id)
 
 
 class TestPhaseD(TestCase):
