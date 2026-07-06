@@ -1,5 +1,4 @@
 import logging
-from decimal import Decimal
 from typing import Any, Type
 
 from django.core.exceptions import ValidationError
@@ -226,98 +225,6 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
                 "warnings": warnings,
             }
         )
-
-    @action(detail=True, methods=["post"], url_path="draft-lines")
-    def add_draft_line(self, request: Request, pk: Any = None) -> Response:
-        """POST /purchase-orders/{id}/draft-lines/ — add a sourcing item as a draft PO line."""
-        po = self.get_object()
-        sourcing_item_id = request.data.get("sourcing_item_id")
-        ordered_qty = request.data.get("ordered_qty")
-        unit_price_foreign = request.data.get("unit_price_foreign")
-
-        if not sourcing_item_id:
-            return Response(
-                {"error": "sourcing_item_id is required"}, status=status.HTTP_400_BAD_REQUEST
-            )
-        if ordered_qty is None:
-            return Response(
-                {"error": "ordered_qty is required"}, status=status.HTTP_400_BAD_REQUEST
-            )
-        try:
-            ordered_qty_int = int(ordered_qty)
-        except (TypeError, ValueError):
-            return Response(
-                {"error": "ordered_qty must be an integer"}, status=status.HTTP_400_BAD_REQUEST
-            )
-
-        price_decimal: Decimal | None = None
-        if unit_price_foreign is not None:
-            try:
-                from decimal import Decimal as D
-
-                price_decimal = D(str(unit_price_foreign))
-            except Exception:
-                return Response(
-                    {"error": "unit_price_foreign must be a number"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-        try:
-            detail = PurchaseOrderService().add_draft_line(
-                po=po,
-                sourcing_item_id=str(sourcing_item_id),
-                ordered_qty=ordered_qty_int,
-                unit_price_foreign=price_decimal,
-            )
-            return Response({"detail_id": str(detail.id)}, status=status.HTTP_201_CREATED)
-        except SourcingPoolItem.DoesNotExist:
-            return Response({"error": "Sourcing item not found"}, status=status.HTTP_404_NOT_FOUND)
-        except ValidationError as e:
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-    @action(
-        detail=True,
-        methods=["post"],
-        url_path=r"details/(?P<detail_id>[^/.]+)/finalize",
-    )
-    def finalize_draft_line(
-        self, request: Request, pk: Any = None, detail_id: str = ""
-    ) -> Response:
-        """POST /purchase-orders/{id}/details/{detail_id}/finalize/ — create Product+Variant."""
-        po = self.get_object()
-        sku_suffix = request.data.get("sku_suffix", "").strip()
-        category_id = request.data.get("category_id") or None
-        product_name = request.data.get("product_name") or None
-        dim1_key = (request.data.get("dim1_key") or "").strip() or None
-        dim1_value = (request.data.get("dim1_value") or "").strip() or None
-        dim2_key = (request.data.get("dim2_key") or "").strip() or None
-        dim2_value = (request.data.get("dim2_value") or "").strip() or None
-
-        if not sku_suffix:
-            return Response({"error": "sku_suffix is required"}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            detail = PurchaseOrderDetail.objects.get(id=detail_id, purchase_order=po)
-        except PurchaseOrderDetail.DoesNotExist:
-            return Response({"error": "Detail not found"}, status=status.HTTP_404_NOT_FOUND)
-
-        try:
-            detail = PurchaseOrderService().finalize_draft_line(
-                detail=detail,
-                sku_suffix=sku_suffix,
-                category_id=category_id,
-                product_name=product_name,
-                dim1_key=dim1_key,
-                dim1_value=dim1_value,
-                dim2_key=dim2_key,
-                dim2_value=dim2_value,
-            )
-            return Response(
-                {"detail_id": str(detail.id), "variant_id": str(detail.product_variant.id)},  # type: ignore[union-attr]
-                status=status.HTTP_200_OK,
-            )
-        except ValidationError as e:
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
     @action(detail=False, methods=["get"], url_path="summary")
     def summary(self, request: Request) -> Response:
@@ -588,6 +495,41 @@ class SourcingPoolViewSet(viewsets.ViewSet):
         response = paginator.get_paginated_response(serializer.data)
         response.data["pool_id"] = str(pool.id)
         return response
+
+    @action(detail=False, methods=["get", "post"], url_path="color-abbreviations")
+    def color_abbreviations(self, request: Request) -> Response:
+        from apps.purchasing.models import ColorAbbreviation
+
+        if request.method == "GET":
+            items = ColorAbbreviation.objects.filter(company=request.user.profile.company).order_by(
+                "color_name"
+            )
+            data = [
+                {"id": str(i.id), "color_name": i.color_name, "abbreviation": i.abbreviation}
+                for i in items
+            ]
+            return Response(data)
+
+        color_name = (request.data.get("color_name") or "").strip()
+        abbreviation = (request.data.get("abbreviation") or "").strip()
+        if not color_name:
+            return Response({"error": "color_name is required"}, status=status.HTTP_400_BAD_REQUEST)
+        if not abbreviation:
+            return Response(
+                {"error": "abbreviation is required"}, status=status.HTTP_400_BAD_REQUEST
+            )
+        obj, created = ColorAbbreviation.objects.get_or_create(
+            company=request.user.profile.company,
+            color_name=color_name,
+            defaults={"abbreviation": abbreviation},
+        )
+        if not created:
+            obj.abbreviation = abbreviation
+            obj.save(update_fields=["abbreviation"])
+        return Response(
+            {"id": str(obj.id), "color_name": obj.color_name, "abbreviation": obj.abbreviation},
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
 
     @action(detail=False, methods=["post"], url_path="download-images")
     def download_images(self, request: Request) -> Response:
