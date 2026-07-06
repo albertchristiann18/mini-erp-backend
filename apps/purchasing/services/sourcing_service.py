@@ -199,7 +199,7 @@ class SourcingService:
 
         def get_cell(row: tuple, col: str) -> str | None:
             idx = col_index.get(col)
-            if idx is None:
+            if idx is None or idx >= len(row):
                 return None
             val = row[idx]
             return str(val).strip() if val is not None else None
