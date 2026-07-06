@@ -236,10 +236,6 @@ class SourcingService:
             # category_code is required only when no variant_code is provided
             if not variant_code and not category_code:
                 row_errors.append("category_code is required")
-            elif category_code and category_code not in category_map:
-                row_errors.append(
-                    f"category_code '{category_code}' not found — check the Categories sheet"
-                )
 
             unit_price: Decimal | None = None
             if not unit_price_raw:
@@ -352,6 +348,16 @@ class SourcingService:
     @transaction.atomic
     def import_rows(self, company: Company, supplier: Supplier, rows: list[dict]) -> dict[str, Any]:
         pool = self.get_or_create_pool(company=company, supplier=supplier)
+
+        # Auto-create categories for rows where category_code is new (category_id=None at preview time).
+        for row in rows:
+            if not row.get("category_id") and row.get("category_code"):
+                cat, _ = Category.objects.get_or_create(
+                    company=company,
+                    category_code=row["category_code"],
+                    defaults={"name": row["category_code"]},
+                )
+                row["category_id"] = str(cat.id)
 
         category_ids = {str(row["category_id"]) for row in rows if row.get("category_id")}
         valid_category_ids = set(
