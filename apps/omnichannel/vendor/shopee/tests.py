@@ -2261,5 +2261,11 @@ class TestManagementCommandsUnregistered(TestCase):
         ]
         for name in removed:
             self.assertNotIn(name, commands, f"{name} should not be registered")
-        self.assertIn("create_user", commands, "core management commands must remain")
-        self.assertIn("change_user_role", commands, "core management commands must remain")
+        self.assertNotIn(
+            "create_user", commands, "create_user should no longer be a management command"
+        )
+        self.assertNotIn(
+            "change_user_role",
+            commands,
+            "change_user_role should no longer be a management command",
+        )
