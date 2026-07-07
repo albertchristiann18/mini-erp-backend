@@ -6773,6 +6773,140 @@ class TestPhase1SourcingAutoFinalize(TestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    # ---- DELETE tests ----
+
+    def test_delete_color_abbreviation_success(self):
+        from rest_framework.test import APIClient
+
+        from core.models import UserProfile
+
+        ColorAbbreviation.objects.create(
+            company=self.company, color_name="Dusty Rose", abbreviation="DSR"
+        )
+        user = User.objects.create_user(username="color_del1", password="p", is_staff=True)
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.delete(
+            "/sourcing-pool/color-abbreviations/",
+            {"color_name": "Dusty Rose"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(
+            ColorAbbreviation.objects.filter(company=self.company, color_name="Dusty Rose").exists()
+        )
+
+    def test_delete_color_abbreviation_company_scoping_isolation(self):
+        from rest_framework.test import APIClient
+
+        from core.models import UserProfile
+
+        company_b = CompanyFactory()
+        ColorAbbreviation.objects.create(
+            company=company_b, color_name="Dusty Rose", abbreviation="DSR"
+        )
+        user = User.objects.create_user(username="color_del2", password="p", is_staff=True)
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.delete(
+            "/sourcing-pool/color-abbreviations/",
+            {"color_name": "Dusty Rose"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertTrue(
+            ColorAbbreviation.objects.filter(company=company_b, color_name="Dusty Rose").exists()
+        )
+
+    def test_delete_color_abbreviation_not_found(self):
+        from rest_framework.test import APIClient
+
+        from core.models import UserProfile
+
+        user = User.objects.create_user(username="color_del3", password="p", is_staff=True)
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.delete(
+            "/sourcing-pool/color-abbreviations/",
+            {"color_name": "NonExistent"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_delete_color_abbreviation_missing_color_name_key(self):
+        from rest_framework.test import APIClient
+
+        from core.models import UserProfile
+
+        user = User.objects.create_user(username="color_del4", password="p", is_staff=True)
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.delete(
+            "/sourcing-pool/color-abbreviations/",
+            {},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("color_name is required", str(response.data))
+
+    def test_delete_color_abbreviation_empty_string(self):
+        from rest_framework.test import APIClient
+
+        from core.models import UserProfile
+
+        user = User.objects.create_user(username="color_del5", password="p", is_staff=True)
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.delete(
+            "/sourcing-pool/color-abbreviations/",
+            {"color_name": ""},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("color_name is required", str(response.data))
+
+    def test_delete_color_abbreviation_whitespace_only(self):
+        from rest_framework.test import APIClient
+
+        from core.models import UserProfile
+
+        user = User.objects.create_user(username="color_del6", password="p", is_staff=True)
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.delete(
+            "/sourcing-pool/color-abbreviations/",
+            {"color_name": "   "},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("color_name is required", str(response.data))
+
+    def test_delete_color_abbreviation_unauthenticated(self):
+        from rest_framework.test import APIClient
+
+        ColorAbbreviation.objects.create(
+            company=self.company, color_name="Dusty Rose", abbreviation="DSR"
+        )
+        client = APIClient()
+        try:
+            response = client.delete(
+                "/sourcing-pool/color-abbreviations/",
+                {"color_name": "Dusty Rose"},
+                format="json",
+            )
+            self.assertNotEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        except Exception:
+            pass
+        self.assertTrue(
+            ColorAbbreviation.objects.filter(company=self.company, color_name="Dusty Rose").exists()
+        )
+
 
 class TestPhase2SourcingAutoFinalize(TestCase):
     """Phase 2 — SKU generation, add-pool-items, resolve-sku-conflicts."""
@@ -6868,7 +7002,7 @@ class TestPhase2SourcingAutoFinalize(TestCase):
             variant=self.product_variant, variant_id=self.product_variant.id
         )
         result = SourcingProductService().add_pool_items_to_po(po=self.po, item_ids=[str(item.id)])
-        self.assertIn(str(item.id), result["added"])
+        self.assertTrue(any(a["item_id"] == str(item.id) for a in result["added"]))
         item.refresh_from_db()
         self.assertTrue(item.is_used)
         self.assertEqual(item.used_in_po, self.po)
@@ -6885,7 +7019,7 @@ class TestPhase2SourcingAutoFinalize(TestCase):
             variant=self.product_variant, variant_id=self.product_variant.id, qty_suggested=5
         )
         result = SourcingProductService().add_pool_items_to_po(po=self.po, item_ids=[str(item.id)])
-        self.assertIn(str(item.id), result["added"])
+        self.assertTrue(any(a["item_id"] == str(item.id) for a in result["added"]))
         detail = PurchaseOrderDetail.objects.get(
             purchase_order=self.po, product_variant=self.product_variant
         )
@@ -6898,7 +7032,7 @@ class TestPhase2SourcingAutoFinalize(TestCase):
             variant=self.product_variant, variant_id=self.product_variant.id, qty_suggested=None
         )
         result = SourcingProductService().add_pool_items_to_po(po=self.po, item_ids=[str(item.id)])
-        self.assertIn(str(item.id), result["added"])
+        self.assertTrue(any(a["item_id"] == str(item.id) for a in result["added"]))
         detail = PurchaseOrderDetail.objects.get(
             purchase_order=self.po, product_variant=self.product_variant
         )
@@ -6914,7 +7048,7 @@ class TestPhase2SourcingAutoFinalize(TestCase):
             discounted_price=Decimal("8.000"),
         )
         result = SourcingProductService().add_pool_items_to_po(po=self.po, item_ids=[str(item.id)])
-        self.assertIn(str(item.id), result["added"])
+        self.assertTrue(any(a["item_id"] == str(item.id) for a in result["added"]))
         detail = PurchaseOrderDetail.objects.get(
             purchase_order=self.po, product_variant=self.product_variant
         )
@@ -6934,7 +7068,7 @@ class TestPhase2SourcingAutoFinalize(TestCase):
             category=self.category,
         )
         result = SourcingProductService().add_pool_items_to_po(po=self.po, item_ids=[str(item.id)])
-        self.assertIn(str(item.id), result["added"])
+        self.assertTrue(any(a["item_id"] == str(item.id) for a in result["added"]))
         detail = PurchaseOrderDetail.objects.get(purchase_order=self.po)
         variant = detail.product_variant
         product = variant.product
@@ -6955,7 +7089,7 @@ class TestPhase2SourcingAutoFinalize(TestCase):
             category=self.category,
         )
         result = SourcingProductService().add_pool_items_to_po(po=self.po, item_ids=[str(item.id)])
-        self.assertIn(str(item.id), result["added"])
+        self.assertTrue(any(a["item_id"] == str(item.id) for a in result["added"]))
         detail = PurchaseOrderDetail.objects.get(purchase_order=self.po)
         self.assertTrue(detail.product_variant.sku_variant_code.endswith("-WHT"))
 
@@ -6972,7 +7106,7 @@ class TestPhase2SourcingAutoFinalize(TestCase):
             category=self.category,
         )
         result = SourcingProductService().add_pool_items_to_po(po=self.po, item_ids=[str(item.id)])
-        self.assertIn(str(item.id), result["added"])
+        self.assertTrue(any(a["item_id"] == str(item.id) for a in result["added"]))
         detail = PurchaseOrderDetail.objects.get(purchase_order=self.po)
         self.assertTrue(detail.product_variant.sku_variant_code.endswith("-DEFAULT"))
 
@@ -7081,7 +7215,7 @@ class TestPhase2SourcingAutoFinalize(TestCase):
         )
         svc = SourcingProductService()
         result = svc.add_pool_items_to_po(po=self.po, item_ids=[str(item.id)])
-        self.assertIn(str(item.id), result["added"])
+        self.assertTrue(any(a["item_id"] == str(item.id) for a in result["added"]))
         product = Product.objects.get(company=self.company, sku_code="TST-099")
         self.assertEqual(product.name, "Test Product")
         variant = ProductVariant.objects.get(product=product, sku_variant_code="TST-099-S")
@@ -7138,7 +7272,7 @@ class TestPhase2SourcingAutoFinalize(TestCase):
         ]
         svc = SourcingProductService()
         result = svc.resolve_sku_conflicts(po=self.po, resolutions=resolutions)
-        self.assertIn(str(item.id), result["added"])
+        self.assertTrue(any(a["item_id"] == str(item.id) for a in result["added"]))
         variant = ProductVariant.objects.get(product=existing_product, sku_variant_code="TST-099-S")
         self.assertIsNotNone(variant)
         item.refresh_from_db()
@@ -7162,7 +7296,7 @@ class TestPhase2SourcingAutoFinalize(TestCase):
         resolutions = [{"item_id": str(item.id), "action": "skip"}]
         svc = SourcingProductService()
         result = svc.resolve_sku_conflicts(po=self.po, resolutions=resolutions)
-        self.assertIn(str(item.id), result["skipped"])
+        self.assertTrue(any(a["item_id"] == str(item.id) for a in result["skipped"]))
         item.refresh_from_db()
         self.assertFalse(item.is_used)
         self.assertEqual(self.po.order_details.count(), 0)
@@ -7191,7 +7325,9 @@ class TestPhase2SourcingAutoFinalize(TestCase):
         ]
         svc = SourcingProductService()
         result = svc.resolve_sku_conflicts(po=self.po, resolutions=resolutions)
-        self.assertIn("00000000000000000000000000", result["skipped"])
+        self.assertTrue(
+            any(a["item_id"] == "00000000000000000000000000" for a in result["skipped"])
+        )
 
     # ---- status guards ----
 
@@ -7321,7 +7457,7 @@ class TestPhase2SourcingAutoFinalize(TestCase):
         svc = SourcingProductService()
         result = svc.add_pool_items_to_po(po=self.po, item_ids=[str(item.id)])
         self.assertEqual(len(result["sku_conflicts"]), 0)
-        self.assertIn(str(item.id), result["added"])
+        self.assertTrue(any(a["item_id"] == str(item.id) for a in result["added"]))
         detail = PurchaseOrderDetail.objects.get(
             purchase_order=self.po, product_variant=existing_variant
         )
@@ -7348,7 +7484,7 @@ class TestPhase2SourcingAutoFinalize(TestCase):
             item_ids=[str(item.id)],
             dim_mismatch_resolutions={str(item.id): "variant_code"},
         )
-        self.assertIn(str(item.id), result["added"])
+        self.assertTrue(any(a["item_id"] == str(item.id) for a in result["added"]))
         product = Product.objects.get(company=self.company, sku_code="SEG-001")
         self.assertIsNotNone(product)
         variant = ProductVariant.objects.get(company=self.company, sku_variant_code="SEG-001-S")
@@ -7374,17 +7510,44 @@ class TestPhase2SourcingAutoFinalize(TestCase):
             item_ids=[str(item.id)],
             dim_mismatch_resolutions={str(item.id): "dims"},
         )
-        self.assertIn(str(item.id), result["added"])
+        self.assertTrue(any(a["item_id"] == str(item.id) for a in result["added"]))
         detail = PurchaseOrderDetail.objects.get(purchase_order=self.po)
         variant = detail.product_variant
         self.assertNotIn("SEG-001-S", variant.sku_variant_code)
         self.assertTrue(variant.sku_variant_code.endswith("-WHT"))
 
+    # ---- graceful skip for already-used items ----
+
+    def test_already_used_item_goes_to_skipped_not_400(self):
+        """Re-submitting a used pool item must gracefully skip, not raise 400."""
+        from apps.purchasing.services.sourcing_product_service import SourcingProductService
+
+        po_for_use = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DRAFT,
+            exchange_rate=2000,
+        )
+        item = self._make_pool_item(
+            variant=self.product_variant,
+            variant_id=self.product_variant.id,
+            is_used=True,
+            used_in_po=po_for_use,
+        )
+
+        svc = SourcingProductService()
+        result = svc.add_pool_items_to_po(po=self.po, item_ids=[str(item.id)])
+
+        self.assertEqual(len(result["added"]), 0)
+        self.assertEqual(len(result["skipped"]), 1)
+        self.assertEqual(result["skipped"][0]["item_id"], str(item.id))
+        self.assertIn("Already added to PO", result["skipped"][0]["reason"])
+        self.assertEqual(result["skipped"][0]["product_name"], item.product_name or "")
+        self.assertEqual(result["skipped"][0]["variant_name"], item.variant_name)
+
     # ---- concurrency test ----
 
     def test_concurrent_add_select_for_update_prevents_duplicate(self):
-        from django.core.exceptions import ValidationError
-
         from apps.purchasing.services.sourcing_product_service import SourcingProductService
 
         item = self._make_pool_item(
@@ -7398,8 +7561,12 @@ class TestPhase2SourcingAutoFinalize(TestCase):
         item.refresh_from_db()
         self.assertTrue(item.is_used)
 
-        with self.assertRaises(ValidationError):
-            svc.add_pool_items_to_po(po=self.po, item_ids=[str(item.id)])
+        # Second attempt should gracefully skip, not raise 400
+        result2 = svc.add_pool_items_to_po(po=self.po, item_ids=[str(item.id)])
+        self.assertEqual(len(result2["added"]), 0)
+        self.assertEqual(len(result2["skipped"]), 1)
+        self.assertEqual(result2["skipped"][0]["item_id"], str(item.id))
+        self.assertIn("Already added to PO", result2["skipped"][0]["reason"])
 
         self.assertEqual(
             PurchaseOrderDetail.objects.filter(

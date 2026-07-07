@@ -74,37 +74,68 @@ class SourcingProductService:
         product_name_overrides = product_name_overrides or {}
         dim_mismatch_resolutions = dim_mismatch_resolutions or {}
 
-        items = list(
+        added: list[dict] = []
+        sku_conflicts: list[dict] = []
+        skipped: list[dict] = []
+
+        all_found = list(
             SourcingPoolItem.objects.select_for_update().filter(
                 id__in=item_ids,
                 company=po.company,
-                is_used=False,
                 is_active=True,
             )
         )
-        found_ids = {str(i.id) for i in items}
-        missing = [iid for iid in item_ids if iid not in found_ids]
-        if missing:
-            raise ValidationError(f"Pool items not found, already used, or inactive: {missing}")
+        all_found_ids = {str(i.id) for i in all_found}
+        truly_missing = [iid for iid in item_ids if iid not in all_found_ids]
+        if truly_missing:
+            raise ValidationError(f"Pool items not found or inactive: {truly_missing}")
+
+        items = []
+        for pool_item in all_found:
+            if pool_item.is_used:
+                if pool_item.used_in_po:
+                    po_number = pool_item.used_in_po.purchase_order_number
+                else:
+                    po_number = "unknown PO"
+                skipped.append(
+                    {
+                        "item_id": str(pool_item.id),
+                        "product_name": pool_item.product_name or "",
+                        "variant_name": pool_item.variant_name,
+                        "reason": f"Already added to PO {po_number}",
+                    }
+                )
+            else:
+                items.append(pool_item)
 
         color_map: dict[str, str] = {
             ca.color_name.lower(): ca.abbreviation
             for ca in ColorAbbreviation.objects.filter(company=po.company)
         }
 
-        added: list[str] = []
-        sku_conflicts: list[dict] = []
-        skipped: list[str] = []
-
         for item in [i for i in items if i.variant_id]:  # type: ignore[attr-defined]
             try:
                 ordered_qty = item.qty_suggested or 1
-                _create_po_detail(po, item.variant_id, item, ordered_qty)  # type: ignore[attr-defined]
+                po_detail = _create_po_detail(po, item.variant_id, item, ordered_qty)  # type: ignore[attr-defined]
                 _mark_item_used(item, po)
-                added.append(str(item.id))
+                added.append(
+                    {
+                        "item_id": str(item.id),
+                        "po_detail_id": str(po_detail.id),
+                        "product_name": item.product_name or "",
+                        "variant_name": item.variant_name,
+                    }
+                )
             except IntegrityError:
                 logger.warning("Duplicate PO line for variant %s — skipped", item.variant_id)  # type: ignore[attr-defined]
-                skipped.append(str(item.id))
+                skipped.append(
+                    {
+                        "item_id": str(item.id),
+                        "product_name": item.product_name or "",
+                        "variant_name": item.variant_name,
+                        "reason": "Duplicate PO line",
+                    }
+                )
 
         remaining = [i for i in items if not i.variant_id]  # type: ignore[attr-defined]
 
@@ -163,9 +194,16 @@ class SourcingProductService:
                             product=existing_product, sku_variant_code=variant_code
                         )
                         ordered_qty = item.qty_suggested or 1
-                        _create_po_detail(po, existing_variant.id, item, ordered_qty)
+                        po_detail = _create_po_detail(po, existing_variant.id, item, ordered_qty)
                         _mark_item_used(item, po)
-                        added.append(str(item.id))
+                        added.append(
+                            {
+                                "item_id": str(item.id),
+                                "po_detail_id": str(po_detail.id),
+                                "product_name": item.product_name or "",
+                                "variant_name": item.variant_name,
+                            }
+                        )
                     except ProductVariant.DoesNotExist:
                         sku_conflicts.append(
                             {
@@ -178,7 +216,14 @@ class SourcingProductService:
                         )
                 except Product.DoesNotExist:
                     if not category_id:
-                        skipped.append(str(item.id))
+                        skipped.append(
+                            {
+                                "item_id": str(item.id),
+                                "product_name": item.product_name or "",
+                                "variant_name": item.variant_name,
+                                "reason": "No category assigned",
+                            }
+                        )
                         continue
 
                     dim1_values = [item.dim1_value] if item.dim1_value else []
@@ -212,16 +257,40 @@ class SourcingProductService:
                             base_price=0,
                         )
                         ordered_qty = item.qty_suggested or 1
-                        _create_po_detail(po, variant.id, item, ordered_qty)
+                        po_detail = _create_po_detail(po, variant.id, item, ordered_qty)
                         _mark_item_used(item, po)
-                        added.append(str(item.id))
+                        added.append(
+                            {
+                                "item_id": str(item.id),
+                                "po_detail_id": str(po_detail.id),
+                                "product_name": item.product_name or "",
+                                "variant_name": item.variant_name,
+                            }
+                        )
                     except IntegrityError:
                         logger.warning("sku_variant_code collision for %s — skipped", variant_code)
-                        skipped.append(str(item.id))
+                        skipped.append(
+                            {
+                                "item_id": str(item.id),
+                                "product_name": item.product_name or "",
+                                "variant_name": item.variant_name,
+                                "reason": "SKU variant code collision",
+                            }
+                        )
 
             if track_b_items:
                 if not category_id:
-                    skipped.extend([str(i.id) for i in track_b_items])
+                    skipped.extend(
+                        [
+                            {
+                                "item_id": str(i.id),
+                                "product_name": i.product_name or "",
+                                "variant_name": i.variant_name,
+                                "reason": "No category assigned",
+                            }
+                            for i in track_b_items
+                        ]
+                    )
                     continue
 
                 dim1_values_b = list({item.dim1_value for item in track_b_items if item.dim1_value})
@@ -270,14 +339,28 @@ class SourcingProductService:
                             base_price=0,
                         )
                         ordered_qty = item.qty_suggested or 1
-                        _create_po_detail(po, variant_b.id, item, ordered_qty)
+                        po_detail = _create_po_detail(po, variant_b.id, item, ordered_qty)
                         _mark_item_used(item, po)
-                        added.append(str(item.id))
+                        added.append(
+                            {
+                                "item_id": str(item.id),
+                                "po_detail_id": str(po_detail.id),
+                                "product_name": item.product_name or "",
+                                "variant_name": item.variant_name,
+                            }
+                        )
                     except IntegrityError:
                         logger.warning(
                             "sku_variant_code collision for %s — skipped", sku_variant_code
                         )
-                        skipped.append(str(item.id))
+                        skipped.append(
+                            {
+                                "item_id": str(item.id),
+                                "product_name": item.product_name or "",
+                                "variant_name": item.variant_name,
+                                "reason": "SKU variant code collision",
+                            }
+                        )
 
         from apps.purchasing.services.purchasing_service import PurchaseOrderService
 
@@ -303,8 +386,8 @@ class SourcingProductService:
             for ca in ColorAbbreviation.objects.filter(company=po.company)
         }
 
-        added: list[str] = []
-        skipped: list[str] = []
+        added: list[dict] = []
+        skipped: list[dict] = []
 
         for resolution in resolutions:
             item_id = resolution.get("item_id", "")
@@ -315,11 +398,25 @@ class SourcingProductService:
                     id=item_id, company=po.company, is_used=False
                 )
             except SourcingPoolItem.DoesNotExist:
-                skipped.append(item_id)
+                skipped.append(
+                    {
+                        "item_id": item_id,
+                        "product_name": "",
+                        "variant_name": "",
+                        "reason": "Item not found or already used",
+                    }
+                )
                 continue
 
             if action == "skip":
-                skipped.append(str(item.id))
+                skipped.append(
+                    {
+                        "item_id": str(item.id),
+                        "product_name": item.product_name or "",
+                        "variant_name": item.variant_name,
+                        "reason": "Skipped by user",
+                    }
+                )
                 continue
 
             if action == "add_to_existing":
@@ -333,7 +430,14 @@ class SourcingProductService:
                         id=product_id, company=po.company
                     )
                 except Product.DoesNotExist:
-                    skipped.append(str(item.id))
+                    skipped.append(
+                        {
+                            "item_id": str(item.id),
+                            "product_name": item.product_name or "",
+                            "variant_name": item.variant_name,
+                            "reason": "Product not found",
+                        }
+                    )
                     continue
 
                 if item.variant_code:
@@ -366,14 +470,28 @@ class SourcingProductService:
                         base_price=0,
                     )
                     ordered_qty = item.qty_suggested or 1
-                    _create_po_detail(po, variant_r.id, item, ordered_qty)
+                    po_detail = _create_po_detail(po, variant_r.id, item, ordered_qty)
                     _mark_item_used(item, po)
-                    added.append(str(item.id))
+                    added.append(
+                        {
+                            "item_id": str(item.id),
+                            "po_detail_id": str(po_detail.id),
+                            "product_name": item.product_name or "",
+                            "variant_name": item.variant_name,
+                        }
+                    )
                 except IntegrityError:
                     logger.warning(
                         "sku_variant_code collision during resolve: %s — skipped", sku_variant_code
                     )
-                    skipped.append(str(item.id))
+                    skipped.append(
+                        {
+                            "item_id": str(item.id),
+                            "product_name": item.product_name or "",
+                            "variant_name": item.variant_name,
+                            "reason": "SKU variant code collision",
+                        }
+                    )
             else:
                 raise ValidationError(f"Unknown action '{action}' for item_id={item_id}")
 
