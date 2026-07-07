@@ -550,7 +550,7 @@ class SourcingPoolViewSet(viewsets.ViewSet):
         response.data["pool_id"] = str(pool.id)
         return response
 
-    @action(detail=False, methods=["get", "post"], url_path="color-abbreviations")
+    @action(detail=False, methods=["get", "post", "delete"], url_path="color-abbreviations")
     def color_abbreviations(self, request: Request) -> Response:
         from apps.purchasing.models import ColorAbbreviation
 
@@ -564,26 +564,44 @@ class SourcingPoolViewSet(viewsets.ViewSet):
             ]
             return Response(data)
 
-        color_name = (request.data.get("color_name") or "").strip()
-        abbreviation = (request.data.get("abbreviation") or "").strip()
-        if not color_name:
-            return Response({"error": "color_name is required"}, status=status.HTTP_400_BAD_REQUEST)
-        if not abbreviation:
-            return Response(
-                {"error": "abbreviation is required"}, status=status.HTTP_400_BAD_REQUEST
+        if request.method == "DELETE":
+            color_name = (request.data.get("color_name") or "").strip()
+            if not color_name:
+                return Response(
+                    {"error": "color_name is required"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            deleted_count, _ = ColorAbbreviation.objects.filter(
+                company=request.user.profile.company,
+                color_name=color_name,
+            ).delete()
+            if deleted_count == 0:
+                return Response({"error": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        if request.method == "POST":
+            color_name = (request.data.get("color_name") or "").strip()
+            abbreviation = (request.data.get("abbreviation") or "").strip()
+            if not color_name:
+                return Response(
+                    {"error": "color_name is required"}, status=status.HTTP_400_BAD_REQUEST
+                )
+            if not abbreviation:
+                return Response(
+                    {"error": "abbreviation is required"}, status=status.HTTP_400_BAD_REQUEST
+                )
+            obj, created = ColorAbbreviation.objects.get_or_create(
+                company=request.user.profile.company,
+                color_name=color_name,
+                defaults={"abbreviation": abbreviation},
             )
-        obj, created = ColorAbbreviation.objects.get_or_create(
-            company=request.user.profile.company,
-            color_name=color_name,
-            defaults={"abbreviation": abbreviation},
-        )
-        if not created:
-            obj.abbreviation = abbreviation
-            obj.save(update_fields=["abbreviation"])
-        return Response(
-            {"id": str(obj.id), "color_name": obj.color_name, "abbreviation": obj.abbreviation},
-            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
-        )
+            if not created:
+                obj.abbreviation = abbreviation
+                obj.save(update_fields=["abbreviation"])
+            return Response(
+                {"id": str(obj.id), "color_name": obj.color_name, "abbreviation": obj.abbreviation},
+                status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+            )
 
     @action(detail=False, methods=["post"], url_path="download-images")
     def download_images(self, request: Request) -> Response:
