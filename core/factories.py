@@ -1,7 +1,8 @@
 import factory
+from django.contrib.auth.models import User
 
 from apps.inventory.models import Category, Warehouse
-from core.models import Company, Marketplace, MarketplaceConnection
+from core.models import Company, Marketplace, MarketplaceConnection, UserProfile
 
 
 class CompanyFactory(factory.django.DjangoModelFactory):
@@ -49,3 +50,21 @@ class MarketplaceConnectionFactory(factory.django.DjangoModelFactory):
     platform = "SHOPEE"
     display_name = "Test Shopee Connection"
     is_active = True
+
+
+class UserFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = User
+
+    username = factory.Sequence(lambda n: f"user_{n:04d}")  # type: ignore[no-untyped-call]
+    password = "x"
+    is_staff = False
+
+
+class UserProfileFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = UserProfile
+
+    user = factory.SubFactory(UserFactory)  # type: ignore[no-untyped-call]
+    company = factory.SubFactory(CompanyFactory)  # type: ignore[no-untyped-call]
+    role = "viewer"

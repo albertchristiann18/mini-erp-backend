@@ -8,7 +8,6 @@ from apps.purchasing.models import (
     PurchaseOrder,
     PurchaseOrderDetail,
     PurchaseOrderStatusHistory,
-    SourcingPoolItem,
 )
 from apps.purchasing.services.purchasing_service import PurchaseOrderService
 from core.models import Company
@@ -1077,59 +1076,3 @@ class PurchaseOrderReadSerializer(serializers.ModelSerializer):
             }
 
         return result
-
-
-class SourcingPoolItemSerializer(serializers.ModelSerializer):
-    id = serializers.CharField(read_only=True)
-    category_id = serializers.CharField(read_only=True, allow_null=True)
-    category_name = serializers.CharField(source="category.name", read_only=True, allow_null=True)
-    category_code = serializers.CharField(
-        source="category.category_code", read_only=True, allow_null=True
-    )
-    image_proxy_url = serializers.SerializerMethodField()
-    variant_id = serializers.CharField(read_only=True, allow_null=True)
-    variant_code = serializers.CharField(read_only=True, allow_null=True)
-
-    def get_image_proxy_url(self, obj: SourcingPoolItem) -> str | None:
-        if not obj.image_file:
-            return None
-        request = self.context.get("request")
-        if request:
-            url: str = request.build_absolute_uri(
-                f"/api/purchasing/sourcing-pool/items/{obj.id}/image/"
-            )
-            return url
-        return None
-
-    class Meta:
-        model = SourcingPoolItem
-        fields = [
-            "id",
-            "product_name",
-            "variant_name",
-            "category_id",
-            "category_name",
-            "category_code",
-            "unit_price",
-            "discounted_price",
-            "qty_suggested",
-            "supplier_link",
-            "image_url",
-            "image_proxy_url",
-            "image_download_status",
-            "notes",
-            "times_ordered",
-            "variant_id",
-            "variant_code",
-            "cdate",
-            "udate",
-        ]
-        read_only_fields = [
-            "id",
-            "image_download_status",
-            "times_ordered",
-            "variant_id",
-            "variant_code",
-            "cdate",
-            "udate",
-        ]
