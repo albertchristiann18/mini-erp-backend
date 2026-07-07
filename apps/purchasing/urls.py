@@ -9,10 +9,5 @@ router.register(r"sourcing-pool", purchasing_views.SourcingPoolViewSet, basename
 
 urlpatterns = [
     path("replenishment/", purchasing_views.ReplenishmentView.as_view(), name="replenishment"),
-    path(
-        "sourcing-pool/items/<str:item_id>/image/",
-        purchasing_views.SourcingPoolItemImageView.as_view(),
-        name="sourcing-pool-item-image",
-    ),
 ]
 urlpatterns += router.urls
