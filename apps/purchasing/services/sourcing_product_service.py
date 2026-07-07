@@ -2,6 +2,7 @@ import logging
 from dataclasses import dataclass
 from decimal import Decimal
 
+import ulid
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.http import Http404
@@ -86,6 +87,35 @@ def _derive_variant_name(row: dict) -> str:
     elif dim2_value:
         return dim2_value
     return str(row.get("variant_name") or "Default").strip()
+
+
+def _is_valid_ulid(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        ulid.parse(value)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
+def _validate_referenced_ids(
+    ids_raw: set[str], model: type[Category] | type[ProductVariant], company_id: str, label: str
+) -> None:
+    valid_format_ids = {i for i in ids_raw if _is_valid_ulid(i)}
+    malformed_ids = ids_raw - valid_format_ids
+    if valid_format_ids:
+        existing_ids = set(
+            model.objects.filter(id__in=valid_format_ids, company_id=company_id).values_list(
+                "id", flat=True
+            )
+        )
+        invalid_ids = valid_format_ids - {str(eid) for eid in existing_ids}
+    else:
+        invalid_ids = set()
+    invalid_ids |= malformed_ids
+    if invalid_ids:
+        raise ValidationError(f"Invalid {label}(s): {', '.join(invalid_ids)}")
 
 
 def _record_added(added: list[dict], sr: SourcingRow, po_detail: PurchaseOrderDetail) -> None:
@@ -243,28 +273,14 @@ class SourcingProductService:
                     row["category_id"] = cat_map[code]
 
         # Validate category_ids
-        category_ids = {str(row["category_id"]) for row in rows if row.get("category_id")}
-        if category_ids:
-            valid_cat_ids = set(
-                Category.objects.filter(id__in=category_ids, company=po.company).values_list(
-                    "id", flat=True
-                )
-            )
-            invalid_ids = category_ids - {str(cid) for cid in valid_cat_ids}
-            if invalid_ids:
-                raise ValidationError(f"Invalid category_id(s): {', '.join(invalid_ids)}")
+        category_ids_raw = {str(row["category_id"]) for row in rows if row.get("category_id")}
+        if category_ids_raw:
+            _validate_referenced_ids(category_ids_raw, Category, po.company.id, "category_id")
 
         # Validate variant_ids
-        variant_ids = {str(row["variant_id"]) for row in rows if row.get("variant_id")}
-        if variant_ids:
-            valid_var_ids = set(
-                ProductVariant.objects.filter(id__in=variant_ids, company=po.company).values_list(
-                    "id", flat=True
-                )
-            )
-            invalid_var_ids = variant_ids - {str(vid) for vid in valid_var_ids}
-            if invalid_var_ids:
-                raise ValidationError(f"Invalid variant_id(s): {', '.join(invalid_var_ids)}")
+        variant_ids_raw = {str(row["variant_id"]) for row in rows if row.get("variant_id")}
+        if variant_ids_raw:
+            _validate_referenced_ids(variant_ids_raw, ProductVariant, po.company.id, "variant_id")
 
         # Build SourcingRow objects
         sourcing_rows = [
@@ -571,7 +587,9 @@ class SourcingProductService:
         product_ids = [
             r.get("product_id")
             for r in resolutions
-            if r.get("action") == "add_to_existing" and r.get("product_id")
+            if r.get("action") == "add_to_existing"
+            and r.get("product_id")
+            and _is_valid_ulid(r["product_id"])
         ]
         products_map: dict[str, Product] = (
             {
@@ -584,11 +602,11 @@ class SourcingProductService:
             else {}
         )
 
-        for resolution in resolutions:
+        for i, resolution in enumerate(resolutions):
             row_data = resolution.get("row", {})
             action = resolution.get("action", "")
 
-            sr = _build_sourcing_row(row_data, 0, None)
+            sr = _build_sourcing_row(row_data, i, None)
 
             if action == "skip":
                 _record_skipped(skipped, sr, "Skipped by user")
