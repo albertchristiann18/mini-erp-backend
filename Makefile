@@ -1,4 +1,6 @@
-.PHONY: setup test lint fmt type-check create-user change-role run
+SHELL := /bin/bash
+
+.PHONY: setup test lint fmt type-check docker-up docker-down docker-restart docker-reset create-user run
 
 run:
 	uv run manage.py runserver
@@ -19,13 +21,27 @@ fmt:
 type-check:
 	uv run mypy apps/
 
-# example -> make create-user username=albert
+# Bring up db + migrate (idempotent — safe to run repeatedly, does not touch existing data)
+docker-up:
+	docker compose up -d
+
+# Stop containers WITHOUT deleting the database volume — your data survives this
+docker-down:
+	docker compose down
+
+# Restart containers WITHOUT deleting the database volume — your data survives this
+docker-restart:
+	docker compose down
+	docker compose up -d
+
+# DESTRUCTIVE: wipes the database volume entirely and starts fresh. Requires typing "yes" to confirm.
+docker-reset:
+	@echo "This will PERMANENTLY DELETE all local database data."
+	@read -p "Type 'yes' to continue: " confirm && [ "$$confirm" = "yes" ] || (echo "Aborted."; exit 1)
+	docker compose down -v
+	docker compose up -d
+
+# example -> make create-user username=albert role=finance password=secret123 company=Acme
 create-user:
 	@test -n "$(username)" || (echo "Usage: make create-user username=<name>"; exit 1)
-	uv run python manage.py create_user --username $(username) $(if $(role),--role $(role),)
-
-# example -> make change-role username=albert role=finance
-change-role:
-	@test -n "$(username)" || (echo "Usage: make change-role username=<name> role=<role>"; exit 1)
-	@test -n "$(role)" || (echo "Usage: make change-role username=<name> role=<role>"; exit 1)
-	uv run python manage.py change_user_role --username $(username) --role $(role)
+	uv run python scripts/create_user.py --username $(username) $(if $(role),--role $(role),) $(if $(password),--password $(password),) $(if $(company),--company $(company),)

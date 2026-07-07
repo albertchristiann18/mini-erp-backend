@@ -8,7 +8,6 @@ from apps.purchasing.models import (
     PurchaseOrder,
     PurchaseOrderDetail,
     PurchaseOrderStatusHistory,
-    SourcingPoolItem,
 )
 from apps.purchasing.services.purchasing_service import PurchaseOrderService
 from core.models import Company
@@ -49,9 +48,6 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
     last_currency = serializers.SerializerMethodField()
     last_discounted_unit_price_foreign = serializers.SerializerMethodField()
     updated_qty = serializers.IntegerField(read_only=True)
-    sourcing_item_id = serializers.SerializerMethodField()
-    is_draft = serializers.SerializerMethodField()
-    draft_product_name = serializers.CharField(read_only=True)
     product_dim1_key = serializers.SerializerMethodField()
 
     def get_product_dim1_key(self, obj: "PurchaseOrderDetail") -> str | None:
@@ -91,9 +87,6 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
             "last_unit_price_foreign",
             "last_currency",
             "last_discounted_unit_price_foreign",
-            "sourcing_item_id",
-            "is_draft",
-            "draft_product_name",
             "product_dim1_key",
         ]
         read_only_fields = [
@@ -103,9 +96,6 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
             "stock_on_hand",
             "incoming_qty",
             "variant_id",
-            "sourcing_item_id",
-            "is_draft",
-            "draft_product_name",
             "product_dim1_key",
         ]
 
@@ -126,12 +116,6 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
 
     def get_variant_values(self, obj: PurchaseOrderDetail) -> dict | None:
         return obj.product_variant.variant_values if obj.product_variant_id else None  # type: ignore[union-attr, attr-defined]
-
-    def get_sourcing_item_id(self, obj: PurchaseOrderDetail) -> str | None:
-        return str(obj.sourcing_item_id) if obj.sourcing_item_id else None  # type: ignore[attr-defined]
-
-    def get_is_draft(self, obj: PurchaseOrderDetail) -> bool:
-        return obj.sourcing_item_id is not None and obj.product_variant_id is None  # type: ignore[attr-defined]
 
     def get_product_photo_url(self, obj: "PurchaseOrderDetail") -> str | None:
         if not obj.product_variant_id:  # type: ignore[attr-defined]
@@ -1092,59 +1076,3 @@ class PurchaseOrderReadSerializer(serializers.ModelSerializer):
             }
 
         return result
-
-
-class SourcingPoolItemSerializer(serializers.ModelSerializer):
-    id = serializers.CharField(read_only=True)
-    category_id = serializers.CharField(read_only=True, allow_null=True)
-    category_name = serializers.CharField(source="category.name", read_only=True, allow_null=True)
-    category_code = serializers.CharField(
-        source="category.category_code", read_only=True, allow_null=True
-    )
-    image_proxy_url = serializers.SerializerMethodField()
-    variant_id = serializers.CharField(read_only=True, allow_null=True)
-    variant_code = serializers.CharField(read_only=True, allow_null=True)
-
-    def get_image_proxy_url(self, obj: SourcingPoolItem) -> str | None:
-        if not obj.image_file:
-            return None
-        request = self.context.get("request")
-        if request:
-            url: str = request.build_absolute_uri(
-                f"/api/purchasing/sourcing-pool/items/{obj.id}/image/"
-            )
-            return url
-        return None
-
-    class Meta:
-        model = SourcingPoolItem
-        fields = [
-            "id",
-            "product_name",
-            "variant_name",
-            "category_id",
-            "category_name",
-            "category_code",
-            "unit_price",
-            "discounted_price",
-            "qty_suggested",
-            "supplier_link",
-            "image_url",
-            "image_proxy_url",
-            "image_download_status",
-            "notes",
-            "times_ordered",
-            "variant_id",
-            "variant_code",
-            "cdate",
-            "udate",
-        ]
-        read_only_fields = [
-            "id",
-            "image_download_status",
-            "times_ordered",
-            "variant_id",
-            "variant_code",
-            "cdate",
-            "udate",
-        ]

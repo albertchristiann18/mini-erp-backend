@@ -23,7 +23,7 @@ IMPORTED_PO_NUMBERS = [f"PO-2025-{i:03d}" for i in range(1, 8)] + [
 # Config
 # ---------------------------------------------------------------------------
 EXCEL_PATH = (
-    "/Users/jtf01644/personal/mini-erp-project/data/Purchase Order Detail Overview (1).xlsx"
+    "/Users/jtf01644/personal/mini-erp-project/mirako_data/Purchase Order Detail Overview (1).xlsx"
 )
 
 DB_PARAMS = dict(
@@ -399,7 +399,7 @@ def main():
                         %s, %s, %s, 'COMPLETED',
                         %s, %s,
                         %s, %s, 'Ancorelala',
-                        'RMB', %s,
+                        'CNY', %s,
                         0, 0,
                         0, 0,
                         0, FALSE,
@@ -631,9 +631,18 @@ def main():
                 cur.execute(
                     "UPDATE purchasing_purchaseorder "
                     "SET total_ordered_qty = %s, total_received_qty = %s, "
-                    "    total_item_amount = %s, procure_amount = %s "
+                    "    total_item_amount = %s, procure_amount = %s, "
+                    "    total_order_amount = %s, total_amount = %s "
                     "WHERE purchase_order_id = %s",
-                    (po_total_qty, po_total_qty, po_total_idr, po_total_idr, po_id),
+                    (
+                        po_total_qty,
+                        po_total_qty,
+                        po_total_idr,
+                        po_total_idr,
+                        po_total_idr,
+                        po_total_idr,
+                        po_id,
+                    ),
                 )
 
                 print(

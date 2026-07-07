@@ -1,11 +1,13 @@
 import logging
 from datetime import (
     datetime,
+    timedelta,
     timezone as dt_timezone,
 )
 from typing import Optional
 
 from django.db import transaction
+from django.utils import timezone
 
 from apps.inventory.models import ProductVariant
 from apps.omnichannel.vendor.shopee.client import ShopeeAPIError, ShopeeClient
@@ -31,6 +33,51 @@ class ShopeeOrderSyncer:
     def __init__(self, shop: ShopeeShop):
         self.shop = shop
         self.client = ShopeeClient(shop)
+
+    def sync_recent_orders(self, hours_back: int = 24) -> int:
+        """Sync recent orders for this shop within the time window. Returns count of orders synced."""
+        time_to = int(timezone.now().timestamp())
+        time_from = int((timezone.now() - timedelta(hours=hours_back)).timestamp())
+
+        count = 0
+        cursor = ""
+
+        while True:
+            try:
+                response = self.client.get_order_list(
+                    time_range_field="create_time",
+                    time_from=time_from,
+                    time_to=time_to,
+                    page_size=50,
+                    cursor=cursor,
+                )
+            except ShopeeAPIError as e:
+                logger.error(f"Failed to get order list for shop {self.shop.shop_id}: {e}")
+                break
+
+            order_list = response.get("order_list", [])
+            order_sns = [o["order_sn"] for o in order_list if "order_sn" in o]
+
+            if order_sns:
+                for i in range(0, len(order_sns), 50):
+                    batch = order_sns[i : i + 50]
+                    try:
+                        detail_response = self.client.get_order_detail(batch)
+                        for order_data in detail_response.get("order_list", []):
+                            self._upsert_order(order_data)
+                            count += 1
+                    except ShopeeAPIError as e:
+                        logger.error(f"Failed to get order details: {e}")
+
+            if not response.get("more", False):
+                break
+            cursor = response.get("next_cursor", "")
+            if not cursor:
+                break
+
+        self.shop.last_order_sync_at = timezone.now()
+        self.shop.save(update_fields=["last_order_sync_at"])
+        return count
 
     @transaction.atomic
     def sync_order_by_sn(self, order_sn: str) -> Optional[SalesOrder]:

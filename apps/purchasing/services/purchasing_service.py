@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import F, Q
+from django.db.models import Q
 from django.utils import timezone
 from django_ulid.models import ULIDField
 
@@ -25,156 +25,6 @@ class PurchaseOrderService:
     Service for Purchase Order operations.
     Handles creation, updates, and inventory-related logic.
     """
-
-    @transaction.atomic
-    def add_draft_line(
-        self,
-        po: PurchaseOrder,
-        sourcing_item_id: str,
-        ordered_qty: int,
-        unit_price_foreign: Decimal | None = None,
-    ) -> PurchaseOrderDetail:
-        """Add a sourcing pool item as a draft line to a DRAFT or ORDERED PO."""
-        from apps.purchasing.models import SourcingPoolItem
-
-        if po.status not in [PurchaseOrder.POStatus.DRAFT, PurchaseOrder.POStatus.ORDERED]:
-            raise ValidationError(f"Cannot add lines to a PO with status {po.status}.")
-
-        if ordered_qty <= 0:
-            raise ValidationError("ordered_qty must be a positive integer.")
-
-        sourcing_item = SourcingPoolItem.objects.select_for_update().get(
-            id=sourcing_item_id, company=po.company
-        )
-
-        display_name = sourcing_item.product_name or "(Unnamed)"
-
-        if po.order_details.filter(sourcing_item=sourcing_item).exists():
-            raise ValidationError(
-                f"'{display_name} / {sourcing_item.variant_name}' is already in this PO."
-            )
-
-        draft_product_name = f"{display_name} / {sourcing_item.variant_name}"
-        effective_price = (
-            unit_price_foreign if unit_price_foreign is not None else sourcing_item.unit_price
-        )
-
-        detail = PurchaseOrderDetail.objects.create(
-            purchase_order=po,
-            company=po.company,
-            product_variant=None,
-            sourcing_item=sourcing_item,
-            draft_product_name=draft_product_name,
-            ordered_qty=ordered_qty,
-            unit_price_foreign=effective_price,
-        )
-
-        SourcingPoolItem.objects.filter(id=sourcing_item_id).update(
-            times_ordered=F("times_ordered") + 1
-        )
-
-        self._recalculate_po_totals(po)
-        return detail
-
-    @transaction.atomic
-    def finalize_draft_line(
-        self,
-        detail: PurchaseOrderDetail,
-        sku_suffix: str,
-        category_id: str | None = None,
-        product_name: str | None = None,
-        dim1_key: str | None = None,
-        dim1_value: str | None = None,
-        dim2_key: str | None = None,
-        dim2_value: str | None = None,
-    ) -> PurchaseOrderDetail:
-        """Convert a draft sourcing line into a real Product+Variant and link it."""
-        from django.db import IntegrityError
-
-        from apps.inventory.models import ProductVariant as PV
-        from apps.inventory.services.product_service import ProductService
-
-        # Lock the row to prevent concurrent finalization of the same draft line.
-        detail = PurchaseOrderDetail.objects.select_for_update().get(id=detail.id)
-
-        if detail.product_variant_id is not None or detail.sourcing_item_id is None:  # type: ignore[attr-defined]
-            raise ValidationError("Detail is not a draft sourcing line.")
-
-        if not sku_suffix or not sku_suffix.strip():
-            raise ValidationError("sku_suffix is required.")
-
-        item = detail.sourcing_item
-        final_product_name = (product_name or "").strip() or (item.product_name or "").strip()  # type: ignore[union-attr]
-        if not final_product_name:
-            raise ValidationError(
-                "product_name is required to finalize this line — "
-                "the pool item has no product name."
-            )
-        final_category_id = category_id or (str(item.category_id) if item.category_id else None)  # type: ignore[union-attr]
-
-        if not final_category_id:
-            raise ValidationError(
-                "category_id is required to finalize this line. "
-                "The pool item has no category — provide one explicitly."
-            )
-
-        dim1k = (dim1_key or "").strip()
-        dim2k = (dim2_key or "").strip()
-        dim1v = (dim1_value or "").strip()
-        dim2v = (dim2_value or "").strip()
-        variant_values: dict[str, str] = {}
-        if dim1k and dim1v:
-            variant_values[dim1k] = dim1v
-        if dim2k and dim2v:
-            variant_values[dim2k] = dim2v
-
-        try:
-            result = ProductService().create_product_with_variants(
-                {
-                    "company_id": str(detail.company_id),  # type: ignore[attr-defined]
-                    "category_id": final_category_id,
-                    "name": final_product_name,
-                    "description": "",
-                    "variant_options": [],
-                    "specifications": {},
-                    "weight": 0,
-                    "length": 0,
-                    "width": 0,
-                    "height": 0,
-                    "dim1_key": dim1k if dim1v else "",
-                    "dim2_key": dim2k if dim2v else "",
-                    "dim1_options": [dim1v] if dim1v else [],
-                    "dim2_options": [dim2v] if dim2v else [],
-                    "variants": [
-                        {
-                            "variant_values": variant_values,
-                            "sku_variant_code": sku_suffix.strip(),
-                            "base_price": 0,
-                        }
-                    ],
-                }
-            )
-        except IntegrityError:
-            raise ValidationError(
-                f"SKU '{sku_suffix.strip()}' already exists. Choose a different sku_suffix."
-            )
-
-        variant_id = result[0]["variants"][0]["id"]
-        variant = PV.objects.get(id=variant_id)
-
-        detail.product_variant = variant
-        detail.sourcing_item = None
-        detail.draft_product_name = ""
-        detail.save(
-            update_fields=["product_variant", "sourcing_item", "draft_product_name", "udate"]
-        )
-
-        # Recompute IDR base prices for this line now that it has a real variant.
-        po = detail.purchase_order
-        if po.exchange_rate:
-            self._recalculate_item_prices(po)
-
-        return detail
 
     def _trigger_shopee_sync_batch(self, variant_ids: list[str], company_id: str) -> None:
         from apps.omnichannel.vendor.shopee.stock_sync import ShopeeStockSyncService
@@ -484,18 +334,6 @@ class PurchaseOrderService:
                     }
                 )
 
-            if po.order_details.filter(
-                sourcing_item__isnull=False, product_variant__isnull=True
-            ).exists():
-                missing.append(
-                    {
-                        "field": "order_details",
-                        "label": "Draft Lines",
-                        "section": "Order Items",
-                        "message": "All sourcing draft items must be finalized before marking as DELIVERED.",
-                    }
-                )
-
         return missing
 
     def get_transition_warnings(
@@ -637,7 +475,7 @@ class PurchaseOrderService:
                 if not existing_detail:
                     continue
                 if existing_detail.product_variant_id is None:  # type: ignore[attr-defined]
-                    continue  # draft lines have no received_qty to check
+                    continue
 
                 ordered_qty = detail_data.get("ordered_qty", existing_detail.ordered_qty)
                 received_qty = detail_data.get("received_qty", existing_detail.received_qty or 0)
@@ -1006,7 +844,6 @@ class PurchaseOrderService:
 
         if po.status in [PurchaseOrder.POStatus.DRAFT, PurchaseOrder.POStatus.ORDERED]:
             ids_to_keep = [d.id for d in update_details] + [d.id for d in new_details]
-            # Only delete non-draft lines (product_variant is set); draft lines are managed separately
             po.order_details.filter(product_variant__isnull=False).exclude(
                 id__in=ids_to_keep
             ).delete()
@@ -1179,18 +1016,22 @@ class PurchaseOrderService:
         for detail in po.order_details.all():
             total_ordered_qty += detail.ordered_qty or 0
             total_received_qty += detail.received_qty or 0
-            total_item_amount += (
-                detail.discounted_total_price_base
-                if detail.discounted_total_price_base is not None
-                else (detail.total_price_base or 0)
-            )
-            total_item_rmb += Decimal(
-                str(
-                    detail.discounted_total_price_foreign
-                    if detail.discounted_total_price_foreign is not None
-                    else (detail.total_price_foreign or 0)
+            if po.has_discount:
+                total_item_amount += (
+                    detail.discounted_total_price_base
+                    if detail.discounted_total_price_base is not None
+                    else (detail.total_price_base or 0)
                 )
-            )
+                total_item_rmb += Decimal(
+                    str(
+                        detail.discounted_total_price_foreign
+                        if detail.discounted_total_price_foreign is not None
+                        else (detail.total_price_foreign or 0)
+                    )
+                )
+            else:
+                total_item_amount += detail.total_price_base or 0
+                total_item_rmb += Decimal(str(detail.total_price_foreign or 0))
 
         exchange_rate = Decimal(str(po.exchange_rate or 0))
         delivery_fee_idr = int(round(Decimal(str(po.delivery_fee or 0)) * exchange_rate))

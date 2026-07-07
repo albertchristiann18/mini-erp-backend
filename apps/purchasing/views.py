@@ -1,5 +1,4 @@
 import logging
-from decimal import Decimal
 from typing import Any, Type
 
 from django.core.exceptions import ValidationError
@@ -17,8 +16,6 @@ from rest_framework.views import APIView
 from apps.purchasing.models import (
     PurchaseOrder,
     PurchaseOrderDetail,
-    SourcingPool,
-    SourcingPoolItem,
 )
 from apps.purchasing.serializers import (
     PurchaseOrderCreateSerializer,
@@ -37,12 +34,6 @@ class PurchaseOrderPagination(PageNumberPagination):
     page_size = 10
     page_size_query_param = "page_size"
     max_page_size = 100
-
-
-class SourcingPoolItemPagination(PageNumberPagination):
-    page_size = 50
-    page_size_query_param = "page_size"
-    max_page_size = 200
 
 
 class PurchaseOrderViewSet(viewsets.ModelViewSet):
@@ -227,98 +218,6 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
             }
         )
 
-    @action(detail=True, methods=["post"], url_path="draft-lines")
-    def add_draft_line(self, request: Request, pk: Any = None) -> Response:
-        """POST /purchase-orders/{id}/draft-lines/ — add a sourcing item as a draft PO line."""
-        po = self.get_object()
-        sourcing_item_id = request.data.get("sourcing_item_id")
-        ordered_qty = request.data.get("ordered_qty")
-        unit_price_foreign = request.data.get("unit_price_foreign")
-
-        if not sourcing_item_id:
-            return Response(
-                {"error": "sourcing_item_id is required"}, status=status.HTTP_400_BAD_REQUEST
-            )
-        if ordered_qty is None:
-            return Response(
-                {"error": "ordered_qty is required"}, status=status.HTTP_400_BAD_REQUEST
-            )
-        try:
-            ordered_qty_int = int(ordered_qty)
-        except (TypeError, ValueError):
-            return Response(
-                {"error": "ordered_qty must be an integer"}, status=status.HTTP_400_BAD_REQUEST
-            )
-
-        price_decimal: Decimal | None = None
-        if unit_price_foreign is not None:
-            try:
-                from decimal import Decimal as D
-
-                price_decimal = D(str(unit_price_foreign))
-            except Exception:
-                return Response(
-                    {"error": "unit_price_foreign must be a number"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-        try:
-            detail = PurchaseOrderService().add_draft_line(
-                po=po,
-                sourcing_item_id=str(sourcing_item_id),
-                ordered_qty=ordered_qty_int,
-                unit_price_foreign=price_decimal,
-            )
-            return Response({"detail_id": str(detail.id)}, status=status.HTTP_201_CREATED)
-        except SourcingPoolItem.DoesNotExist:
-            return Response({"error": "Sourcing item not found"}, status=status.HTTP_404_NOT_FOUND)
-        except ValidationError as e:
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-    @action(
-        detail=True,
-        methods=["post"],
-        url_path=r"details/(?P<detail_id>[^/.]+)/finalize",
-    )
-    def finalize_draft_line(
-        self, request: Request, pk: Any = None, detail_id: str = ""
-    ) -> Response:
-        """POST /purchase-orders/{id}/details/{detail_id}/finalize/ — create Product+Variant."""
-        po = self.get_object()
-        sku_suffix = request.data.get("sku_suffix", "").strip()
-        category_id = request.data.get("category_id") or None
-        product_name = request.data.get("product_name") or None
-        dim1_key = (request.data.get("dim1_key") or "").strip() or None
-        dim1_value = (request.data.get("dim1_value") or "").strip() or None
-        dim2_key = (request.data.get("dim2_key") or "").strip() or None
-        dim2_value = (request.data.get("dim2_value") or "").strip() or None
-
-        if not sku_suffix:
-            return Response({"error": "sku_suffix is required"}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            detail = PurchaseOrderDetail.objects.get(id=detail_id, purchase_order=po)
-        except PurchaseOrderDetail.DoesNotExist:
-            return Response({"error": "Detail not found"}, status=status.HTTP_404_NOT_FOUND)
-
-        try:
-            detail = PurchaseOrderService().finalize_draft_line(
-                detail=detail,
-                sku_suffix=sku_suffix,
-                category_id=category_id,
-                product_name=product_name,
-                dim1_key=dim1_key,
-                dim1_value=dim1_value,
-                dim2_key=dim2_key,
-                dim2_value=dim2_value,
-            )
-            return Response(
-                {"detail_id": str(detail.id), "variant_id": str(detail.product_variant.id)},  # type: ignore[union-attr]
-                status=status.HTTP_200_OK,
-            )
-        except ValidationError as e:
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
     @action(detail=False, methods=["get"], url_path="summary")
     def summary(self, request: Request) -> Response:
         """
@@ -355,6 +254,51 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
                 "upcoming_procure_amount": agg["upcoming_procure_amount"] or 0,
             }
         )
+
+    @action(detail=True, methods=["post"], url_path="import-and-add")
+    def import_and_add(self, request: Request, pk: Any = None) -> Response:
+        from apps.purchasing.services.sourcing_product_service import SourcingProductService
+
+        po = self.get_object()
+        supplier_id = request.data.get("supplier_id")
+        rows = request.data.get("rows")
+        dim_mismatch_resolutions = request.data.get("dim_mismatch_resolutions") or {}
+
+        if not supplier_id:
+            return Response({"error": "supplier_id is required"}, status=400)
+        if not isinstance(rows, list) or not rows:
+            return Response({"error": "rows must be a non-empty list"}, status=400)
+
+        try:
+            result = SourcingProductService().import_and_add(
+                po=po,
+                supplier_id=supplier_id,
+                rows=rows,
+                dim_mismatch_resolutions=dim_mismatch_resolutions,
+            )
+            return Response(result, status=200)
+        except ValidationError as e:
+            return Response({"error": str(e)}, status=400)
+
+    @action(detail=True, methods=["post"], url_path="resolve-sourcing-conflicts")
+    def resolve_sourcing_conflicts(self, request: Request, pk: Any = None) -> Response:
+        from apps.purchasing.services.sourcing_product_service import SourcingProductService
+
+        po = self.get_object()
+        resolutions = request.data.get("resolutions")
+        if not resolutions or not isinstance(resolutions, list):
+            return Response(
+                {"error": "resolutions must be a non-empty list"},
+                status=400,
+            )
+
+        try:
+            result = SourcingProductService().resolve_sourcing_conflicts(
+                po=po, resolutions=resolutions
+            )
+            return Response(result, status=200)
+        except ValidationError as e:
+            return Response({"error": str(e)}, status=400)
 
 
 class ReplenishmentView(APIView):
@@ -510,134 +454,55 @@ class SourcingPoolViewSet(viewsets.ViewSet):
         )
         return Response(result, status=status.HTTP_200_OK)
 
-    @action(detail=False, methods=["post"], url_path="import")
-    def import_rows(self, request: Request) -> Response:
-        """
-        POST /api/purchasing/sourcing-pool/import/
-        Body: { "supplier_id": "<ulid>", "rows": [...rows from preview valid list...] }
-        Returns: { created: N, updated: N, pool_id: "<ulid>" }
-        On ValueError from service: returns HTTP 400 with {"error": "<message>"}.
-        """
-        from apps.inventory.models import Supplier
-        from apps.purchasing.services.sourcing_service import SourcingService
+    @action(detail=False, methods=["get", "post", "delete"], url_path="color-abbreviations")
+    def color_abbreviations(self, request: Request) -> Response:
+        from apps.purchasing.models import ColorAbbreviation
 
-        supplier_id = request.data.get("supplier_id")
-        rows = request.data.get("rows")
-
-        if not supplier_id:
-            return Response(
-                {"error": "supplier_id is required"}, status=status.HTTP_400_BAD_REQUEST
+        if request.method == "GET":
+            items = ColorAbbreviation.objects.filter(company=request.user.profile.company).order_by(
+                "color_name"
             )
-        if not isinstance(rows, list) or not rows:
-            return Response(
-                {"error": "rows must be a non-empty list"}, status=status.HTTP_400_BAD_REQUEST
-            )
+            data = [
+                {"id": str(i.id), "color_name": i.color_name, "abbreviation": i.abbreviation}
+                for i in items
+            ]
+            return Response(data)
 
-        try:
-            supplier = Supplier.objects.get(id=supplier_id, company=request.user.profile.company)
-        except Supplier.DoesNotExist:
-            return Response({"error": "Supplier not found"}, status=status.HTTP_404_NOT_FOUND)
-
-        try:
-            result = SourcingService().import_rows(
+        if request.method == "DELETE":
+            color_name = (request.data.get("color_name") or "").strip()
+            if not color_name:
+                return Response(
+                    {"error": "color_name is required"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            deleted_count, _ = ColorAbbreviation.objects.filter(
                 company=request.user.profile.company,
-                supplier=supplier,
-                rows=rows,
+                color_name=color_name,
+            ).delete()
+            if deleted_count == 0:
+                return Response({"error": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        if request.method == "POST":
+            color_name = (request.data.get("color_name") or "").strip()
+            abbreviation = (request.data.get("abbreviation") or "").strip()
+            if not color_name:
+                return Response(
+                    {"error": "color_name is required"}, status=status.HTTP_400_BAD_REQUEST
+                )
+            if not abbreviation:
+                return Response(
+                    {"error": "abbreviation is required"}, status=status.HTTP_400_BAD_REQUEST
+                )
+            obj, created = ColorAbbreviation.objects.get_or_create(
+                company=request.user.profile.company,
+                color_name=color_name,
+                defaults={"abbreviation": abbreviation},
             )
-        except ValueError as exc:
-            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-        return Response(result, status=status.HTTP_200_OK)
-
-    @action(detail=False, methods=["get"], url_path="items")
-    def list_items(self, request: Request) -> Response:
-        """
-        GET /api/purchasing/sourcing-pool/items/?supplier_id=<ulid>&search=<str>
-        search filters on product_name OR variant_name (case-insensitive).
-        Returns { pool_id, items: [] } with HTTP 200 even when no pool exists yet (not 404).
-        """
-        from django.db.models import Q
-
-        from apps.purchasing.serializers import SourcingPoolItemSerializer
-
-        supplier_id = request.query_params.get("supplier_id")
-        if not supplier_id:
+            if not created:
+                obj.abbreviation = abbreviation
+                obj.save(update_fields=["abbreviation"])
             return Response(
-                {"error": "supplier_id is required"}, status=status.HTTP_400_BAD_REQUEST
+                {"id": str(obj.id), "color_name": obj.color_name, "abbreviation": obj.abbreviation},
+                status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
             )
-
-        try:
-            pool = SourcingPool.objects.get(
-                supplier_id=supplier_id, company=request.user.profile.company
-            )
-        except SourcingPool.DoesNotExist:
-            return Response({"pool_id": None, "items": []}, status=status.HTTP_200_OK)
-
-        qs = (
-            SourcingPoolItem.objects.filter(pool=pool)
-            .select_related("category")
-            .order_by("product_name", "variant_name")
-        )
-        search = request.query_params.get("search", "").strip()
-        if search:
-            qs = qs.filter(Q(product_name__icontains=search) | Q(variant_name__icontains=search))
-
-        paginator = SourcingPoolItemPagination()
-        page = paginator.paginate_queryset(qs, request)
-        serializer = SourcingPoolItemSerializer(page, many=True, context={"request": request})
-        response = paginator.get_paginated_response(serializer.data)
-        response.data["pool_id"] = str(pool.id)
-        return response
-
-    @action(detail=False, methods=["post"], url_path="download-images")
-    def download_images(self, request: Request) -> Response:
-        from apps.purchasing.services.sourcing_service import SourcingService
-
-        pool_id = request.data.get("pool_id")
-        include_failed = bool(request.data.get("include_failed", False))
-
-        if not pool_id:
-            return Response({"error": "pool_id is required"}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            pool = SourcingPool.objects.get(id=pool_id, company=request.user.profile.company)
-        except SourcingPool.DoesNotExist:
-            return Response({"error": "Pool not found"}, status=status.HTTP_404_NOT_FOUND)
-
-        result = SourcingService().download_pool_images(pool=pool, include_failed=include_failed)
-        return Response(result, status=status.HTTP_200_OK)
-
-
-class SourcingPoolItemImageView(APIView):
-    """
-    GET /api/purchasing/sourcing-pool/items/<item_id>/image/
-    Proxies the R2 image for a SourcingPoolItem thumbnail.
-    Returns 404 if: item not found, belongs to another company, or image_file is None (not yet downloaded).
-    In Phase 1, image_file is always None (download happens in Phase 2), so this always returns 404.
-    The view is wired now so Phase 2 only needs to populate image_file — no URL change needed.
-    """
-
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request: Request, item_id: str) -> Response:
-        import requests as http_requests
-        from django.http import Http404, HttpResponse
-
-        try:
-            item = SourcingPoolItem.objects.get(id=item_id, company=request.user.profile.company)
-        except SourcingPoolItem.DoesNotExist:
-            raise Http404
-
-        if not item.image_file:
-            raise Http404
-
-        try:
-            resp = http_requests.get(item.image_file.url, timeout=10)
-            resp.raise_for_status()
-            return HttpResponse(
-                resp.content,
-                content_type=resp.headers.get("Content-Type", "image/jpeg"),
-            )
-        except Exception:
-            logger.warning("Image proxy failed for item %s", item_id, exc_info=True)
-            raise Http404

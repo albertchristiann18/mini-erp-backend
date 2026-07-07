@@ -1,18 +1,15 @@
-import io
 from datetime import date, timedelta
 from decimal import Decimal
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 from uuid import uuid4
 
 import fitz
 import openpyxl
-import requests
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import connection
-from django.db.models import ProtectedError
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework import status
@@ -28,24 +25,30 @@ from apps.inventory.factories import (
     ProductVariantWarehouseFactory,
     SupplierFactory,
 )
-from apps.inventory.models import ProductCogs, ProductSupplier, ProductVariantWarehouse
+from apps.inventory.models import (
+    Category,
+    Product,
+    ProductCogs,
+    ProductSupplier,
+    ProductVariant,
+    ProductVariantWarehouse,
+)
 from apps.inventory.services.inventory_service import InventoryService
 from apps.purchasing.factories import (
     PurchaseOrderDetailFactory,
     PurchaseOrderFactory,
-    SourcingPoolFactory,
-    SourcingPoolItemFactory,
 )
 from apps.purchasing.models import (
+    ColorAbbreviation,
     PurchaseOrder,
     PurchaseOrderDetail,
     PurchaseOrderStatusHistory,
-    SourcingPool,
-    SourcingPoolItem,
 )
 from apps.purchasing.serializers import PurchaseOrderReadSerializer, PurchaseOrderUpdateSerializer
 from apps.purchasing.services.purchasing_service import PurchaseOrderService
-from core.factories import WarehouseFactory
+from apps.purchasing.services.sourcing_product_service import SourcingProductService
+from apps.purchasing.services.sourcing_service import SourcingService
+from core.factories import UserProfileFactory, WarehouseFactory
 from core.models import UserProfile
 from core.utils import compress_pdf_iterative
 
@@ -1401,6 +1404,7 @@ class PurchaseOrderServiceTest(TestCase):
             warehouse=self.warehouse,
             company=self.company,
             status=PurchaseOrder.POStatus.DRAFT,
+            has_discount=True,
             commission_fee_pct=5,
             delivery_fee=Decimal("0"),
             cbm=Decimal("0"),
@@ -1709,6 +1713,74 @@ class PurchaseOrderServiceTest(TestCase):
         self.assertEqual(po.total_item_amount, 2200000)
         self.assertEqual(po.total_order_amount, 2200000)
         self.assertEqual(po.total_amount, 2200000)
+
+    def test_recalculate_po_totals_respects_has_discount_false_with_zero_discounted(self):
+        """_recalculate_po_totals uses base prices when has_discount=False, even if discounted prices are 0."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DRAFT,
+            has_discount=False,
+            commission_fee_pct=0,
+            delivery_fee=0,
+            cbm=0,
+            shipping_fee_per_cbm=0,
+            exchange_rate=2200,
+        )
+        PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            ordered_qty=10,
+            unit_price_foreign=Decimal("100"),
+            unit_price_base=220000,
+            total_price_foreign=Decimal("1000"),
+            total_price_base=2200000,
+            discounted_unit_price_foreign=Decimal("0"),
+            discounted_unit_price_base=0,
+            discounted_total_price_foreign=Decimal("0"),
+            discounted_total_price_base=0,
+        )
+
+        po = self.service.update_purchase_order(po, {})
+        po.refresh_from_db()
+
+        self.assertEqual(po.total_item_amount, 2200000)
+        self.assertEqual(po.total_order_amount, 2200000)
+        self.assertEqual(po.total_amount, 2200000)
+
+    def test_recalculate_po_totals_uses_discounted_when_has_discount_true(self):
+        """_recalculate_po_totals uses discounted prices when has_discount=True."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DRAFT,
+            has_discount=True,
+            commission_fee_pct=0,
+            delivery_fee=0,
+            cbm=0,
+            shipping_fee_per_cbm=0,
+            exchange_rate=2200,
+        )
+        PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            ordered_qty=10,
+            unit_price_foreign=Decimal("100"),
+            unit_price_base=220000,
+            total_price_foreign=Decimal("1000"),
+            total_price_base=2200000,
+            discounted_unit_price_foreign=Decimal("70"),
+            discounted_unit_price_base=150000,
+            discounted_total_price_foreign=Decimal("700"),
+            discounted_total_price_base=1500000,
+        )
+
+        po = self.service.update_purchase_order(po, {})
+        po.refresh_from_db()
+
+        self.assertEqual(po.total_item_amount, 1500000)
+        self.assertEqual(po.total_order_amount, 1500000)
+        self.assertEqual(po.total_amount, 1500000)
 
 
 class PurchaseOrderSerializerValidationTest(TestCase):
@@ -3372,10 +3444,44 @@ class EditableFieldsAndNoteTest(TestCase):
         self.assertIn("received_qty", fields["order_detail"])
 
     def test_get_editable_fields_completed(self):
-        """Assert note and has_discount are in COMPLETED header, order_detail is empty."""
+        """Assert note, has_discount, and file fields are in COMPLETED header, order_detail is empty."""
         fields = PurchaseOrder.get_editable_fields(PurchaseOrder.POStatus.COMPLETED)
+        assert "note" in fields["header"]
+        assert "has_discount" in fields["header"]
+        assert "purchase_order_invoice_file" in fields["header"]
+        assert "delivery_order_file" in fields["header"]
+        assert "delivery_order_invoice_file" in fields["header"]
+        assert "packing_list_file" in fields["header"]
+        self.assertEqual(fields["order_detail"], [])
+
+    def test_get_editable_fields_cancelled(self):
+        """Assert CANCELLED still only has note and has_discount."""
+        fields = PurchaseOrder.get_editable_fields(PurchaseOrder.POStatus.CANCELLED)
         self.assertEqual(fields["header"], ["note", "has_discount"])
         self.assertEqual(fields["order_detail"], [])
+
+    def test_patch_file_field_on_completed_po(self):
+        """PATCH a file field on a COMPLETED PO with empty file field should succeed."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.COMPLETED,
+            purchase_order_invoice_file=None,
+        )
+        file_data = b"x" * 1024
+        pdf_file = SimpleUploadedFile("test.pdf", file_data, content_type="application/pdf")
+        with patch(
+            "apps.purchasing.serializers.compress_pdf_iterative",
+            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
+        ):
+            response = self.client.patch(
+                f"/purchase-order/{po.id}/",
+                {"purchase_order_invoice_file": pdf_file},
+                format="multipart",
+            )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        po.refresh_from_db()
+        self.assertIsNotNone(po.purchase_order_invoice_file)
 
     def test_note_field_in_list_response(self):
         """Create PO with note='test note', assert note appears in list API response."""
@@ -4284,2578 +4390,1263 @@ class TestPerCompanyPONumberSequence(TestCase):
 
         po = PurchaseOrderFactory(company=company, warehouse=warehouse)
         po.refresh_from_db()
-
         self.assertRegex(po.purchase_order_number, rf"^PO-{current_year}-001$")
 
 
-class TestSourcingService(TestCase):
-    """Tests for SourcingService (SourcingPool + SourcingPoolItem)."""
+class TestPhase1SourcingAutoFinalize(TestCase):
+    """Phase 1 — Sourcing pool auto-finalize, dim fields, ColorAbbreviation, template redesign."""
 
     def setUp(self):
-        from apps.purchasing.services.sourcing_service import SourcingService
-
         self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.category = CategoryFactory(company=self.company, category_code="TEST")
         self.supplier = SupplierFactory(company=self.company)
-        self.category = CategoryFactory(
-            company=self.company, category_code="TEST", name="Test Category"
-        )
         self.service = SourcingService()
+        self.product = ProductFactory(category=self.category, company=self.company)
+        self.product_variant = ProductVariantFactory(
+            product=self.product, sku_variant_code="EXISTING-SKU"
+        )
 
-    def _make_row(self, **overrides) -> dict:
-        row = {
-            "row": 2,
-            "product_name": "Product",
-            "variant_name": "Variant",
-            "category_code": self.category.category_code,
-            "category_id": str(self.category.id),
-            "unit_price": "10.000",
-            "discounted_price": None,
-            "qty_suggested": None,
-            "supplier_link": None,
-            "image_url": None,
-            "notes": None,
-        }
-        row.update(overrides)
-        return row
+    @staticmethod
+    def _build_workbook(headers: list[str], data_rows: list[list]) -> bytes:
+        import io
 
-    def _build_workbook(self, rows: list[list | tuple], header: list[str] | None = None) -> bytes:
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Items"
-        ws.append(
-            header
-            if header is not None
-            else [
-                "product_name",
-                "variant_name",
-                "category_code",
-                "unit_price",
-                "discounted_price",
-                "order_qty",
-                "supplier_link",
-                "image_url",
-                "notes",
-            ]
-        )
-        for r in rows:
-            ws.append(r)
+        ws.append(headers)
+        for row in data_rows:
+            ws.append(row)
         buf = io.BytesIO()
         wb.save(buf)
         buf.seek(0)
         return buf.read()
 
-    # --- Happy path ---
+    # ===== parse_excel_preview tests =====
 
-    def test_pool_auto_created_for_supplier_on_first_import(self):
-        self.service.import_rows(
-            company=self.company,
-            supplier=self.supplier,
-            rows=[self._make_row()],
+    def test_happy_path_2d_product_all_dims_color_known(self):
+        ColorAbbreviation.objects.create(
+            company=self.company, color_name="Putih", abbreviation="PTH"
         )
-        self.assertTrue(
-            SourcingPool.objects.filter(company=self.company, supplier=self.supplier).exists()
+        ColorAbbreviation.objects.create(
+            company=self.company, color_name="Merah", abbreviation="MRH"
         )
-
-    def test_pool_unique_per_supplier_per_company(self):
-        self.service.import_rows(
-            company=self.company, supplier=self.supplier, rows=[self._make_row()]
-        )
-        self.service.import_rows(
-            company=self.company, supplier=self.supplier, rows=[self._make_row()]
-        )
-        self.assertEqual(
-            SourcingPool.objects.filter(company=self.company, supplier=self.supplier).count(), 1
-        )
-
-    def test_import_creates_new_items_in_pool(self):
+        headers = [
+            "variant_code",
+            "product_name",
+            "dim1_key",
+            "dim1_value",
+            "dim2_key",
+            "dim2_value",
+            "category_code",
+            "unit_price",
+        ]
         rows = [
-            self._make_row(product_name="A", variant_name="V1"),
-            self._make_row(product_name="B", variant_name="V1"),
-            self._make_row(product_name="C", variant_name="V1"),
+            ["", "Kaos Polo", "Warna", "Putih", "Ukuran", "S", "TEST", "50000"],
+            ["", "Kaos Polo", "Warna", "Putih", "Ukuran", "M", "TEST", "50000"],
+            ["", "Kaos Polo", "Warna", "Putih", "Ukuran", "L", "TEST", "50000"],
+            ["", "Kaos Polo", "Warna", "Merah", "Ukuran", "S", "TEST", "50000"],
+            ["", "Kaos Polo", "Warna", "Merah", "Ukuran", "M", "TEST", "50000"],
+            ["", "Kaos Polo", "Warna", "Merah", "Ukuran", "L", "TEST", "50000"],
         ]
-        result = self.service.import_rows(company=self.company, supplier=self.supplier, rows=rows)
-        self.assertEqual(result["created"], 3)
-        pool = SourcingPool.objects.get(company=self.company, supplier=self.supplier)
-        self.assertEqual(pool.items.count(), 3)
-
-    def test_build_template_workbook_has_items_and_categories_sheets(self):
-        CategoryFactory(company=self.company, category_code="CAT1", name="Category One")
-        CategoryFactory(company=self.company, category_code="CAT2", name="Category Two")
-        wb = self.service.build_template_workbook(company=self.company)
-        self.assertIn("Items", wb.sheetnames)
-        self.assertIn("Categories", wb.sheetnames)
-        ws = wb["Items"]
-        headers = [str(c.value).strip().lower() for c in next(ws.iter_rows(min_row=1, max_row=1))]
-        for col in ["product_name", "variant_name", "category_code", "unit_price"]:
-            self.assertIn(col, headers)
-        ws_cats = wb["Categories"]
-        cat_rows = list(ws_cats.iter_rows(values_only=True))
-        self.assertEqual(len(cat_rows), 4)  # header + 3 categories (TEST + CAT1 + CAT2)
-        self.assertIn(("CAT1", "Category One"), cat_rows[1:])
-        self.assertIn(("CAT2", "Category Two"), cat_rows[1:])
-
-    def test_build_template_workbook_has_order_qty_column_and_guide_sheet(self):
-        wb = self.service.build_template_workbook(company=self.company)
-        ws_items = wb["Items"]
-        header = [cell.value for cell in ws_items[1]]
-        self.assertIn("order_qty", header)
-        self.assertNotIn("qty_suggested", header)
-        self.assertIn("Guide", wb.sheetnames)
-
-    def test_parse_excel_preview_returns_valid_rows_for_correct_input(self):
-        file_bytes = self._build_workbook(
-            [
-                ["Prod A", "Var A", self.category.category_code, "10.000"],
-                ["Prod B", "Var B", self.category.category_code, "20.000"],
-                ["Prod C", "Var C", self.category.category_code, "30.000"],
-            ]
-        )
-        result = self.service.parse_excel_preview(file_bytes, company=self.company)
-        self.assertEqual(len(result["valid"]), 3)
-        self.assertEqual(len(result["errors"]), 0)
+        file_bytes = self._build_workbook(headers, rows)
+        result = self.service.parse_excel_preview(file_bytes, self.company)
+        self.assertEqual(len(result["valid"]), 6)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(result["missing_colors"], [])
         for row in result["valid"]:
-            self.assertIn("category_name", row)
-            self.assertIsInstance(row["category_name"], str)
-            self.assertGreater(len(row["category_name"]), 0)
-
-    def test_list_items_returns_empty_when_no_pool_exists(self):
-        other_supplier = SupplierFactory(company=self.company)
-        self.client = APIClient()
-        from core.models import UserProfile
-
-        user = User.objects.create_user(
-            username="sourcing_test", password="password", is_staff=True
-        )
-        UserProfile.objects.create(user=user, company=self.company, role="admin")
-        self.client.force_authenticate(user=user)
-        response = self.client.get(f"/sourcing-pool/items/?supplier_id={other_supplier.id}")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data, {"pool_id": None, "items": []})
-
-    # --- Business rules ---
-
-    def test_import_merge_updates_existing_item_on_same_name_variant(self):
-        self.service.import_rows(
-            company=self.company,
-            supplier=self.supplier,
-            rows=[
-                self._make_row(product_name="Earbuds", variant_name="Black", unit_price="45.000")
-            ],
-        )
-        self.service.import_rows(
-            company=self.company,
-            supplier=self.supplier,
-            rows=[
-                self._make_row(product_name="Earbuds", variant_name="Black", unit_price="50.000")
-            ],
-        )
-        pool = SourcingPool.objects.get(company=self.company, supplier=self.supplier)
-        self.assertEqual(pool.items.count(), 1)
-        self.assertEqual(pool.items.first().unit_price, Decimal("50.000"))
-
-    def test_import_merge_case_insensitive_match(self):
-        self.service.import_rows(
-            company=self.company,
-            supplier=self.supplier,
-            rows=[self._make_row(product_name="Earbuds", variant_name="Black")],
-        )
-        self.service.import_rows(
-            company=self.company,
-            supplier=self.supplier,
-            rows=[self._make_row(product_name="EARBUDS", variant_name="BLACK")],
-        )
-        pool = SourcingPool.objects.get(company=self.company, supplier=self.supplier)
-        self.assertEqual(pool.items.count(), 1)
-        self.assertEqual(pool.items.first().product_name, "EARBUDS")
-
-    def test_import_deduplicates_intra_batch_case_insensitive_rows(self):
-        result = self.service.import_rows(
-            company=self.company,
-            supplier=self.supplier,
-            rows=[
-                self._make_row(product_name="Widget", variant_name="Red"),
-                self._make_row(product_name="WIDGET", variant_name="RED"),
-            ],
-        )
-        self.assertEqual(result["created"], 1)
-        self.assertEqual(result["updated"], 0)
-        pool = SourcingPool.objects.get(company=self.company, supplier=self.supplier)
-        self.assertEqual(pool.items.count(), 1)
-        self.assertEqual(pool.items.first().product_name, "WIDGET")
-
-    def test_import_resets_image_status_when_image_url_changes(self):
-        self.service.import_rows(
-            company=self.company,
-            supplier=self.supplier,
-            rows=[self._make_row(image_url="http://a.com/1.jpg")],
-        )
-        pool = SourcingPool.objects.get(company=self.company, supplier=self.supplier)
-        item = pool.items.first()
-        item.image_download_status = SourcingPoolItem.ImageDownloadStatus.DONE
-        item.save()
-        self.service.import_rows(
-            company=self.company,
-            supplier=self.supplier,
-            rows=[self._make_row(image_url="http://a.com/2.jpg")],
-        )
-        item.refresh_from_db()
-        self.assertEqual(item.image_download_status, SourcingPoolItem.ImageDownloadStatus.PENDING)
-        self.assertEqual(item.image_url, "http://a.com/2.jpg")
-
-    def test_import_does_not_reset_image_status_when_image_url_unchanged(self):
-        self.service.import_rows(
-            company=self.company,
-            supplier=self.supplier,
-            rows=[self._make_row(image_url="http://a.com/1.jpg")],
-        )
-        pool = SourcingPool.objects.get(company=self.company, supplier=self.supplier)
-        item = pool.items.first()
-        item.image_download_status = SourcingPoolItem.ImageDownloadStatus.DONE
-        item.save()
-        self.service.import_rows(
-            company=self.company,
-            supplier=self.supplier,
-            rows=[self._make_row(image_url="http://a.com/1.jpg")],
-        )
-        item.refresh_from_db()
-        self.assertEqual(item.image_download_status, SourcingPoolItem.ImageDownloadStatus.DONE)
-
-    def test_import_new_item_with_no_image_url_gets_pending_status(self):
-        self.service.import_rows(
-            company=self.company,
-            supplier=self.supplier,
-            rows=[self._make_row(image_url=None)],
-        )
-        pool = SourcingPool.objects.get(company=self.company, supplier=self.supplier)
-        item = pool.items.first()
-        self.assertEqual(item.image_download_status, SourcingPoolItem.ImageDownloadStatus.PENDING)
-        self.assertIsNone(item.image_url)
-
-    # --- Edge cases ---
-
-    def test_parse_excel_preview_flags_missing_required_column(self):
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = "Items"
-        ws.append(["product_name", "variant_name", "category_code"])
-        ws.append(["Prod", "Var", self.category.category_code])
-        buf = io.BytesIO()
-        wb.save(buf)
-        buf.seek(0)
-        result = self.service.parse_excel_preview(buf.read(), company=self.company)
-        self.assertEqual(len(result["valid"]), 0)
-        self.assertTrue(any("unit_price" in e["message"] for e in result["errors"]))
-
-    def test_parse_excel_preview_flags_invalid_category_code(self):
-        file_bytes = self._build_workbook(
-            [
-                ["Prod", "Var", "DOES-NOT-EXIST", "10.000"],
-            ]
-        )
-        result = self.service.parse_excel_preview(file_bytes, company=self.company)
-        self.assertEqual(len(result["valid"]), 0)
-        self.assertTrue(any("DOES-NOT-EXIST" in e["message"] for e in result["errors"]))
-
-    def test_parse_excel_preview_flags_invalid_unit_price_non_numeric(self):
-        file_bytes = self._build_workbook(
-            [
-                ["Prod", "Var", self.category.category_code, "abc"],
-            ]
-        )
-        result = self.service.parse_excel_preview(file_bytes, company=self.company)
-        self.assertEqual(len(result["valid"]), 0)
-        self.assertTrue(any("unit_price" in e["message"] for e in result["errors"]))
-
-    def test_parse_excel_preview_rejects_zero_unit_price(self):
-        file_bytes = self._build_workbook(
-            [
-                ["Prod", "Var", self.category.category_code, "0"],
-            ]
-        )
-        result = self.service.parse_excel_preview(file_bytes, company=self.company)
-        self.assertEqual(len(result["valid"]), 0)
-        self.assertTrue(any("greater than zero" in e["message"] for e in result["errors"]))
-
-    def test_parse_excel_preview_rejects_negative_unit_price(self):
-        file_bytes = self._build_workbook(
-            [
-                ["Prod", "Var", self.category.category_code, "-5"],
-            ]
-        )
-        result = self.service.parse_excel_preview(file_bytes, company=self.company)
-        self.assertEqual(len(result["valid"]), 0)
-        self.assertTrue(any("greater than zero" in e["message"] for e in result["errors"]))
-
-    def test_parse_excel_preview_rejects_negative_discounted_price(self):
-        file_bytes = self._build_workbook(
-            [
-                ["Prod", "Var", self.category.category_code, "10.000", "-1"],
-            ]
-        )
-        result = self.service.parse_excel_preview(file_bytes, company=self.company)
-        self.assertEqual(len(result["valid"]), 0)
-        self.assertTrue(any("discounted_price" in e["message"] for e in result["errors"]))
-
-    def test_parse_excel_preview_rejects_negative_order_qty(self):
-        file_bytes = self._build_workbook(
-            [
-                ["Prod", "Var", self.category.category_code, "10.000", "", "-3"],
-            ]
-        )
-        result = self.service.parse_excel_preview(file_bytes, company=self.company)
-        self.assertEqual(len(result["valid"]), 0)
-        self.assertTrue(any("order_qty" in e["message"] for e in result["errors"]))
-
-    def test_parse_excel_preview_accepts_zero_order_qty(self):
-        file_bytes = self._build_workbook(
-            [
-                ["Prod", "Var", self.category.category_code, "10.000", "", "0"],
-            ]
-        )
-        result = self.service.parse_excel_preview(file_bytes, company=self.company)
-        self.assertEqual(len(result["valid"]), 1)
-        self.assertEqual(result["valid"][0]["qty_suggested"], 0)
-
-    def test_parse_excel_preview_accepts_float_formatted_integer_qty(self):
-        file_bytes = self._build_workbook(
-            [
-                ["Prod", "Var", self.category.category_code, "10.000", "", 5.0],
-            ]
-        )
-        result = self.service.parse_excel_preview(file_bytes, company=self.company)
-        self.assertEqual(len(result["valid"]), 1)
-        self.assertEqual(result["valid"][0]["qty_suggested"], 5)
-
-    def test_parse_excel_preview_accepts_legacy_qty_suggested_column_header(self):
-        """Old files using qty_suggested column header are still accepted."""
-        file_bytes = self._build_workbook(
-            [["Prod", "Var", self.category.category_code, "10.000", "", "5"]],
-            header=[
-                "product_name",
-                "variant_name",
-                "category_code",
-                "unit_price",
-                "discounted_price",
-                "qty_suggested",
-                "supplier_link",
-                "image_url",
-                "notes",
-            ],
-        )
-        result = self.service.parse_excel_preview(file_bytes, company=self.company)
-        self.assertEqual(len(result["valid"]), 1)
-        self.assertEqual(result["valid"][0]["qty_suggested"], 5)
-
-    def test_parse_excel_preview_skips_blank_rows(self):
-        file_bytes = self._build_workbook(
-            [
-                ["Prod A", "Var A", self.category.category_code, "10.000"],
-                [None, None, None, None],
-                ["Prod B", "Var B", self.category.category_code, "20.000"],
-            ]
-        )
-        result = self.service.parse_excel_preview(file_bytes, company=self.company)
-        self.assertEqual(len(result["valid"]), 2)
-        self.assertEqual(len(result["errors"]), 0)
-
-    def test_import_raises_value_error_on_invalid_category_id(self):
-        with self.assertRaises(ValueError):
-            self.service.import_rows(
-                company=self.company,
-                supplier=self.supplier,
-                rows=[self._make_row(category_id="00000000000000000000000000")],
+            self.assertEqual(row["dim1_key"], "Warna")
+            self.assertEqual(row["dim2_key"], "Ukuran")
+            self.assertIn(
+                row["variant_name"],
+                ["Putih-S", "Putih-M", "Putih-L", "Merah-S", "Merah-M", "Merah-L"],
             )
 
-    def test_import_raises_value_error_on_missing_product_name_key(self):
-        row = self._make_row()
-        del row["product_name"]
-        with self.assertRaises(ValueError):
-            self.service.import_rows(
-                company=self.company,
-                supplier=self.supplier,
-                rows=[row],
-            )
-
-    def test_list_items_search_filters_on_product_name(self):
-        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
-        SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            product_name="Earbuds Black",
-            variant_name="Default",
-            category=self.category,
-        )
-        SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            product_name="Phone Case Blue",
-            variant_name="Default",
-            category=self.category,
-        )
-        SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            product_name="Wallet Red",
-            variant_name="Default",
-            category=self.category,
-        )
-        self.client = APIClient()
-        from core.models import UserProfile
-
-        user = User.objects.create_user(
-            username="sourcing_search1", password="password", is_staff=True
-        )
-        UserProfile.objects.create(user=user, company=self.company, role="admin")
-        self.client.force_authenticate(user=user)
-        response = self.client.get(
-            f"/sourcing-pool/items/?supplier_id={self.supplier.id}&search=ear"
-        )
-        self.assertEqual(response.status_code, 200)
-        items = response.data["results"]
-        names = [i["product_name"] for i in items]
-        self.assertIn("Earbuds Black", names)
-        self.assertNotIn("Phone Case Blue", names)
-        self.assertNotIn("Wallet Red", names)
-
-    def test_list_items_search_filters_on_variant_name(self):
-        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
-        SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            product_name="Case",
-            variant_name="Black",
-            category=self.category,
-        )
-        SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            product_name="Wallet",
-            variant_name="Red",
-            category=self.category,
-        )
-        self.client = APIClient()
-        from core.models import UserProfile
-
-        user = User.objects.create_user(
-            username="sourcing_search2", password="password", is_staff=True
-        )
-        UserProfile.objects.create(user=user, company=self.company, role="admin")
-        self.client.force_authenticate(user=user)
-        response = self.client.get(
-            f"/sourcing-pool/items/?supplier_id={self.supplier.id}&search=black"
-        )
-        self.assertEqual(response.status_code, 200)
-        items = response.data["results"]
-        names = [i["product_name"] for i in items]
-        self.assertIn("Case", names)
-        self.assertNotIn("Wallet", names)
-
-    # --- Failure paths ---
-
-    def test_import_returns_400_when_rows_list_is_empty(self):
-        self.client = APIClient()
-        from core.models import UserProfile
-
-        user = User.objects.create_user(
-            username="sourcing_empty", password="password", is_staff=True
-        )
-        UserProfile.objects.create(user=user, company=self.company, role="admin")
-        self.client.force_authenticate(user=user)
-        response = self.client.post(
-            "/sourcing-pool/import/",
-            {"supplier_id": str(self.supplier.id), "rows": []},
-            format="json",
-        )
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("rows must be a non-empty list", str(response.data))
-
-    def test_import_returns_404_when_supplier_not_found(self):
-        self.client = APIClient()
-        from core.models import UserProfile
-
-        user = User.objects.create_user(username="sourcing_404", password="password", is_staff=True)
-        UserProfile.objects.create(user=user, company=self.company, role="admin")
-        self.client.force_authenticate(user=user)
-        response = self.client.post(
-            "/sourcing-pool/import/",
-            {"supplier_id": "00000000000000000000000000", "rows": [self._make_row()]},
-            format="json",
-        )
-        self.assertEqual(response.status_code, 404)
-
-    def test_image_view_returns_404_when_item_not_found(self):
-        self.client = APIClient()
-        from core.models import UserProfile
-
-        user = User.objects.create_user(
-            username="sourcing_img1", password="password", is_staff=True
-        )
-        UserProfile.objects.create(user=user, company=self.company, role="admin")
-        self.client.force_authenticate(user=user)
-        response = self.client.get("/sourcing-pool/items/00000000000000000000000000/image/")
-        self.assertEqual(response.status_code, 404)
-
-    def test_image_view_returns_404_when_no_image_file(self):
-        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
-        item = SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            category=self.category,
-            image_file=None,
-        )
-        self.client = APIClient()
-        from core.models import UserProfile
-
-        user = User.objects.create_user(
-            username="sourcing_img2", password="password", is_staff=True
-        )
-        UserProfile.objects.create(user=user, company=self.company, role="admin")
-        self.client.force_authenticate(user=user)
-        response = self.client.get(f"/sourcing-pool/items/{item.id}/image/")
-        self.assertEqual(response.status_code, 404)
-
-    def test_image_view_scoped_to_company(self):
-        company_b = CompanyFactory()
-        supplier_b = SupplierFactory(company=company_b)
-        pool_b = SourcingPoolFactory(company=company_b, supplier=supplier_b)
-        item_b = SourcingPoolItemFactory(
-            pool=pool_b,
-            company=company_b,
-            category=self.category,
-        )
-        self.client = APIClient()
-        from core.models import UserProfile
-
-        user = User.objects.create_user(
-            username="sourcing_img3", password="password", is_staff=True
-        )
-        UserProfile.objects.create(user=user, company=self.company, role="admin")
-        self.client.force_authenticate(user=user)
-        response = self.client.get(f"/sourcing-pool/items/{item_b.id}/image/")
-        self.assertEqual(response.status_code, 404)
-
-    # --- Scoping ---
-
-    def test_list_items_scoped_to_company(self):
-        company_b = CompanyFactory()
-        supplier_b = SupplierFactory(company=company_b)
-        pool_a = SourcingPoolFactory(company=self.company, supplier=self.supplier)
-        SourcingPoolItemFactory(
-            pool=pool_a,
-            company=self.company,
-            product_name="Item A",
-            variant_name="V1",
-            category=self.category,
-        )
-        pool_b = SourcingPoolFactory(company=company_b, supplier=supplier_b)
-        SourcingPoolItemFactory(
-            pool=pool_b,
-            company=company_b,
-            product_name="Item B",
-            variant_name="V1",
-            category=self.category,
-        )
-        self.client = APIClient()
-        from core.models import UserProfile
-
-        user = User.objects.create_user(
-            username="sourcing_scope", password="password", is_staff=True
-        )
-        UserProfile.objects.create(user=user, company=self.company, role="admin")
-        self.client.force_authenticate(user=user)
-        response = self.client.get(f"/sourcing-pool/items/?supplier_id={self.supplier.id}")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data["results"]), 1)
-        self.assertEqual(response.data["results"][0]["product_name"], "Item A")
-
-    # --- FIX 4: API test for POST /sourcing-pool/preview/ ---
-
-    def test_preview_endpoint_returns_valid_and_errors(self):
-        file_bytes = self._build_workbook(
-            [
-                ["Prod A", "Var A", self.category.category_code, "10.000"],
-                ["Prod B", "Var B", self.category.category_code, "20.000"],
-                ["Prod C", "Var C", "BAD-CODE", "30.000"],
-            ]
-        )
-        self.client = APIClient()
-        from core.models import UserProfile
-
-        user = User.objects.create_user(username="preview_test", password="password", is_staff=True)
-        UserProfile.objects.create(user=user, company=self.company, role="admin")
-        self.client.force_authenticate(user=user)
-        response = self.client.post(
-            "/sourcing-pool/preview/",
-            {
-                "file": SimpleUploadedFile(
-                    "test.xlsx",
-                    file_bytes,
-                    content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
-            },
-            format="multipart",
-        )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data["valid"]), 2)
-        self.assertEqual(len(response.data["errors"]), 1)
-
-    def test_preview_endpoint_returns_400_when_no_file(self):
-        self.client = APIClient()
-        from core.models import UserProfile
-
-        user = User.objects.create_user(
-            username="preview_no_file", password="password", is_staff=True
-        )
-        UserProfile.objects.create(user=user, company=self.company, role="admin")
-        self.client.force_authenticate(user=user)
-        response = self.client.post("/sourcing-pool/preview/", {}, format="multipart")
-        self.assertEqual(response.status_code, 400)
-
-    # --- FIX 5: API test for GET /sourcing-pool/template/ ---
-
-    def test_template_endpoint_returns_xlsx(self):
-        self.client = APIClient()
-        from core.models import UserProfile
-
-        user = User.objects.create_user(
-            username="template_test", password="password", is_staff=True
-        )
-        UserProfile.objects.create(user=user, company=self.company, role="admin")
-        self.client.force_authenticate(user=user)
-        response = self.client.get("/sourcing-pool/template/")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(
-            response["Content-Type"],
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-        self.assertIn("sourcing_template.xlsx", response["Content-Disposition"])
-
-    # --- FIX 6: Test that import response includes pool_id ---
-
-    def test_import_response_includes_pool_id(self):
-        self.client = APIClient()
-        from core.models import UserProfile
-
-        user = User.objects.create_user(
-            username="import_poolid", password="password", is_staff=True
-        )
-        UserProfile.objects.create(user=user, company=self.company, role="admin")
-        self.client.force_authenticate(user=user)
-        response = self.client.post(
-            "/sourcing-pool/import/",
-            {"supplier_id": str(self.supplier.id), "rows": [self._make_row()]},
-            format="json",
-        )
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("pool_id", response.data)
-        self.assertIsInstance(response.data["pool_id"], str)
-        self.assertGreater(len(response.data["pool_id"]), 0)
-
-    # --- FIX 7: discounted_price < unit_price enforcement ---
-
-    def test_parse_excel_preview_rejects_discounted_price_equal_to_unit_price(self):
-        file_bytes = self._build_workbook(
-            [
-                ["Prod", "Var", self.category.category_code, "10.000", "10.000"],
-            ]
-        )
-        result = self.service.parse_excel_preview(file_bytes, company=self.company)
-        self.assertEqual(len(result["valid"]), 0)
-        self.assertTrue(
-            any(
-                "discounted_price must be less than unit_price" in e["message"]
-                for e in result["errors"]
-            )
-        )
-
-    def test_parse_excel_preview_rejects_discounted_price_greater_than_unit_price(self):
-        file_bytes = self._build_workbook(
-            [
-                ["Prod", "Var", self.category.category_code, "10.000", "15.000"],
-            ]
-        )
-        result = self.service.parse_excel_preview(file_bytes, company=self.company)
-        self.assertEqual(len(result["valid"]), 0)
-        self.assertTrue(
-            any(
-                "discounted_price must be less than unit_price" in e["message"]
-                for e in result["errors"]
-            )
-        )
-
-    def test_parse_excel_preview_accepts_valid_discounted_price(self):
-        file_bytes = self._build_workbook(
-            [
-                ["Prod", "Var", self.category.category_code, "10.000", "8.000"],
-            ]
-        )
-        result = self.service.parse_excel_preview(file_bytes, company=self.company)
-        self.assertEqual(len(result["valid"]), 1)
-        self.assertEqual(len(result["errors"]), 0)
-
-    # --- FIX 1: Row count cap ---
-
-    def test_parse_excel_preview_rejects_file_exceeding_row_limit(self):
-        data_rows = [
-            [f"Prod{i}", f"Var{i}", self.category.category_code, "10.000"] for i in range(5001)
+    def test_1d_product_dim1_only_no_dim2(self):
+        headers = [
+            "variant_code",
+            "product_name",
+            "dim1_key",
+            "dim1_value",
+            "dim2_key",
+            "dim2_value",
+            "category_code",
+            "unit_price",
         ]
-        file_bytes = self._build_workbook(data_rows)
-        result = self.service.parse_excel_preview(file_bytes, company=self.company)
-        self.assertEqual(len(result["valid"]), 0)
-        self.assertTrue(any("row limit" in e["message"].lower() for e in result["errors"]))
-
-    # --- FIX 2: Clear image_file when image_url changes ---
-
-    def test_import_clears_image_file_when_image_url_changes(self):
-        self.service.import_rows(
-            company=self.company,
-            supplier=self.supplier,
-            rows=[self._make_row(image_url="http://a.com/old.jpg")],
-        )
-        pool = SourcingPool.objects.get(company=self.company, supplier=self.supplier)
-        item = pool.items.first()
-        item.image_file = "sourcing/images/old.jpg"
-        item.image_download_status = SourcingPoolItem.ImageDownloadStatus.DONE
-        item.save()
-        self.service.import_rows(
-            company=self.company,
-            supplier=self.supplier,
-            rows=[self._make_row(image_url="http://a.com/new.jpg")],
-        )
-        item.refresh_from_db()
-        self.assertFalse(item.image_file)
-        self.assertEqual(item.image_download_status, SourcingPoolItem.ImageDownloadStatus.PENDING)
-
-    # --- FIX 3: Pagination ---
-
-    def test_list_items_returns_paginated_response(self):
-        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
-        for i in range(55):
-            SourcingPoolItemFactory(
-                pool=pool,
-                company=self.company,
-                product_name=f"Product {i}",
-                variant_name="Default",
-                category=self.category,
-            )
-        self.client = APIClient()
-        from core.models import UserProfile
-
-        user = User.objects.create_user(
-            username="sourcing_paginate", password="password", is_staff=True
-        )
-        UserProfile.objects.create(user=user, company=self.company, role="admin")
-        self.client.force_authenticate(user=user)
-        response = self.client.get(f"/sourcing-pool/items/?supplier_id={self.supplier.id}")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["count"], 55)
-        self.assertEqual(len(response.data["results"]), 50)
-        self.assertIsNotNone(response.data["next"])
-        self.assertEqual(response.data["pool_id"], str(pool.id))
-
-    # --- Image download tests ---
-
-    def test_download_pool_images_sets_done_status_and_image_file_on_success(self):
-        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
-        item = SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            category=self.category,
-            image_url="http://cdn.example.com/img.jpg",
-            image_download_status=SourcingPoolItem.ImageDownloadStatus.PENDING,
-        )
-
-        with (
-            patch("apps.purchasing.services.sourcing_service.http_requests.get") as mock_get,
-            patch("apps.purchasing.services.sourcing_service.default_storage.save") as mock_save,
-        ):
-            mock_response = Mock()
-            mock_response.headers = {"Content-Type": "image/jpeg"}
-            mock_response.content = b"imgdata"
-            mock_get.return_value = mock_response
-            mock_save.return_value = f"sourcing/images/{item.id}.jpg"
-
-            result = self.service.download_pool_images(pool)
-
-        item.refresh_from_db()
-        self.assertEqual(item.image_download_status, SourcingPoolItem.ImageDownloadStatus.DONE)
-        self.assertEqual(item.image_file.name, f"sourcing/images/{item.id}.jpg")
-        self.assertEqual(result, {"done": 1, "failed": 0, "skipped": 0})
-
-    def test_download_pool_images_derives_correct_extension_from_content_type(self):
-        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
-        item = SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            category=self.category,
-            image_url="http://cdn.example.com/img.png",
-            image_download_status=SourcingPoolItem.ImageDownloadStatus.PENDING,
-        )
-
-        with (
-            patch("apps.purchasing.services.sourcing_service.http_requests.get") as mock_get,
-            patch("apps.purchasing.services.sourcing_service.default_storage.save") as mock_save,
-        ):
-            mock_response = Mock()
-            mock_response.headers = {"Content-Type": "image/png"}
-            mock_response.content = b"pngdata"
-            mock_get.return_value = mock_response
-            mock_save.return_value = f"sourcing/images/{item.id}.png"
-
-            self.service.download_pool_images(pool)
-
-            args, _ = mock_save.call_args
-            self.assertTrue(args[0].endswith(".png"))
-
-    def test_download_pool_images_skips_items_with_no_image_url(self):
-        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
-        SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            category=self.category,
-            product_name="No URL",
-            variant_name="Var",
-            image_url=None,
-        )
-        SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            category=self.category,
-            product_name="Has URL",
-            variant_name="Var",
-            image_url="http://cdn.example.com/img.jpg",
-        )
-
-        with (
-            patch("apps.purchasing.services.sourcing_service.http_requests.get") as mock_get,
-            patch("apps.purchasing.services.sourcing_service.default_storage.save") as mock_save,
-        ):
-            mock_response = Mock()
-            mock_response.headers = {"Content-Type": "image/jpeg"}
-            mock_response.content = b"imgdata"
-            mock_get.return_value = mock_response
-            mock_save.return_value = "sourcing/images/dummy.jpg"
-
-            result = self.service.download_pool_images(pool)
-
-        self.assertEqual(result["skipped"], 1)
-        self.assertEqual(result["done"], 1)
-
-    def test_download_pool_images_skips_done_items_by_default(self):
-        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
-        SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            category=self.category,
-            product_name="Done Item",
-            variant_name="Var",
-            image_url="http://cdn.example.com/img.jpg",
-            image_download_status=SourcingPoolItem.ImageDownloadStatus.DONE,
-        )
-
-        with patch("apps.purchasing.services.sourcing_service.http_requests.get") as mock_get:
-            result = self.service.download_pool_images(pool)
-
-        mock_get.assert_not_called()
-        self.assertEqual(result, {"done": 0, "failed": 0, "skipped": 0})
-
-    def test_download_pool_images_retries_failed_items_when_include_failed_true(self):
-        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
-        item = SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            category=self.category,
-            product_name="Failed Item",
-            variant_name="Var",
-            image_url="http://cdn.example.com/img.jpg",
-            image_download_status=SourcingPoolItem.ImageDownloadStatus.FAILED,
-        )
-
-        with (
-            patch("apps.purchasing.services.sourcing_service.http_requests.get") as mock_get,
-            patch("apps.purchasing.services.sourcing_service.default_storage.save") as mock_save,
-        ):
-            mock_response = Mock()
-            mock_response.headers = {"Content-Type": "image/jpeg"}
-            mock_response.content = b"imgdata"
-            mock_get.return_value = mock_response
-            mock_save.return_value = f"sourcing/images/{item.id}.jpg"
-
-            result = self.service.download_pool_images(pool, include_failed=True)
-
-        self.assertEqual(result["done"], 1)
-
-    def test_download_pool_images_does_not_process_failed_items_by_default(self):
-        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
-        item = SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            category=self.category,
-            product_name="Failed Item",
-            variant_name="Var",
-            image_url="http://cdn.example.com/img.jpg",
-            image_download_status=SourcingPoolItem.ImageDownloadStatus.FAILED,
-        )
-
-        with patch("apps.purchasing.services.sourcing_service.http_requests.get") as mock_get:
-            result = self.service.download_pool_images(pool)
-
-        mock_get.assert_not_called()
-        item.refresh_from_db()
-        self.assertEqual(item.image_download_status, SourcingPoolItem.ImageDownloadStatus.FAILED)
-        self.assertEqual(result, {"done": 0, "failed": 0, "skipped": 0})
-
-    def test_download_pool_images_returns_correct_counts_for_mixed_batch(self):
-        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
-        SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            category=self.category,
-            product_name="Succeed",
-            variant_name="Var",
-            image_url="http://cdn.example.com/success.jpg",
-        )
-        SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            category=self.category,
-            product_name="Timeout",
-            variant_name="Var",
-            image_url="http://cdn.example.com/timeout.jpg",
-        )
-        SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            category=self.category,
-            product_name="No URL",
-            variant_name="Var",
-            image_url=None,
-        )
-
-        with (
-            patch("apps.purchasing.services.sourcing_service.http_requests.get") as mock_get,
-            patch("apps.purchasing.services.sourcing_service.default_storage.save") as mock_save,
-        ):
-
-            def side_effect(url, timeout=10):
-                mock = Mock()
-                if "timeout" in url:
-                    from requests.exceptions import Timeout
-
-                    raise Timeout()
-                mock.headers = {"Content-Type": "image/jpeg"}
-                mock.content = b"imgdata"
-                mock.raise_for_status.return_value = None
-                return mock
-
-            mock_get.side_effect = side_effect
-            mock_save.return_value = "sourcing/images/dummy.jpg"
-
-            result = self.service.download_pool_images(pool)
-
-        self.assertEqual(result, {"done": 1, "failed": 1, "skipped": 1})
-
-    def test_download_pool_images_marks_failed_on_network_error(self):
-        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
-        item = SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            category=self.category,
-            image_url="http://cdn.example.com/img.jpg",
-        )
-
-        with (
-            patch("apps.purchasing.services.sourcing_service.http_requests.get") as mock_get,
-        ):
-            from requests.exceptions import ConnectionError
-
-            mock_get.side_effect = ConnectionError("Network down")
-
-            result = self.service.download_pool_images(pool)
-
-        item.refresh_from_db()
-        self.assertEqual(item.image_download_status, SourcingPoolItem.ImageDownloadStatus.FAILED)
-        self.assertEqual(result["failed"], 1)
-
-    def test_download_pool_images_marks_failed_on_http_error(self):
-        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
-        item = SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            category=self.category,
-            image_url="http://cdn.example.com/img.jpg",
-        )
-
-        with (
-            patch("apps.purchasing.services.sourcing_service.http_requests.get") as mock_get,
-        ):
-            mock_response = Mock()
-            mock_response.headers = {"Content-Type": "image/jpeg"}
-            mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError(
-                "403 Client Error"
-            )
-            mock_get.return_value = mock_response
-
-            result = self.service.download_pool_images(pool)
-
-        item.refresh_from_db()
-        self.assertEqual(item.image_download_status, SourcingPoolItem.ImageDownloadStatus.FAILED)
-        self.assertEqual(result["failed"], 1)
-
-    def test_download_pool_images_continues_after_single_item_failure(self):
-        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
-        items = []
-        for i in range(3):
-            items.append(
-                SourcingPoolItemFactory(
-                    pool=pool,
-                    company=self.company,
-                    category=self.category,
-                    product_name=f"Item {i}",
-                    variant_name="Var",
-                    image_url=f"http://cdn.example.com/{i}.jpg",
-                )
-            )
-
-        with (
-            patch("apps.purchasing.services.sourcing_service.http_requests.get") as mock_get,
-            patch("apps.purchasing.services.sourcing_service.default_storage.save") as mock_save,
-        ):
-            call_count = [0]
-
-            def side_effect(url, timeout=10):
-                call_count[0] += 1
-                mock = Mock()
-                if call_count[0] == 2:
-                    from requests.exceptions import Timeout
-
-                    raise Timeout()
-                mock.headers = {"Content-Type": "image/jpeg"}
-                mock.content = b"imgdata"
-                mock.raise_for_status.return_value = None
-                return mock
-
-            mock_get.side_effect = side_effect
-            mock_save.return_value = "sourcing/images/dummy.jpg"
-
-            result = self.service.download_pool_images(pool)
-
-        self.assertEqual(result["done"], 2)
-        self.assertEqual(result["failed"], 1)
-        for item in items:
-            item.refresh_from_db()
-        statuses = [item.image_download_status for item in items]
-        self.assertEqual(statuses.count(SourcingPoolItem.ImageDownloadStatus.DONE), 2)
-        self.assertEqual(statuses.count(SourcingPoolItem.ImageDownloadStatus.FAILED), 1)
-
-    def test_download_pool_images_uses_jpg_fallback_for_unknown_content_type(self):
-        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
-        item = SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            category=self.category,
-            image_url="http://cdn.example.com/img.xyz",
-        )
-
-        with (
-            patch("apps.purchasing.services.sourcing_service.http_requests.get") as mock_get,
-            patch("apps.purchasing.services.sourcing_service.default_storage.save") as mock_save,
-        ):
-            mock_response = Mock()
-            mock_response.headers = {"Content-Type": "application/octet-stream"}
-            mock_response.content = b"imagedata"
-            mock_get.return_value = mock_response
-            mock_save.return_value = f"sourcing/images/{item.id}.jpg"
-
-            self.service.download_pool_images(pool)
-
-            args, _ = mock_save.call_args
-            self.assertTrue(args[0].endswith(".jpg"))
-
-    # --- Download images endpoint tests ---
-
-    def test_download_images_endpoint_returns_counts(self):
-        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
-        self.client = APIClient()
-        from core.models import UserProfile
-
-        user = User.objects.create_user(
-            username="download_img1", password="password", is_staff=True
-        )
-        UserProfile.objects.create(user=user, company=self.company, role="admin")
-        self.client.force_authenticate(user=user)
-
-        with patch(
-            "apps.purchasing.services.sourcing_service.SourcingService.download_pool_images",
-            return_value={"done": 3, "failed": 1, "skipped": 0},
-        ):
-            response = self.client.post(
-                "/sourcing-pool/download-images/",
-                {"pool_id": str(pool.id)},
-                format="json",
-            )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data, {"done": 3, "failed": 1, "skipped": 0})
-
-    def test_download_images_endpoint_returns_400_when_pool_id_missing(self):
-        self.client = APIClient()
-        from core.models import UserProfile
-
-        user = User.objects.create_user(
-            username="download_img2", password="password", is_staff=True
-        )
-        UserProfile.objects.create(user=user, company=self.company, role="admin")
-        self.client.force_authenticate(user=user)
-
-        response = self.client.post("/sourcing-pool/download-images/", {}, format="json")
-
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("pool_id is required", str(response.data))
-
-    def test_download_images_endpoint_returns_404_when_pool_not_found(self):
-        self.client = APIClient()
-        from core.models import UserProfile
-
-        user = User.objects.create_user(
-            username="download_img3", password="password", is_staff=True
-        )
-        UserProfile.objects.create(user=user, company=self.company, role="admin")
-        self.client.force_authenticate(user=user)
-
-        response = self.client.post(
-            "/sourcing-pool/download-images/",
-            {"pool_id": "00000000000000000000000000"},
-            format="json",
-        )
-
-        self.assertEqual(response.status_code, 404)
-        self.assertIn("Pool not found", str(response.data))
-
-    def test_download_images_endpoint_scoped_to_company(self):
-        company_b = CompanyFactory()
-        supplier_b = SupplierFactory(company=company_b)
-        pool_b = SourcingPoolFactory(company=company_b, supplier=supplier_b)
-
-        self.client = APIClient()
-        from core.models import UserProfile
-
-        user = User.objects.create_user(
-            username="download_img4", password="password", is_staff=True
-        )
-        UserProfile.objects.create(user=user, company=self.company, role="admin")
-        self.client.force_authenticate(user=user)
-
-        response = self.client.post(
-            "/sourcing-pool/download-images/",
-            {"pool_id": str(pool_b.id)},
-            format="json",
-        )
-
-        self.assertEqual(response.status_code, 404)
-        self.assertIn("Pool not found", str(response.data))
-
-    # --- variant_code mapping tests ---
-
-    def test_preview_variant_code_found_returns_valid_row_with_variant_id(self):
-        variant = ProductVariantFactory(
-            company=self.company,
-            sku_variant_code="TEST-RED-L",
-        )
-        file_bytes = self._build_workbook(
-            [
-                ["TEST-RED-L", "Widget", "Red/L", None, "10"],
-            ],
-            header=[
-                "variant_code",
-                "product_name",
-                "variant_name",
-                "category_code",
-                "unit_price",
-                "discounted_price",
-                "order_qty",
-                "supplier_link",
-                "image_url",
-                "notes",
-            ],
-        )
-        result = self.service.parse_excel_preview(file_bytes, company=self.company)
+        rows = [
+            ["", "Celana", "Warna", "Putih", "", "", "TEST", "50000"],
+            ["", "Celana", "Warna", "Hitam", "", "", "TEST", "50000"],
+            ["", "Celana", "Warna", "Abu", "", "", "TEST", "50000"],
+        ]
+        file_bytes = self._build_workbook(headers, rows)
+        result = self.service.parse_excel_preview(file_bytes, self.company)
+        self.assertEqual(len(result["valid"]), 3)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(result["valid"][0]["variant_name"], "Putih")
+        self.assertEqual(result["valid"][1]["variant_name"], "Hitam")
+        self.assertEqual(result["valid"][2]["variant_name"], "Abu")
+
+    def test_no_dims_just_price_and_supplier_link(self):
+        headers = ["product_name", "supplier_link", "unit_price"]
+        rows = [["Produk Tunggal", "https://shop.com/x", "50000"]]
+        file_bytes = self._build_workbook(headers, rows)
+        result = self.service.parse_excel_preview(file_bytes, self.company)
         self.assertEqual(len(result["valid"]), 1)
-        self.assertEqual(result["valid"][0]["variant_id"], str(variant.id))
-        self.assertIsNone(result["valid"][0]["category_id"])
-        self.assertEqual(len(result["errors"]), 0)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(result["valid"][0]["variant_name"], "")
 
-    def test_preview_variant_code_not_found_returns_error_row(self):
-        file_bytes = self._build_workbook(
-            [
-                ["NONEXISTENT-SKU", "X", "Y", None, "5"],
-            ],
-            header=[
-                "variant_code",
-                "product_name",
-                "variant_name",
-                "category_code",
-                "unit_price",
-                "discounted_price",
-                "order_qty",
-                "supplier_link",
-                "image_url",
-                "notes",
-            ],
-        )
-        result = self.service.parse_excel_preview(file_bytes, company=self.company)
-        self.assertEqual(len(result["errors"]), 1)
-        self.assertIn("NONEXISTENT-SKU", result["errors"][0]["message"])
-        self.assertEqual(len(result["valid"]), 0)
+    def test_discounted_price_equals_unit_price_treated_as_no_discount(self):
+        headers = ["product_name", "unit_price", "discounted_price", "supplier_link"]
+        rows = [["Test", "15.3", "15.3", "https://shop.com/x"]]
+        file_bytes = self._build_workbook(headers, rows)
+        result = self.service.parse_excel_preview(file_bytes, self.company)
+        self.assertEqual(len(result["valid"]), 1)
+        self.assertIsNone(result["valid"][0]["discounted_price"])
 
-    def test_preview_variant_code_missing_category_code_is_valid(self):
-        ProductVariantFactory(
-            company=self.company,
-            sku_variant_code="TEST-RED-L",
-        )
-        file_bytes = self._build_workbook(
-            [
-                ["TEST-RED-L", "Widget", "Red/L", None, "10"],
-            ],
-            header=[
-                "variant_code",
-                "product_name",
-                "variant_name",
-                "category_code",
-                "unit_price",
-                "discounted_price",
-                "order_qty",
-                "supplier_link",
-                "image_url",
-                "notes",
-            ],
-        )
-        result = self.service.parse_excel_preview(file_bytes, company=self.company)
+    def test_new_category_code_not_in_db_passes_through(self):
+        headers = ["product_name", "category_code", "unit_price", "supplier_link"]
+        rows = [["New Cat Product", "DOES-NOT-EXIST", "10000", "https://shop.com/x"]]
+        file_bytes = self._build_workbook(headers, rows)
+        result = self.service.parse_excel_preview(file_bytes, self.company)
         self.assertEqual(len(result["valid"]), 1)
         self.assertIsNone(result["valid"][0]["category_id"])
-        self.assertEqual(len(result["errors"]), 0)
+        self.assertEqual(result["valid"][0]["category_code"], "DOES-NOT-EXIST")
 
-    def test_preview_no_variant_code_category_code_still_required(self):
-        file_bytes = self._build_workbook(
-            [
-                [None, "Widget", "Red/L", None, "10"],
-            ],
-            header=[
-                "variant_code",
-                "product_name",
-                "variant_name",
-                "category_code",
-                "unit_price",
-                "discounted_price",
-                "order_qty",
-                "supplier_link",
-                "image_url",
-                "notes",
-            ],
-        )
-        result = self.service.parse_excel_preview(file_bytes, company=self.company)
-        self.assertEqual(len(result["errors"]), 1)
-        self.assertIn("category_code is required", result["errors"][0]["message"])
-        self.assertEqual(len(result["valid"]), 0)
-
-    def test_preview_variant_code_only_row_not_silently_skipped(self):
-        file_bytes = self._build_workbook(
-            [
-                ["NONEXISTENT", None, None, None, None],
-            ],
-            header=[
-                "variant_code",
-                "product_name",
-                "variant_name",
-                "category_code",
-                "unit_price",
-                "discounted_price",
-                "order_qty",
-                "supplier_link",
-                "image_url",
-                "notes",
-            ],
-        )
-        result = self.service.parse_excel_preview(file_bytes, company=self.company)
-        self.assertGreater(len(result["errors"]), 0)
-        self.assertEqual(len(result["valid"]), 0)
-        # Pin specific required-field messages so refactors can't silently change error types
-        error_message = result["errors"][0]["message"]
-        self.assertIn("product_name or supplier_link is required", error_message)
-        self.assertIn("variant_name is required", error_message)
-        self.assertIn("unit_price is required", error_message)
-
-    def test_import_rows_create_stores_variant_code_and_variant_fk(self):
-        variant = ProductVariantFactory(company=self.company, sku_variant_code="SKU-X")
-        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
-        result = self.service.import_rows(
-            company=self.company,
-            supplier=self.supplier,
-            rows=[
-                {
-                    "product_name": "Test Product",
-                    "variant_name": "Test Variant",
-                    "category_id": str(self.category.id),
-                    "category_code": self.category.category_code,
-                    "unit_price": "10.000",
-                    "variant_code": "SKU-X",
-                    "variant_id": str(variant.id),
-                }
-            ],
-        )
-        self.assertEqual(result["created"], 1)
-        item = SourcingPoolItem.objects.get(pool=pool, product_name="Test Product")
-        self.assertEqual(item.variant_code, "SKU-X")
-        self.assertEqual(item.variant_id, variant.id)
-
-    def test_import_rows_update_sets_variant_code_and_variant_fk(self):
-        variant = ProductVariantFactory(company=self.company, sku_variant_code="SKU-Y")
-        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
-        SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            product_name="Existing",
-            variant_name="Var",
-            category=self.category,
-            unit_price=Decimal("10.000"),
-        )
-        result = self.service.import_rows(
-            company=self.company,
-            supplier=self.supplier,
-            rows=[
-                {
-                    "product_name": "Existing",
-                    "variant_name": "Var",
-                    "category_id": str(self.category.id),
-                    "category_code": self.category.category_code,
-                    "unit_price": "10.000",
-                    "variant_code": "SKU-Y",
-                    "variant_id": str(variant.id),
-                }
-            ],
-        )
-        self.assertEqual(result["updated"], 1)
-        item = SourcingPoolItem.objects.get(pool=pool, product_name="Existing")
-        self.assertEqual(item.variant_code, "SKU-Y")
-        self.assertEqual(item.variant_id, variant.id)
-
-    def test_import_rows_mapped_row_with_null_category_succeeds(self):
-        variant = ProductVariantFactory(company=self.company, sku_variant_code="SKU-Z")
-        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
-        result = self.service.import_rows(
-            company=self.company,
-            supplier=self.supplier,
-            rows=[
-                {
-                    "product_name": "Mapped",
-                    "variant_name": "Var",
-                    "category_id": None,
-                    "unit_price": "10.000",
-                    "variant_code": "SKU-Z",
-                    "variant_id": str(variant.id),
-                }
-            ],
-        )
-        self.assertEqual(result["created"], 1)
-        item = SourcingPoolItem.objects.get(pool=pool, product_name="Mapped")
-        self.assertIsNone(item.category)
-        self.assertEqual(item.variant_code, "SKU-Z")
-
-    def test_import_rows_raises_if_variant_id_deleted_between_preview_and_import(self):
-        with self.assertRaises(ValueError) as ctx:
-            self.service.import_rows(
-                company=self.company,
-                supplier=self.supplier,
-                rows=[
-                    {
-                        "product_name": "Ghost",
-                        "variant_name": "Var",
-                        "category_id": str(self.category.id),
-                        "category_code": self.category.category_code,
-                        "unit_price": "10.000",
-                        "variant_code": "GHOST",
-                        "variant_id": "00000000000000000000000000",
-                    }
-                ],
-            )
-        self.assertIn("00000000000000000000000000", str(ctx.exception))
-
-    def test_serializer_exposes_variant_id_and_variant_code(self):
-        variant = ProductVariantFactory(company=self.company, sku_variant_code="SER-TEST")
-        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
-        item = SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            product_name="Serializer Test",
-            variant_name="Var",
-            category=self.category,
-            unit_price=Decimal("10.000"),
-            variant_code="SER-TEST",
-            variant=variant,
-        )
-        from apps.purchasing.serializers import SourcingPoolItemSerializer
-
-        serializer = SourcingPoolItemSerializer(item)
-        self.assertEqual(serializer.data["variant_id"], str(variant.id))
-        self.assertEqual(serializer.data["variant_code"], "SER-TEST")
-
-        null_item = SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            product_name="Null Variant",
-            variant_name="Var",
-            category=self.category,
-            unit_price=Decimal("10.000"),
-            variant_code=None,
-            variant=None,
-        )
-        null_serializer = SourcingPoolItemSerializer(null_item)
-        self.assertIsNone(null_serializer.data["variant_id"])
-        self.assertIsNone(null_serializer.data["variant_code"])
-
-    def test_preview_variant_code_from_different_company_not_matched(self):
-        """A variant_code belonging to a different company must not resolve for this company."""
-        other_company = CompanyFactory()
-        ProductVariantFactory(
-            company=other_company,
-            sku_variant_code="CROSS-COMPANY-SKU",
-        )
-        file_bytes = self._build_workbook(
-            [["CROSS-COMPANY-SKU", "Widget", "Red/L", None, "10"]],
-            header=[
-                "variant_code",
-                "product_name",
-                "variant_name",
-                "category_code",
-                "unit_price",
-                "discounted_price",
-                "order_qty",
-                "supplier_link",
-                "image_url",
-                "notes",
-            ],
-        )
-        result = self.service.parse_excel_preview(file_bytes, company=self.company)
-        self.assertEqual(len(result["errors"]), 1)
-        self.assertIn("CROSS-COMPANY-SKU", result["errors"][0]["message"])
-        self.assertEqual(len(result["valid"]), 0)
-
-    def test_preview_variant_code_and_category_code_both_valid_populates_both_ids(self):
-        variant = ProductVariantFactory(company=self.company, sku_variant_code="DUAL-SKU")
-        file_bytes = self._build_workbook(
-            [["DUAL-SKU", "Widget", "Red/L", self.category.category_code, "10"]],
-            header=[
-                "variant_code",
-                "product_name",
-                "variant_name",
-                "category_code",
-                "unit_price",
-                "discounted_price",
-                "order_qty",
-                "supplier_link",
-                "image_url",
-                "notes",
-            ],
-        )
-        result = self.service.parse_excel_preview(file_bytes, company=self.company)
+    def test_variant_code_exists_in_db_stores_variant_id(self):
+        headers = ["variant_code", "product_name", "unit_price", "supplier_link"]
+        rows = [["EXISTING-SKU", "Existing", "10000", "https://shop.com/x"]]
+        file_bytes = self._build_workbook(headers, rows)
+        result = self.service.parse_excel_preview(file_bytes, self.company)
         self.assertEqual(len(result["valid"]), 1)
-        row = result["valid"][0]
-        self.assertEqual(row["variant_id"], str(variant.id))
-        self.assertEqual(row["category_id"], str(self.category.id))
-        self.assertEqual(len(result["errors"]), 0)
+        self.assertEqual(result["valid"][0]["variant_id"], str(self.product_variant.id))
 
-    def test_import_rows_clears_variant_code_when_reimported_without_it(self):
-        variant = ProductVariantFactory(company=self.company, sku_variant_code="CLR-SKU")
-        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
-        # Create item with variant linked
-        SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            product_name="Clearable",
-            variant_name="Var",
-            category=self.category,
-            unit_price=Decimal("10.000"),
-            variant_code="CLR-SKU",
-            variant=variant,
-        )
-        # Re-import same (product_name, variant_name) with no variant_code
-        self.service.import_rows(
-            company=self.company,
-            supplier=self.supplier,
-            rows=[
-                {
-                    "product_name": "Clearable",
-                    "variant_name": "Var",
-                    "category_id": str(self.category.id),
-                    "unit_price": "10.000",
-                    "variant_code": None,
-                    "variant_id": None,
-                }
-            ],
-        )
-        item = SourcingPoolItem.objects.get(pool=pool, product_name="Clearable")
-        self.assertIsNone(item.variant_code)
-        self.assertIsNone(item.variant_id)
-
-    def test_import_rows_rejects_variant_id_from_different_company(self):
-        other_company = CompanyFactory()
-        other_variant = ProductVariantFactory(company=other_company, sku_variant_code="OTHER-SKU")
-        with self.assertRaises(ValueError) as ctx:
-            self.service.import_rows(
-                company=self.company,
-                supplier=self.supplier,
-                rows=[
-                    {
-                        "product_name": "Foreign",
-                        "variant_name": "Var",
-                        "category_id": str(self.category.id),
-                        "unit_price": "10.000",
-                        "variant_code": "OTHER-SKU",
-                        "variant_id": str(other_variant.id),
-                    }
-                ],
-            )
-        self.assertIn(str(other_variant.id), str(ctx.exception))
-
-    def test_import_rows_preserves_category_when_mapped_row_reimported_without_category_code(self):
-        variant = ProductVariantFactory(company=self.company, sku_variant_code="PRES-SKU")
-        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
-        SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            product_name="Preserve",
-            variant_name="Var",
-            category=self.category,
-            unit_price=Decimal("10.000"),
-            variant_code="PRES-SKU",
-            variant=variant,
-        )
-        # Re-import the same row: mapped (variant_id set) but no category_id
-        self.service.import_rows(
-            company=self.company,
-            supplier=self.supplier,
-            rows=[
-                {
-                    "product_name": "Preserve",
-                    "variant_name": "Var",
-                    "category_id": None,
-                    "unit_price": "10.000",
-                    "variant_code": "PRES-SKU",
-                    "variant_id": str(variant.id),
-                }
-            ],
-        )
-        item = SourcingPoolItem.objects.get(pool=pool, product_name="Preserve")
-        # Category must be preserved — not nulled out
-        self.assertEqual(item.category_id, self.category.id)
-
-    def test_variant_delete_clears_variant_code_on_sourcing_pool_item(self):
-        variant = ProductVariantFactory(company=self.company, sku_variant_code="DEL-SKU")
-        pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
-        item = SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            product_name="DeleteTest",
-            variant_name="Var",
-            category=self.category,
-            unit_price=Decimal("10.000"),
-            variant_code="DEL-SKU",
-            variant=variant,
-        )
-        variant.delete()
-        item.refresh_from_db()
-        self.assertIsNone(item.variant_code)
-        self.assertIsNone(item.variant_id)
-
-    # --- Phase D: null product_name / supplier_link grouping ---
-
-    def test_parse_excel_preview_accepts_row_with_empty_product_name_when_supplier_link_provided(
-        self,
-    ):
-        file_bytes = self._build_workbook(
-            header=["product_name", "variant_name", "category_code", "unit_price", "supplier_link"],
-            rows=[
-                ["", "Red", self.category.category_code, "10", "https://shop.com/x"],
-            ],
-        )
-        result = self.service.parse_excel_preview(file_bytes, company=self.company)
+    def test_variant_code_not_in_db_passes_through_no_error(self):
+        headers = ["variant_code", "product_name", "unit_price", "supplier_link"]
+        rows = [["UNKNOWN-SKU", "New", "10000", "https://shop.com/x"]]
+        file_bytes = self._build_workbook(headers, rows)
+        result = self.service.parse_excel_preview(file_bytes, self.company)
         self.assertEqual(len(result["valid"]), 1)
-        self.assertEqual(len(result["errors"]), 0)
-        row = result["valid"][0]
-        self.assertIsNone(row["product_name"])
-        self.assertTrue(row["product_name_derived"])
+        self.assertIsNone(result["valid"][0]["variant_id"])
+        self.assertEqual(result["valid"][0]["variant_code"], "UNKNOWN-SKU")
 
-    def test_parse_excel_preview_rejects_row_when_both_product_name_and_supplier_link_empty(self):
-        file_bytes = self._build_workbook(
-            header=["product_name", "variant_name", "category_code", "unit_price", "supplier_link"],
-            rows=[
-                ["", "Red", self.category.category_code, "10", ""],
-            ],
-        )
-        result = self.service.parse_excel_preview(file_bytes, company=self.company)
-        self.assertEqual(len(result["valid"]), 0)
-        self.assertEqual(len(result["errors"]), 1)
-        self.assertIn("product_name or supplier_link is required", result["errors"][0]["message"])
+    def test_color_missing_returned_in_missing_colors(self):
+        headers = ["product_name", "dim1_key", "dim1_value", "unit_price", "supplier_link"]
+        rows = [["Produk", "Warna", "Dusty Rose", "50000", "https://shop.com/x"]]
+        file_bytes = self._build_workbook(headers, rows)
+        result = self.service.parse_excel_preview(file_bytes, self.company)
+        self.assertEqual(result["missing_colors"], [{"color_name": "Dusty Rose"}])
 
-    def test_parse_excel_preview_blank_row_semantics(self):
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = "Items"
-        ws.append(
-            [
-                "product_name",
-                "variant_name",
-                "category_code",
-                "unit_price",
-                "variant_code",
-                "supplier_link",
-                "image_url",
-            ]
+    def test_color_known_not_in_missing_colors(self):
+        ColorAbbreviation.objects.create(
+            company=self.company, color_name="Dusty Rose", abbreviation="DSR"
         )
-        # Row A: all 7 fields empty
-        ws.append([None, None, None, None, None, None, None])
-        # Row B: only image_url filled
-        ws.append([None, None, None, None, None, None, "http://img.com"])
-        # Row C: only supplier_link filled
-        ws.append([None, None, None, None, None, "https://shop.com", None])
-        buf = io.BytesIO()
-        wb.save(buf)
-        buf.seek(0)
-        result = self.service.parse_excel_preview(buf.read(), company=self.company)
-        # Row A: skipped — no errors, not in valid
-        row_a_errors = [e for e in result["errors"] if e["row"] == 2]
-        self.assertEqual(len(row_a_errors), 0)
-        # Row B: errors for missing variant_name + unit_price + product_name/supplier_link
-        row_b_errors = [e for e in result["errors"] if e["row"] == 3]
-        self.assertTrue(len(row_b_errors) > 0)
-        combined = "; ".join(e["message"] for e in row_b_errors)
-        self.assertIn("variant_name", combined)
-        self.assertIn("unit_price", combined)
-        self.assertIn("product_name or supplier_link", combined)
-        # Row C: errors for missing variant_name + unit_price
-        row_c_errors = [e for e in result["errors"] if e["row"] == 4]
-        self.assertTrue(len(row_c_errors) > 0)
-        combined_c = "; ".join(e["message"] for e in row_c_errors)
-        self.assertIn("variant_name", combined_c)
-        self.assertIn("unit_price", combined_c)
+        headers = ["product_name", "dim1_key", "dim1_value", "unit_price", "supplier_link"]
+        rows = [["Produk", "Warna", "Dusty Rose", "50000", "https://shop.com/x"]]
+        file_bytes = self._build_workbook(headers, rows)
+        result = self.service.parse_excel_preview(file_bytes, self.company)
+        self.assertEqual(result["missing_colors"], [])
 
-    def test_import_rows_stores_null_product_name_grouped_by_supplier_link(self):
-        result = self.service.import_rows(
-            company=self.company,
-            supplier=self.supplier,
-            rows=[
-                {
-                    "product_name": None,
-                    "variant_name": "Red",
-                    "unit_price": "10",
-                    "supplier_link": "https://shop.com/item",
-                    "category_id": str(self.category.id),
-                }
-            ],
-        )
-        self.assertEqual(result["created"], 1)
-        pool = SourcingPool.objects.get(company=self.company, supplier=self.supplier)
-        item = pool.items.first()
-        self.assertIsNone(item.product_name)
-        self.assertEqual(item.variant_name, "Red")
-        self.assertEqual(item.supplier_link, "https://shop.com/item")
-        # Re-import same supplier_link + variant_name with new price
-        result2 = self.service.import_rows(
-            company=self.company,
-            supplier=self.supplier,
-            rows=[
-                {
-                    "product_name": None,
-                    "variant_name": "Red",
-                    "unit_price": "20",
-                    "supplier_link": "https://shop.com/item",
-                    "category_id": str(self.category.id),
-                }
-            ],
-        )
-        self.assertEqual(result2["created"], 0)
-        self.assertEqual(result2["updated"], 1)
-        self.assertEqual(pool.items.count(), 1)
-        item.refresh_from_db()
-        self.assertEqual(item.unit_price, Decimal("20"))
-
-    def test_import_rows_raises_when_product_name_and_supplier_link_both_absent(self):
-        with self.assertRaises(ValueError) as ctx:
-            self.service.import_rows(
-                company=self.company,
-                supplier=self.supplier,
-                rows=[
-                    {
-                        "product_name": None,
-                        "variant_name": "Red",
-                        "unit_price": "10",
-                        "supplier_link": None,
-                        "category_id": str(self.category.id),
-                    }
-                ],
-            )
-        self.assertIn("product_name or supplier_link is required", str(ctx.exception))
-
-    def test_reimport_with_supplier_link_added_updates_not_duplicates(self):
-        """Re-importing same item with supplier_link added must update, not create a duplicate."""
-        self.service.import_rows(
-            company=self.company,
-            supplier=self.supplier,
-            rows=[
-                {
-                    "product_name": "Widget A",
-                    "variant_name": "Red",
-                    "unit_price": "10",
-                    "supplier_link": None,
-                    "category_id": str(self.category.id),
-                }
-            ],
-        )
-        pool = SourcingPool.objects.get(company=self.company, supplier=self.supplier)
-        self.assertEqual(pool.items.count(), 1)
-
-        result = self.service.import_rows(
-            company=self.company,
-            supplier=self.supplier,
-            rows=[
-                {
-                    "product_name": "Widget A",
-                    "variant_name": "Red",
-                    "unit_price": "20",
-                    "supplier_link": "https://shop.com/x",
-                    "category_id": str(self.category.id),
-                }
-            ],
-        )
-        self.assertEqual(result["created"], 0)
-        self.assertEqual(result["updated"], 1)
-        self.assertEqual(pool.items.count(), 1)
-        item = pool.items.first()
-        self.assertEqual(item.unit_price, Decimal("20"))
-        self.assertEqual(item.supplier_link, "https://shop.com/x")
-
-
-class TestPhaseD(TestCase):
-    """Phase D — add_draft_line and finalize_draft_line with null product_name and dim fields."""
-
-    def setUp(self):
-        self.company = CompanyFactory()
-        self.warehouse = WarehouseFactory(company=self.company)
-        self.category = CategoryFactory(company=self.company)
-        self.product = ProductFactory(category=self.category, company=self.company)
-        self.product_variant = ProductVariantFactory(product=self.product)
-        self.service = PurchaseOrderService()
-
-    def test_add_draft_line_uses_unnamed_prefix_when_product_name_null(self):
-        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
-        pool = SourcingPoolFactory(
-            company=self.company, supplier=SupplierFactory(company=self.company)
-        )
-        sourcing_item = SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            product_name=None,
-            variant_name="White",
-            category=self.category,
-            unit_price=Decimal("10.000"),
-        )
-        detail = self.service.add_draft_line(
-            po=po,
-            sourcing_item_id=str(sourcing_item.id),
-            ordered_qty=5,
-        )
-        self.assertEqual(detail.draft_product_name, "(Unnamed) / White")
-
-    def test_finalize_draft_line_requires_product_name_when_pool_item_has_none(self):
-        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
-        pool = SourcingPoolFactory(
-            company=self.company, supplier=SupplierFactory(company=self.company)
-        )
-        sourcing_item = SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            product_name=None,
-            variant_name="Blue",
-            category=self.category,
-            unit_price=Decimal("10.000"),
-        )
-        detail = self.service.add_draft_line(
-            po=po,
-            sourcing_item_id=str(sourcing_item.id),
-            ordered_qty=5,
-        )
-        # Call without product_name — should raise
-        with self.assertRaises(ValidationError) as ctx:
-            self.service.finalize_draft_line(
-                detail=detail,
-                sku_suffix="X",
-                product_name=None,
-            )
-        self.assertIn("product_name is required", str(ctx.exception))
-
-        # Call with product_name — should succeed
-        result = self.service.finalize_draft_line(
-            detail=detail,
-            sku_suffix="X",
-            product_name="My Product",
-            category_id=str(self.category.id),
-        )
-        self.assertIsNotNone(result.product_variant)
-        self.assertEqual(result.product_variant.product.name, "My Product")
-
-    def test_finalize_draft_line_sets_dim1_on_created_product(self):
-        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
-        pool = SourcingPoolFactory(
-            company=self.company, supplier=SupplierFactory(company=self.company)
-        )
-        sourcing_item = SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            product_name="Dim Product",
-            variant_name="Default",
-            category=self.category,
-            unit_price=Decimal("10.000"),
-        )
-        detail = self.service.add_draft_line(
-            po=po,
-            sourcing_item_id=str(sourcing_item.id),
-            ordered_qty=5,
-        )
-        result = self.service.finalize_draft_line(
-            detail=detail,
-            sku_suffix="DIM1",
-            category_id=str(self.category.id),
-            product_name="Dim Product",
-            dim1_key="Warna",
-            dim1_value="Putih",
-        )
-        created_product = result.product_variant.product
-        self.assertEqual(created_product.dim1_key, "Warna")
-        self.assertEqual(created_product.dim1_options, ["Putih"])
-        self.assertEqual(result.product_variant.variant_values, {"Warna": "Putih"})
-
-    def test_finalize_draft_line_with_two_dimensions(self):
-        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
-        pool = SourcingPoolFactory(
-            company=self.company, supplier=SupplierFactory(company=self.company)
-        )
-        sourcing_item = SourcingPoolItemFactory(
-            pool=pool,
-            company=self.company,
-            product_name="2Dim Product",
-            variant_name="Default",
-            category=self.category,
-            unit_price=Decimal("10.000"),
-        )
-        detail = self.service.add_draft_line(
-            po=po,
-            sourcing_item_id=str(sourcing_item.id),
-            ordered_qty=5,
-        )
-        result = self.service.finalize_draft_line(
-            detail=detail,
-            sku_suffix="DIM2",
-            category_id=str(self.category.id),
-            product_name="2Dim Product",
-            dim1_key="Warna",
-            dim1_value="Putih",
-            dim2_key="Ukuran",
-            dim2_value="M",
-        )
-        created_product = result.product_variant.product
-        self.assertEqual(created_product.dim1_key, "Warna")
-        self.assertEqual(created_product.dim2_key, "Ukuran")
-        self.assertEqual(created_product.dim1_options, ["Putih"])
-        self.assertEqual(created_product.dim2_options, ["M"])
-        self.assertEqual(
-            result.product_variant.variant_values,
-            {"Warna": "Putih", "Ukuran": "M"},
-        )
-
-
-class TestPhase3DraftLines(TestCase):
-    """Phase 3 — Draft PO line infrastructure tests."""
-
-    def setUp(self):
-        self.company = CompanyFactory()
-        self.warehouse = WarehouseFactory(company=self.company)
-        self.category = CategoryFactory(company=self.company)
-        self.product = ProductFactory(category=self.category, company=self.company)
-        self.product_variant = ProductVariantFactory(product=self.product)
-        self.service = PurchaseOrderService()
-        self.po = PurchaseOrderFactory(
-            warehouse=self.warehouse,
-            company=self.company,
-            exchange_rate=2200,
-        )
-        self.supplier = SupplierFactory(company=self.company)
-        self.pool = SourcingPoolFactory(company=self.company, supplier=self.supplier)
-        self.sourcing_item = SourcingPoolItemFactory(
-            pool=self.pool,
-            company=self.company,
-            product_name="Widget",
-            variant_name="Red",
-            category=self.category,
-            unit_price=Decimal("10.000"),
-        )
-
-    # --- Model + migration ---
-
-    def test_draft_detail_str_shows_draft_prefix(self):
-        """PurchaseOrderDetail with product_variant=None shows [Draft] prefix."""
-        detail = PurchaseOrderDetail.objects.create(
-            purchase_order=self.po,
-            company=self.company,
-            product_variant=None,
-            sourcing_item=self.sourcing_item,
-            draft_product_name="Widget / Red",
-            ordered_qty=5,
-        )
-        expected = f"{self.po.purchase_order_number} - [Draft] Widget / Red"
-        self.assertEqual(str(detail), expected)
-
-    def test_regular_detail_str_unchanged(self):
-        """str still works for a detail with product_variant set."""
-        detail = PurchaseOrderDetailFactory(
-            purchase_order=self.po,
-            product_variant=self.product_variant,
-            company=self.company,
-        )
-        expected = f"{self.po.purchase_order_number} - {self.product_variant.sku_variant_code}"
-        self.assertEqual(str(detail), expected)
-
-    # --- add_draft_line service method ---
-
-    def test_add_draft_line_happy_path(self):
-        """Creates PurchaseOrderDetail with product_variant=None, sourcing_item set, etc."""
-        detail = self.service.add_draft_line(
-            po=self.po,
-            sourcing_item_id=str(self.sourcing_item.id),
-            ordered_qty=5,
-        )
-        self.assertIsNone(detail.product_variant_id)
-        self.assertEqual(detail.sourcing_item_id, self.sourcing_item.id)
-        self.assertEqual(detail.draft_product_name, "Widget / Red")
-        self.assertEqual(detail.ordered_qty, 5)
-        self.sourcing_item.refresh_from_db()
-        self.assertEqual(self.sourcing_item.times_ordered, 1)
-
-    def test_add_draft_line_uses_pool_item_price_when_no_override(self):
-        """unit_price_foreign defaults to sourcing_item.unit_price."""
-        detail = self.service.add_draft_line(
-            po=self.po,
-            sourcing_item_id=str(self.sourcing_item.id),
-            ordered_qty=5,
-        )
-        self.assertEqual(detail.unit_price_foreign, Decimal("10.000"))
-
-    def test_add_draft_line_uses_override_price(self):
-        """unit_price_foreign uses the override when provided."""
-        detail = self.service.add_draft_line(
-            po=self.po,
-            sourcing_item_id=str(self.sourcing_item.id),
-            ordered_qty=5,
-            unit_price_foreign=Decimal("99.000"),
-        )
-        self.assertEqual(detail.unit_price_foreign, Decimal("99.000"))
-
-    def test_add_draft_line_duplicate_raises(self):
-        """Adding the same sourcing item twice raises ValidationError."""
-        self.service.add_draft_line(
-            po=self.po,
-            sourcing_item_id=str(self.sourcing_item.id),
-            ordered_qty=5,
-        )
-        with self.assertRaises(ValidationError):
-            self.service.add_draft_line(
-                po=self.po,
-                sourcing_item_id=str(self.sourcing_item.id),
-                ordered_qty=5,
-            )
-
-    def test_add_draft_line_on_ordered_po_succeeds(self):
-        """Adding a draft line to an ORDERED PO (not just DRAFT) is allowed."""
-        self.po.status = PurchaseOrder.POStatus.ORDERED
-        self.po.save()
-        detail = self.service.add_draft_line(
-            po=self.po,
-            sourcing_item_id=str(self.sourcing_item.id),
-            ordered_qty=3,
-        )
-        self.assertIsNone(detail.product_variant)
-        self.assertEqual(detail.sourcing_item, self.sourcing_item)
-        self.sourcing_item.refresh_from_db()
-        self.assertEqual(self.sourcing_item.times_ordered, 1)
-
-    def test_add_draft_line_rejects_non_draft_po(self):
-        """PO with status SHIPPED raises ValidationError."""
-        self.po.status = PurchaseOrder.POStatus.SHIPPED
-        self.po.save()
-        with self.assertRaises(ValidationError):
-            self.service.add_draft_line(
-                po=self.po,
-                sourcing_item_id=str(self.sourcing_item.id),
-                ordered_qty=5,
-            )
-
-    def test_add_draft_line_rejects_zero_qty(self):
-        """ordered_qty=0 raises ValidationError."""
-        with self.assertRaises(ValidationError):
-            self.service.add_draft_line(
-                po=self.po,
-                sourcing_item_id=str(self.sourcing_item.id),
-                ordered_qty=0,
-            )
-
-    # --- DELIVERED gate ---
-
-    def test_delivered_gate_blocked_by_draft_lines(self):
-        """check_purchase_order_requirements for DELIVERED returns order_details missing."""
-        self.service.add_draft_line(
-            po=self.po,
-            sourcing_item_id=str(self.sourcing_item.id),
-            ordered_qty=5,
-        )
-        missing = self.service.check_purchase_order_requirements(
-            self.po, PurchaseOrder.POStatus.DELIVERED
-        )
-        field_names = {item["field"] for item in missing}
-        self.assertIn("order_details", field_names)
-
-    def test_delivered_gate_passes_when_all_lines_finalized(self):
-        """After finalize_draft_line, the DELIVERED gate passes."""
-        detail = self.service.add_draft_line(
-            po=self.po,
-            sourcing_item_id=str(self.sourcing_item.id),
-            ordered_qty=5,
-        )
-        self.service.finalize_draft_line(
-            detail=detail,
-            sku_suffix="SKU-TEST",
-        )
-        missing = self.service.check_purchase_order_requirements(
-            self.po, PurchaseOrder.POStatus.DELIVERED
-        )
-        field_names = {item["field"] for item in missing}
-        self.assertNotIn("order_details", field_names)
-
-    # --- finalize_draft_line service method ---
-
-    def test_finalize_draft_line_creates_product_and_variant(self):
-        """Creates a Product and ProductVariant; detail updated."""
-        detail = self.service.add_draft_line(
-            po=self.po,
-            sourcing_item_id=str(self.sourcing_item.id),
-            ordered_qty=5,
-        )
-        result = self.service.finalize_draft_line(
-            detail=detail,
-            sku_suffix="SKU-TEST",
-        )
-        result.refresh_from_db()
-        self.assertIsNotNone(result.product_variant_id)
-        self.assertIsNone(result.sourcing_item_id)
-        self.assertEqual(result.draft_product_name, "")
-
-    def test_finalize_uses_pool_item_product_name_when_no_override(self):
-        """Product.name equals sourcing_item.product_name when product_name=None."""
-        detail = self.service.add_draft_line(
-            po=self.po,
-            sourcing_item_id=str(self.sourcing_item.id),
-            ordered_qty=5,
-        )
-        result = self.service.finalize_draft_line(
-            detail=detail,
-            sku_suffix="SKU-TEST",
-        )
-        self.assertEqual(result.product_variant.product.name, "Widget")
-
-    def test_finalize_uses_override_product_name(self):
-        """product_name='Custom' → Product.name is 'Custom'."""
-        detail = self.service.add_draft_line(
-            po=self.po,
-            sourcing_item_id=str(self.sourcing_item.id),
-            ordered_qty=5,
-        )
-        result = self.service.finalize_draft_line(
-            detail=detail,
-            sku_suffix="SKU-TEST",
-            product_name="Custom",
-        )
-        self.assertEqual(result.product_variant.product.name, "Custom")
-
-    def test_finalize_raises_on_already_finalized_detail(self):
-        """Calling finalize_draft_line on a detail with product_variant raises ValidationError."""
-        detail = self.service.add_draft_line(
-            po=self.po,
-            sourcing_item_id=str(self.sourcing_item.id),
-            ordered_qty=5,
-        )
-        self.service.finalize_draft_line(detail=detail, sku_suffix="SKU-TEST")
-        with self.assertRaises(ValidationError):
-            self.service.finalize_draft_line(detail=detail, sku_suffix="SKU-AGAIN")
-
-    def test_finalize_raises_on_regular_detail(self):
-        """Calling finalize_draft_line on a regular (non-draft) detail raises ValidationError."""
-        detail = PurchaseOrderDetailFactory(
-            purchase_order=self.po,
-            product_variant=self.product_variant,
-            company=self.company,
-        )
-        with self.assertRaises(ValidationError):
-            self.service.finalize_draft_line(detail=detail, sku_suffix="SKU-TEST")
-
-    def test_finalize_blank_sku_suffix_raises(self):
-        """sku_suffix='' raises ValidationError."""
-        detail = self.service.add_draft_line(
-            po=self.po,
-            sourcing_item_id=str(self.sourcing_item.id),
-            ordered_qty=5,
-        )
-        with self.assertRaises(ValidationError):
-            self.service.finalize_draft_line(detail=detail, sku_suffix="")
-
-    def test_finalize_duplicate_sku_raises_validation_error(self):
-        """Finalize converts IntegrityError from duplicate SKU into ValidationError, not a 500."""
-        from django.db import IntegrityError
-
-        detail = self.service.add_draft_line(
-            po=self.po,
-            sourcing_item_id=str(self.sourcing_item.id),
-            ordered_qty=5,
-        )
-        with patch(
-            "apps.inventory.services.product_service.ProductService.create_product_with_variants",
-            side_effect=IntegrityError("unique constraint violated"),
-        ):
-            with self.assertRaises(ValidationError) as ctx:
-                self.service.finalize_draft_line(
-                    detail=detail,
-                    sku_suffix="DUPE-001",
-                    category_id=str(self.category.id),
-                )
-        self.assertIn("already exists", str(ctx.exception))
-        # Detail must remain in draft state — transaction rolled back.
-        detail.refresh_from_db()
-        self.assertIsNone(detail.product_variant)
-        self.assertIsNotNone(detail.sourcing_item_id)
-
-    def test_full_draft_line_lifecycle_stock_and_cogs_created(self):
-        """End-to-end: add_draft_line → finalize → InventoryService ORDERED + DELIVERED → stock + COGS."""
-        from apps.inventory.services.inventory_service import InventoryService
-
-        # Set exchange rate so base prices can be computed at finalization.
-        self.po.exchange_rate = Decimal("15000.000")
-        self.po.save()
-
-        # Add draft line.
-        detail = self.service.add_draft_line(
-            po=self.po,
-            sourcing_item_id=str(self.sourcing_item.id),
-            ordered_qty=10,
-            unit_price_foreign=Decimal("20.000"),
-        )
-
-        # Finalize: creates Product + Variant and recomputes base prices.
-        detail = self.service.finalize_draft_line(
-            detail=detail,
-            sku_suffix="LIFECYCLE-001",
-            category_id=str(self.category.id),
-        )
-        self.assertIsNotNone(detail.product_variant)
-        self.assertIsNone(detail.sourcing_item)
-        detail.refresh_from_db()
-        self.assertIsNotNone(detail.unit_price_base)
-        self.assertGreater(detail.unit_price_base, 0)
-
-        variant_id = str(detail.product_variant.id)
-        warehouse = self.po.warehouse
-        inv = InventoryService()
-
-        # Simulate ORDERED: records incoming stock.
-        ordered_data = [
-            {
-                "product_variant_id": variant_id,
-                "ordered_qty": 10,
-                "note": "test",
-            }
+    def test_missing_product_names_detected(self):
+        headers = [
+            "product_name",
+            "dim1_key",
+            "dim1_value",
+            "dim2_key",
+            "dim2_value",
+            "supplier_link",
+            "unit_price",
         ]
-        inv.update_stock_on_po(
-            po=self.po, new_status=PurchaseOrder.POStatus.ORDERED, data=ordered_data
+        rows = [["", "Warna", "Putih", "", "", "", "50000"]]
+        file_bytes = self._build_workbook(headers, rows)
+        result = self.service.parse_excel_preview(file_bytes, self.company)
+        self.assertEqual(result["missing_product_names"], [])
+        self.assertTrue(
+            any("product_name or supplier_link" in e["message"] for e in result["errors"])
         )
 
-        # Simulate DELIVERED: creates COGS layer + updates physical qty.
-        delivered_data = [
-            {
-                "product_variant_id": variant_id,
-                "ordered_qty": 10,
-                "received_qty": 10,
-                "updated_qty": 0,
-                "unit_price_base": detail.unit_price_base,
-                "unit_price_foreign": Decimal("20.000"),
-                "discounted_unit_price_foreign": Decimal("20.000"),
-                "discounted_total_price_base": detail.discounted_total_price_base or 0,
-                "exchange_rate": Decimal("15000.000"),
-                "note": "test",
-            }
+    def test_product_name_blank_with_supplier_link_not_missing(self):
+        headers = ["product_name", "supplier_link", "unit_price"]
+        rows = [["", "https://shop.com/x", "50000"]]
+        file_bytes = self._build_workbook(headers, rows)
+        result = self.service.parse_excel_preview(file_bytes, self.company)
+        self.assertEqual(result["missing_product_names"], [])
+
+    def test_dim_mismatch_detected_variant_code_and_dim1_both_filled(self):
+        headers = [
+            "variant_code",
+            "product_name",
+            "dim1_key",
+            "dim1_value",
+            "dim2_key",
+            "dim2_value",
+            "unit_price",
+            "supplier_link",
         ]
-        inv.update_stock_on_po(
-            po=self.po, new_status=PurchaseOrder.POStatus.DELIVERED, data=delivered_data
-        )
-        inv.update_cogs_on_po(
-            po=self.po, new_status=PurchaseOrder.POStatus.DELIVERED, data=delivered_data
+        rows = [["SKU-001", "Produk", "Warna", "Putih", "", "", "50000", "https://shop.com/x"]]
+        file_bytes = self._build_workbook(headers, rows)
+        result = self.service.parse_excel_preview(file_bytes, self.company)
+        self.assertEqual(len(result["dim_mismatches"]), 1)
+        self.assertEqual(result["dim_mismatches"][0]["variant_code"], "SKU-001")
+
+    def test_dim1_key_filled_dim1_value_blank_errors(self):
+        headers = ["product_name", "dim1_key", "dim1_value", "unit_price", "supplier_link"]
+        rows = [["Produk", "Warna", "", "50000", "https://shop.com/x"]]
+        file_bytes = self._build_workbook(headers, rows)
+        result = self.service.parse_excel_preview(file_bytes, self.company)
+        self.assertTrue(any("dim1_value" in e["message"] for e in result["errors"]))
+
+    def test_dim2_key_filled_dim2_value_blank_errors(self):
+        headers = [
+            "product_name",
+            "dim1_key",
+            "dim1_value",
+            "dim2_key",
+            "dim2_value",
+            "unit_price",
+            "supplier_link",
+        ]
+        rows = [["Produk", "Warna", "Putih", "Ukuran", "", "50000", "https://shop.com/x"]]
+        file_bytes = self._build_workbook(headers, rows)
+        result = self.service.parse_excel_preview(file_bytes, self.company)
+        self.assertTrue(any("dim2_value" in e["message"] for e in result["errors"]))
+
+    def test_product_name_and_supplier_link_and_variant_code_all_blank_errors(self):
+        headers = ["product_name", "supplier_link", "variant_code", "unit_price"]
+        rows = [["", "", "", "50000"]]
+        file_bytes = self._build_workbook(headers, rows)
+        result = self.service.parse_excel_preview(file_bytes, self.company)
+        self.assertTrue(
+            any("product_name or supplier_link" in e["message"] for e in result["errors"])
         )
 
-        pvw = ProductVariantWarehouse.objects.filter(
-            product_variant_id=variant_id, warehouse=warehouse
-        ).first()
-        self.assertIsNotNone(pvw, "ProductVariantWarehouse must exist after DELIVERED")
-        self.assertGreater(pvw.physical_qty, 0, "physical_qty must be > 0 after receiving stock")
+    def test_variant_code_present_valid_even_without_product_name(self):
+        headers = ["variant_code", "product_name", "supplier_link", "unit_price"]
+        rows = [["VC-001", "", "", "50000"]]
+        file_bytes = self._build_workbook(headers, rows)
+        result = self.service.parse_excel_preview(file_bytes, self.company)
+        self.assertEqual(len(result["valid"]), 1)
+        self.assertEqual(result["valid"][0]["variant_code"], "VC-001")
 
-        cogs = ProductCogs.objects.filter(
-            product_variant_id=variant_id,
-            warehouse=warehouse,
-        ).first()
-        self.assertIsNotNone(cogs, "ProductCogs FIFO layer must be created after DELIVERED")
-        self.assertGreater(cogs.remaining_qty, 0, "COGS remaining_qty must be > 0")
+    def test_unit_price_blank_errors(self):
+        headers = ["product_name", "unit_price", "supplier_link"]
+        rows = [["Produk", "", "https://shop.com/x"]]
+        file_bytes = self._build_workbook(headers, rows)
+        result = self.service.parse_excel_preview(file_bytes, self.company)
+        self.assertTrue(any("unit_price is required" in e["message"] for e in result["errors"]))
 
-    # --- Null guard tests ---
+    def test_inconsistent_dim1_key_across_rows_errors(self):
+        headers = [
+            "product_name",
+            "dim1_key",
+            "dim1_value",
+            "dim2_key",
+            "dim2_value",
+            "category_code",
+            "unit_price",
+            "supplier_link",
+        ]
+        rows = [
+            ["Produk", "Warna", "Putih", "Ukuran", "S", "TEST", "50000", "https://shop.com/x"],
+            ["Produk", "Color", "Hitam", "Ukuran", "M", "TEST", "50000", "https://shop.com/x"],
+        ]
+        file_bytes = self._build_workbook(headers, rows)
+        result = self.service.parse_excel_preview(file_bytes, self.company)
+        self.assertTrue(any("Inconsistent dim1_key" in e["message"] for e in result["errors"]))
 
-    def test_snapshot_sales_metrics_skips_draft_lines(self):
-        """_snapshot_sales_metrics_at_ordered runs without error with draft lines."""
-        PurchaseOrderDetailFactory(
-            purchase_order=self.po,
-            product_variant=self.product_variant,
-            company=self.company,
-            ordered_qty=10,
-        )
-        self.service.add_draft_line(
-            po=self.po,
-            sourcing_item_id=str(self.sourcing_item.id),
-            ordered_qty=5,
-        )
-        self.service._snapshot_sales_metrics_at_ordered(self.po)
+    def test_inconsistent_category_code_across_rows_errors(self):
+        headers = [
+            "product_name",
+            "dim1_key",
+            "dim1_value",
+            "dim2_key",
+            "dim2_value",
+            "category_code",
+            "unit_price",
+            "supplier_link",
+        ]
+        rows = [
+            ["Produk", "Warna", "Putih", "Ukuran", "S", "CAT-A", "50000", "https://shop.com/x"],
+            ["Produk", "Warna", "Hitam", "Ukuran", "M", "CAT-B", "50000", "https://shop.com/x"],
+        ]
+        file_bytes = self._build_workbook(headers, rows)
+        result = self.service.parse_excel_preview(file_bytes, self.company)
+        self.assertTrue(any("Inconsistent category_code" in e["message"] for e in result["errors"]))
 
-    def test_recalculate_forecast_cbm_skips_draft_lines(self):
-        """_recalculate_forecast_cbm skips draft lines; regular detail's CBM is counted."""
-        self.product.length = 20
-        self.product.width = 10
-        self.product.height = 5
-        self.product.save()
-        PurchaseOrderDetailFactory(
-            purchase_order=self.po,
-            product_variant=self.product_variant,
-            company=self.company,
-            ordered_qty=10,
-        )
-        self.service.add_draft_line(
-            po=self.po,
-            sourcing_item_id=str(self.sourcing_item.id),
-            ordered_qty=5,
-        )
-        self.service._recalculate_forecast_cbm(self.po)
-        self.po.refresh_from_db()
-        expected_cbm = Decimal("20") * Decimal("10") * Decimal("5") / Decimal("1000000") * 10
-        self.assertEqual(self.po.forecast_cbm, round(expected_cbm, 6))
+    def test_missing_unit_price_column_header_file_error(self):
+        headers = ["product_name", "supplier_link"]
+        rows = [["Produk", "https://shop.com/x"]]
+        file_bytes = self._build_workbook(headers, rows)
+        result = self.service.parse_excel_preview(file_bytes, self.company)
+        self.assertTrue(any("Missing required columns" in e["message"] for e in result["errors"]))
+        self.assertEqual(result["valid"], [])
 
-    def test_ordered_transition_inventory_data_skips_draft_lines(self):
-        """update_purchase_order with ORDERED does not call inventory_service for draft lines."""
-        PurchaseOrderDetailFactory(
-            purchase_order=self.po,
-            product_variant=self.product_variant,
-            company=self.company,
-            ordered_qty=10,
-        )
-        self.service.add_draft_line(
-            po=self.po,
-            sourcing_item_id=str(self.sourcing_item.id),
-            ordered_qty=5,
-        )
-        with patch.object(InventoryService, "update_stock_on_po") as mock_update:
-            self.service.update_purchase_order(
-                self.po,
-                {
-                    "status": PurchaseOrder.POStatus.ORDERED,
-                    "purchase_order_invoice_file": "invoice.pdf",
-                    "invoice_number": "INV-001",
-                    "invoice_date": date.today(),
-                    "commission_fee_pct": 5,
-                    "forwarder_name": "Forwarder",
-                    "supplier_name": "Supplier",
-                    "shop_services": "Service",
-                    "delivery_fee": 0,
-                },
-            )
-            call_data = mock_update.call_args[1]["data"]
-            variant_ids_in_call = [item["product_variant_id"] for item in call_data]
-            self.assertEqual(len(variant_ids_in_call), 1)
-            self.assertIn(str(self.product_variant.id), variant_ids_in_call)
+    # ===== generate_variant_suffix tests =====
 
-    def test_transition_warnings_skips_draft_lines_for_partial_receipt(self):
-        """get_transition_warnings for COMPLETED with draft line returns no AttributeError."""
-        PurchaseOrderDetailFactory(
-            purchase_order=self.po,
-            product_variant=self.product_variant,
-            company=self.company,
-            ordered_qty=100,
-            received_qty=80,
-        )
-        self.service.add_draft_line(
-            po=self.po,
-            sourcing_item_id=str(self.sourcing_item.id),
-            ordered_qty=5,
-        )
-        warnings = self.service.get_transition_warnings(self.po, PurchaseOrder.POStatus.COMPLETED)
-        self.assertEqual(len(warnings), 1)
-        self.assertEqual(warnings[0]["type"], "partial_receipt")
+    def test_2d_product_dim2_first_dim1_second_in_suffix(self):
+        from apps.purchasing.services.sourcing_service import generate_variant_suffix
 
-    # --- API endpoint tests ---
+        result = generate_variant_suffix("Warna", "Putih", "Ukuran", "S", {"putih": "WHT"})
+        self.assertEqual(result, "S-WHT")
 
-    def test_api_add_draft_line_returns_201(self):
-        """POST to draft-lines endpoint → HTTP 201."""
+    def test_1d_product_only_dim1_color(self):
+        from apps.purchasing.services.sourcing_service import generate_variant_suffix
+
+        result = generate_variant_suffix("Warna", "Putih", "", "", {"putih": "WHT"})
+        self.assertEqual(result, "WHT")
+
+    def test_1d_product_only_dim2_size(self):
+        from apps.purchasing.services.sourcing_service import generate_variant_suffix
+
+        result = generate_variant_suffix("", "", "Ukuran", "S", {})
+        self.assertEqual(result, "S")
+
+    def test_color_not_in_map_raw_value_uppercased(self):
+        from apps.purchasing.services.sourcing_service import generate_variant_suffix
+
+        result = generate_variant_suffix("Warna", "Dusty Rose", "", "", {})
+        self.assertEqual(result, "DUSTY ROSE")
+
+    def test_both_dims_empty_empty_suffix(self):
+        from apps.purchasing.services.sourcing_service import generate_variant_suffix
+
+        result = generate_variant_suffix("", "", "", "", {})
+        self.assertEqual(result, "")
+
+    def test_non_color_dim_key_value_uppercased_directly(self):
+        from apps.purchasing.services.sourcing_service import generate_variant_suffix
+
+        result = generate_variant_suffix("Material", "Cotton", "Size", "M", {})
+        self.assertEqual(result, "M-COTTON")
+
+    # ===== ColorAbbreviation API tests =====
+    def test_get_color_abbreviations_returns_list(self):
+        from rest_framework.test import APIClient
+
         from core.models import UserProfile
 
+        ColorAbbreviation.objects.create(
+            company=self.company, color_name="Putih", abbreviation="PTH"
+        )
+        ColorAbbreviation.objects.create(
+            company=self.company, color_name="Merah", abbreviation="MRH"
+        )
+        user = User.objects.create_user(username="color_api1", password="p", is_staff=True)
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
         client = APIClient()
-        user = User.objects.create_user(username="phase3_api", password="p", is_staff=True)
+        client.force_authenticate(user=user)
+        response = client.get("/sourcing-pool/color-abbreviations/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 2)
+
+    def test_post_creates_new_color_abbreviation(self):
+        from rest_framework.test import APIClient
+
+        from core.models import UserProfile
+
+        user = User.objects.create_user(username="color_api2", password="p", is_staff=True)
         UserProfile.objects.create(user=user, company=self.company, role="admin")
+        client = APIClient()
         client.force_authenticate(user=user)
         response = client.post(
-            f"/purchase-order/{self.po.id}/draft-lines/",
-            {"sourcing_item_id": str(self.sourcing_item.id), "ordered_qty": 5},
+            "/sourcing-pool/color-abbreviations/",
+            {"color_name": "Dusty Rose", "abbreviation": "DSR"},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertIn("detail_id", response.data)
+        self.assertTrue(
+            ColorAbbreviation.objects.filter(company=self.company, color_name="Dusty Rose").exists()
+        )
 
-    def test_api_add_draft_line_duplicate_returns_400(self):
-        """Second identical POST → HTTP 400."""
+    def test_post_same_color_name_updates_abbreviation(self):
+        from rest_framework.test import APIClient
+
         from core.models import UserProfile
 
-        client = APIClient()
-        user = User.objects.create_user(username="phase3_api2", password="p", is_staff=True)
-        UserProfile.objects.create(user=user, company=self.company, role="admin")
-        client.force_authenticate(user=user)
-        client.post(
-            f"/purchase-order/{self.po.id}/draft-lines/",
-            {"sourcing_item_id": str(self.sourcing_item.id), "ordered_qty": 5},
-            format="json",
+        ColorAbbreviation.objects.create(
+            company=self.company, color_name="Dusty Rose", abbreviation="DSR"
         )
-        response = client.post(
-            f"/purchase-order/{self.po.id}/draft-lines/",
-            {"sourcing_item_id": str(self.sourcing_item.id), "ordered_qty": 5},
-            format="json",
-        )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-
-    def test_api_add_draft_line_missing_sourcing_item_id_returns_400(self):
-        """Omit sourcing_item_id → HTTP 400."""
-        from core.models import UserProfile
-
-        client = APIClient()
-        user = User.objects.create_user(username="phase3_api3", password="p", is_staff=True)
+        user = User.objects.create_user(username="color_api3", password="p", is_staff=True)
         UserProfile.objects.create(user=user, company=self.company, role="admin")
+        client = APIClient()
         client.force_authenticate(user=user)
         response = client.post(
-            f"/purchase-order/{self.po.id}/draft-lines/",
-            {"ordered_qty": 5},
-            format="json",
-        )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-
-    def test_api_finalize_draft_line_returns_200(self):
-        """POST to details/{id}/finalize/ → HTTP 200."""
-        from core.models import UserProfile
-
-        client = APIClient()
-        user = User.objects.create_user(username="phase3_fin1", password="p", is_staff=True)
-        UserProfile.objects.create(user=user, company=self.company, role="admin")
-        client.force_authenticate(user=user)
-        detail = self.service.add_draft_line(
-            po=self.po,
-            sourcing_item_id=str(self.sourcing_item.id),
-            ordered_qty=5,
-        )
-        response = client.post(
-            f"/purchase-order/{self.po.id}/details/{detail.id}/finalize/",
-            {"sku_suffix": "SKU-TEST"},
+            "/sourcing-pool/color-abbreviations/",
+            {"color_name": "Dusty Rose", "abbreviation": "DSR2"},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertIn("detail_id", response.data)
-        self.assertIn("variant_id", response.data)
+        obj = ColorAbbreviation.objects.get(company=self.company, color_name="Dusty Rose")
+        self.assertEqual(obj.abbreviation, "DSR2")
 
-    def test_api_finalize_draft_line_missing_sku_suffix_returns_400(self):
-        """Missing sku_suffix → HTTP 400."""
+    def test_post_missing_color_name_returns_400(self):
+        from rest_framework.test import APIClient
+
         from core.models import UserProfile
 
-        client = APIClient()
-        user = User.objects.create_user(username="phase3_fin2", password="p", is_staff=True)
+        user = User.objects.create_user(username="color_api4", password="p", is_staff=True)
         UserProfile.objects.create(user=user, company=self.company, role="admin")
+        client = APIClient()
         client.force_authenticate(user=user)
-        detail = self.service.add_draft_line(
-            po=self.po,
-            sourcing_item_id=str(self.sourcing_item.id),
-            ordered_qty=5,
-        )
         response = client.post(
-            f"/purchase-order/{self.po.id}/details/{detail.id}/finalize/",
+            "/sourcing-pool/color-abbreviations/",
+            {"abbreviation": "XYZ"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_post_missing_abbreviation_returns_400(self):
+        from rest_framework.test import APIClient
+
+        from core.models import UserProfile
+
+        user = User.objects.create_user(username="color_api5", password="p", is_staff=True)
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.post(
+            "/sourcing-pool/color-abbreviations/",
+            {"color_name": "Dusty Rose"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    # ---- DELETE tests ----
+
+    def test_delete_color_abbreviation_success(self):
+        from rest_framework.test import APIClient
+
+        from core.models import UserProfile
+
+        ColorAbbreviation.objects.create(
+            company=self.company, color_name="Dusty Rose", abbreviation="DSR"
+        )
+        user = User.objects.create_user(username="color_del1", password="p", is_staff=True)
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.delete(
+            "/sourcing-pool/color-abbreviations/",
+            {"color_name": "Dusty Rose"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(
+            ColorAbbreviation.objects.filter(company=self.company, color_name="Dusty Rose").exists()
+        )
+
+    def test_delete_color_abbreviation_company_scoping_isolation(self):
+        from rest_framework.test import APIClient
+
+        from core.models import UserProfile
+
+        company_b = CompanyFactory()
+        ColorAbbreviation.objects.create(
+            company=company_b, color_name="Dusty Rose", abbreviation="DSR"
+        )
+        user = User.objects.create_user(username="color_del2", password="p", is_staff=True)
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.delete(
+            "/sourcing-pool/color-abbreviations/",
+            {"color_name": "Dusty Rose"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertTrue(
+            ColorAbbreviation.objects.filter(company=company_b, color_name="Dusty Rose").exists()
+        )
+
+    def test_delete_color_abbreviation_not_found(self):
+        from rest_framework.test import APIClient
+
+        from core.models import UserProfile
+
+        user = User.objects.create_user(username="color_del3", password="p", is_staff=True)
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.delete(
+            "/sourcing-pool/color-abbreviations/",
+            {"color_name": "NonExistent"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_delete_color_abbreviation_missing_color_name_key(self):
+        from rest_framework.test import APIClient
+
+        from core.models import UserProfile
+
+        user = User.objects.create_user(username="color_del4", password="p", is_staff=True)
+        UserProfile.objects.create(user=user, company=self.company, role="admin")
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.delete(
+            "/sourcing-pool/color-abbreviations/",
             {},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("color_name is required", str(response.data))
 
-    def test_api_finalize_non_draft_detail_returns_400(self):
-        """Finalize a regular (non-draft) detail → HTTP 400."""
+    def test_delete_color_abbreviation_empty_string(self):
+        from rest_framework.test import APIClient
+
         from core.models import UserProfile
 
-        client = APIClient()
-        user = User.objects.create_user(username="phase3_fin3", password="p", is_staff=True)
+        user = User.objects.create_user(username="color_del5", password="p", is_staff=True)
         UserProfile.objects.create(user=user, company=self.company, role="admin")
+        client = APIClient()
         client.force_authenticate(user=user)
-        detail = PurchaseOrderDetailFactory(
-            purchase_order=self.po,
-            product_variant=self.product_variant,
-            company=self.company,
-        )
-        response = client.post(
-            f"/purchase-order/{self.po.id}/details/{detail.id}/finalize/",
-            {"sku_suffix": "SKU-TEST"},
+        response = client.delete(
+            "/sourcing-pool/color-abbreviations/",
+            {"color_name": ""},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("color_name is required", str(response.data))
 
-    def test_api_check_transition_to_delivered_blocked_by_draft_line(self):
-        """check_transition with DELIVERED on SHIPPED PO with draft line → order_details in missing_fields."""
+    def test_delete_color_abbreviation_whitespace_only(self):
+        from rest_framework.test import APIClient
+
         from core.models import UserProfile
 
-        client = APIClient()
-        user = User.objects.create_user(username="phase3_ct", password="p", is_staff=True)
+        user = User.objects.create_user(username="color_del6", password="p", is_staff=True)
         UserProfile.objects.create(user=user, company=self.company, role="admin")
-        client.force_authenticate(user=user)
-        self.service.add_draft_line(
-            po=self.po,
-            sourcing_item_id=str(self.sourcing_item.id),
-            ordered_qty=5,
-        )
-        # Advance PO to SHIPPED (valid predecessor for DELIVERED check)
-        self.po.status = PurchaseOrder.POStatus.SHIPPED
-        self.po.save()
-        response = client.post(
-            f"/purchase-order/{self.po.id}/check_transition/",
-            {"status": PurchaseOrder.POStatus.DELIVERED},
-            format="json",
-        )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertFalse(response.data["can_transition"])
-        field_names = {item["field"] for item in response.data["missing_fields"]}
-        self.assertIn("order_details", field_names)
-
-    def test_finalize_raises_when_no_category_available(self):
-        """Pool item with category=None, no category_id → ValidationError."""
-        item_no_cat = SourcingPoolItemFactory(
-            pool=self.pool,
-            company=self.company,
-            product_name="NoCat",
-            variant_name="Item",
-            category=None,
-            unit_price=Decimal("5.000"),
-        )
-        detail = self.service.add_draft_line(
-            po=self.po,
-            sourcing_item_id=str(item_no_cat.id),
-            ordered_qty=5,
-        )
-        with self.assertRaises(ValidationError) as ctx:
-            self.service.finalize_draft_line(detail=detail, sku_suffix="SKU-TEST")
-        self.assertIn("category_id is required", str(ctx.exception))
-
-    def test_finalize_raises_when_no_category_with_api(self):
-        """Same scenario via API → HTTP 400."""
-        from core.models import UserProfile
-
         client = APIClient()
-        user = User.objects.create_user(username="phase3_nocat", password="p", is_staff=True)
-        UserProfile.objects.create(user=user, company=self.company, role="admin")
         client.force_authenticate(user=user)
-        item_no_cat = SourcingPoolItemFactory(
-            pool=self.pool,
-            company=self.company,
-            product_name="NoCat2",
-            variant_name="Item",
-            category=None,
-            unit_price=Decimal("5.000"),
-        )
-        detail = self.service.add_draft_line(
-            po=self.po,
-            sourcing_item_id=str(item_no_cat.id),
-            ordered_qty=5,
-        )
-        response = client.post(
-            f"/purchase-order/{self.po.id}/details/{detail.id}/finalize/",
-            {"sku_suffix": "SKU-TEST"},
+        response = client.delete(
+            "/sourcing-pool/color-abbreviations/",
+            {"color_name": "   "},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("color_name is required", str(response.data))
 
-    def test_draft_line_preserved_when_regular_line_patched(self):
-        """PATCH regular line without including draft line id → draft line survives."""
-        detail_regular = PurchaseOrderDetailFactory(
-            purchase_order=self.po,
-            product_variant=self.product_variant,
-            company=self.company,
-            ordered_qty=10,
+    def test_delete_color_abbreviation_unauthenticated(self):
+        from rest_framework.test import APIClient
+
+        ColorAbbreviation.objects.create(
+            company=self.company, color_name="Dusty Rose", abbreviation="DSR"
         )
-        detail_draft = self.service.add_draft_line(
-            po=self.po,
-            sourcing_item_id=str(self.sourcing_item.id),
-            ordered_qty=5,
-        )
-        with patch(
-            "apps.purchasing.serializers.compress_pdf_iterative",
-            return_value=(ContentFile(b"%PDF-1.4 test", name="test.pdf"), True),
-        ):
-            self.service.update_purchase_order(
-                self.po,
-                {
-                    "order_details": [
-                        {
-                            "id": str(detail_regular.id),
-                            "ordered_qty": 20,
-                        }
-                    ]
-                },
+        client = APIClient()
+        try:
+            response = client.delete(
+                "/sourcing-pool/color-abbreviations/",
+                {"color_name": "Dusty Rose"},
+                format="json",
             )
-        self.assertTrue(PurchaseOrderDetail.objects.filter(id=detail_draft.id).exists())
-        self.assertEqual(PurchaseOrderDetail.objects.get(id=detail_draft.id).ordered_qty, 5)
-
-    def test_sourcing_item_deletion_blocked_when_po_detail_references_it(self):
-        """Delete SourcingPoolItem with draft PO detail → ProtectedError."""
-        self.service.add_draft_line(
-            po=self.po,
-            sourcing_item_id=str(self.sourcing_item.id),
-            ordered_qty=5,
+            self.assertNotEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        except Exception:
+            pass
+        self.assertTrue(
+            ColorAbbreviation.objects.filter(company=self.company, color_name="Dusty Rose").exists()
         )
-        with self.assertRaises(ProtectedError):
-            self.sourcing_item.delete()
 
-    def test_api_patch_draft_line_qty_via_standard_endpoint(self):
-        """PATCH the PO's order_details with draft line id and ordered_qty (no product_variant_id)."""
-        from core.models import UserProfile
 
+class TestStatelessSourcingService(TestCase):
+    """Tests for stateless sourcing flow (import_and_add + resolve_sourcing_conflicts)."""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.category = CategoryFactory(company=self.company, category_code="TEST")
+        self.supplier = SupplierFactory(company=self.company)
+        self.product = ProductFactory(category=self.category, company=self.company)
+        self.variant = ProductVariantFactory(
+            product=self.product, company=self.company, sku_variant_code="EXISTING-SKU"
+        )
+        self.po = PurchaseOrderFactory(
+            company=self.company,
+            warehouse=self.warehouse,
+            supplier_name=self.supplier.name,
+            status=PurchaseOrder.POStatus.DRAFT,
+        )
+        self.service = SourcingProductService()
+
+    # ---- import_and_add: validation ----
+
+    def test_import_and_add_happy_path_prelinked_variant(self):
+        rows = [
+            {
+                "product_name": "Test Product",
+                "variant_name": "Red",
+                "variant_id": str(self.variant.id),
+                "category_id": str(self.category.id),
+                "unit_price": "25.000",
+                "qty_suggested": 10,
+            }
+        ]
+        result = self.service.import_and_add(
+            po=self.po, supplier_id=str(self.supplier.id), rows=rows
+        )
+        self.assertEqual(len(result["added"]), 1)
+        self.assertEqual(len(result["skipped"]), 0)
+        self.assertEqual(len(result["sku_conflicts"]), 0)
+        self.assertEqual(PurchaseOrderDetail.objects.filter(purchase_order=self.po).count(), 1)
+
+    def test_import_and_add_rejects_zero_unit_price(self):
+        rows = [
+            {
+                "product_name": "Test",
+                "variant_name": "Red",
+                "category_id": str(self.category.id),
+                "unit_price": "0",
+            }
+        ]
+        with self.assertRaises(ValidationError) as ctx:
+            self.service.import_and_add(po=self.po, supplier_id=str(self.supplier.id), rows=rows)
+        self.assertIn("unit_price must be > 0", str(ctx.exception))
+
+    def test_import_and_add_rejects_row_without_product_name_supplier_link_or_variant_code(self):
+        rows = [
+            {
+                "product_name": "",
+                "variant_name": "Red",
+                "category_id": str(self.category.id),
+                "unit_price": "10",
+                "supplier_link": "",
+                "variant_code": "",
+            }
+        ]
+        with self.assertRaises(ValidationError) as ctx:
+            self.service.import_and_add(po=self.po, supplier_id=str(self.supplier.id), rows=rows)
+        self.assertIn("product_name, supplier_link", str(ctx.exception))
+
+    def test_import_and_add_discounted_price_gte_unit_price_sets_none(self):
+        rows = [
+            {
+                "product_name": "Test",
+                "variant_name": "Red",
+                "variant_id": str(self.variant.id),
+                "category_id": str(self.category.id),
+                "unit_price": "25.000",
+                "discounted_price": "30.000",
+            }
+        ]
+        result = self.service.import_and_add(
+            po=self.po, supplier_id=str(self.supplier.id), rows=rows
+        )
+        self.assertEqual(len(result["added"]), 1)
+        detail = PurchaseOrderDetail.objects.get(purchase_order=self.po)
+        self.assertEqual(detail.discounted_unit_price_foreign, detail.unit_price_foreign)
+
+    def test_import_and_add_rejects_negative_qty_suggested(self):
+        rows = [
+            {
+                "product_name": "Test",
+                "variant_name": "Red",
+                "variant_id": str(self.variant.id),
+                "category_id": str(self.category.id),
+                "unit_price": "10",
+                "qty_suggested": -1,
+            }
+        ]
+        with self.assertRaises(ValidationError) as ctx:
+            self.service.import_and_add(po=self.po, supplier_id=str(self.supplier.id), rows=rows)
+        self.assertIn("qty_suggested must be >= 0", str(ctx.exception))
+
+    def test_import_and_add_rejects_non_draft_or_ordered_po(self):
+        completed_po = PurchaseOrderFactory(
+            company=self.company,
+            warehouse=self.warehouse,
+            status=PurchaseOrder.POStatus.COMPLETED,
+        )
+        rows = [
+            {
+                "product_name": "Test",
+                "variant_name": "Red",
+                "variant_id": str(self.variant.id),
+                "category_id": str(self.category.id),
+                "unit_price": "10",
+            }
+        ]
+        with self.assertRaises(ValidationError) as ctx:
+            self.service.import_and_add(
+                po=completed_po, supplier_id=str(self.supplier.id), rows=rows
+            )
+        self.assertIn("Cannot add items", str(ctx.exception))
+
+    def test_import_and_add_rejects_invalid_category_id(self):
+        rows = [
+            {
+                "product_name": "Test",
+                "variant_name": "Red",
+                "category_id": "00000000000000000000000000",
+                "unit_price": "10",
+            }
+        ]
+        with self.assertRaises(ValidationError) as ctx:
+            self.service.import_and_add(po=self.po, supplier_id=str(self.supplier.id), rows=rows)
+        self.assertIn("Invalid category_id", str(ctx.exception))
+
+    def test_import_and_add_rejects_invalid_variant_id(self):
+        rows = [
+            {
+                "product_name": "Test",
+                "variant_name": "Red",
+                "variant_id": "00000000000000000000000000",
+                "category_id": str(self.category.id),
+                "unit_price": "10",
+            }
+        ]
+        with self.assertRaises(ValidationError) as ctx:
+            self.service.import_and_add(po=self.po, supplier_id=str(self.supplier.id), rows=rows)
+        self.assertIn("Invalid variant_id", str(ctx.exception))
+
+    # ---- import_and_add: Track A (with variant_code) ----
+
+    def test_import_and_add_track_a_creates_product_and_variant_when_missing(self):
+        rows = [
+            {
+                "product_name": "New Product",
+                "variant_name": "Red",
+                "variant_code": "NP-RED",
+                "category_id": str(self.category.id),
+                "unit_price": "15.000",
+                "qty_suggested": 5,
+            }
+        ]
+        result = self.service.import_and_add(
+            po=self.po, supplier_id=str(self.supplier.id), rows=rows
+        )
+        self.assertEqual(len(result["added"]), 1)
+        self.assertTrue(Product.objects.filter(company=self.company, name="New Product").exists())
+        self.assertTrue(
+            ProductVariant.objects.filter(company=self.company, sku_variant_code="NP-RED").exists()
+        )
+
+    def test_import_and_add_track_a_sku_conflict_when_variant_missing(self):
+        product = ProductFactory(company=self.company, category=self.category, sku_code="NP-X")
+        rows = [
+            {
+                "product_name": "New Product",
+                "variant_name": "Blue",
+                "variant_code": "NP-X-BLUE",
+                "category_id": str(self.category.id),
+                "unit_price": "15.000",
+            }
+        ]
+        result = self.service.import_and_add(
+            po=self.po, supplier_id=str(self.supplier.id), rows=rows
+        )
+        self.assertEqual(len(result["sku_conflicts"]), 1)
+        self.assertEqual(result["sku_conflicts"][0]["sku_code"], "NP-X")
+        self.assertEqual(result["sku_conflicts"][0]["existing_product_id"], str(product.id))
+
+    def test_import_and_add_track_a_links_to_existing_variant(self):
+        product = ProductFactory(company=self.company, category=self.category, sku_code="NP-X")
+        ProductVariant.objects.create(
+            product=product,
+            company=self.company,
+            name="Blue",
+            sku_variant_code="NP-X-BLUE",
+        )
+        rows = [
+            {
+                "product_name": "New Product",
+                "variant_name": "Blue",
+                "variant_code": "NP-X-BLUE",
+                "category_id": str(self.category.id),
+                "unit_price": "15.000",
+            }
+        ]
+        result = self.service.import_and_add(
+            po=self.po, supplier_id=str(self.supplier.id), rows=rows
+        )
+        self.assertEqual(len(result["added"]), 1)
+
+    # ---- import_and_add: Track B (without variant_code) ----
+
+    def test_import_and_add_track_b_creates_product_and_variant(self):
+        rows = [
+            {
+                "product_name": "Track B Product",
+                "variant_name": "Red",
+                "category_id": str(self.category.id),
+                "unit_price": "12.000",
+                "qty_suggested": 3,
+            }
+        ]
+        result = self.service.import_and_add(
+            po=self.po, supplier_id=str(self.supplier.id), rows=rows
+        )
+        self.assertEqual(len(result["added"]), 1)
+        self.assertTrue(
+            Product.objects.filter(company=self.company, name="Track B Product").exists()
+        )
+        self.assertEqual(PurchaseOrderDetail.objects.filter(purchase_order=self.po).count(), 1)
+
+    def test_import_and_add_track_b_creates_variant_with_suffix(self):
+        ColorAbbreviation.objects.create(
+            company=self.company, color_name="Merah", abbreviation="MRH"
+        )
+        rows = [
+            {
+                "product_name": "Batik",
+                "variant_name": "Merah-L",
+                "dim1_key": "Warna",
+                "dim1_value": "Merah",
+                "dim2_key": "Ukuran",
+                "dim2_value": "L",
+                "category_id": str(self.category.id),
+                "unit_price": "50.000",
+            }
+        ]
+        result = self.service.import_and_add(
+            po=self.po, supplier_id=str(self.supplier.id), rows=rows
+        )
+        self.assertEqual(len(result["added"]), 1)
+        variant = ProductVariant.objects.get(company=self.company, product__name="Batik")
+        self.assertIn("MRH", variant.sku_variant_code)
+
+    # ---- import_and_add: dim mismatch resolution ----
+
+    def test_import_and_add_dim_mismatch_resolution_dims_routes_to_track_b(self):
+        rows = [
+            {
+                "product_name": "Dim Product",
+                "variant_name": "Red",
+                "variant_code": "DP-RED",
+                "category_id": str(self.category.id),
+                "unit_price": "20.000",
+            }
+        ]
+        dim_mismatch_resolutions = {"Dim Product||Red": "dims"}
+        result = self.service.import_and_add(
+            po=self.po,
+            supplier_id=str(self.supplier.id),
+            rows=rows,
+            dim_mismatch_resolutions=dim_mismatch_resolutions,
+        )
+        self.assertEqual(len(result["added"]), 1)
+        variant = ProductVariant.objects.get(company=self.company, product__name="Dim Product")
+        # Track B means sku_variant_code is auto-generated, not "DP-RED"
+        self.assertNotEqual(variant.sku_variant_code, "DP-RED")
+
+    # ---- import_and_add: supplier_link based ----
+
+    def test_import_and_add_supplier_link_based_grouping(self):
+        rows = [
+            {
+                "supplier_link": "https://shop.com/item1",
+                "variant_name": "Red",
+                "category_id": str(self.category.id),
+                "unit_price": "10.000",
+            }
+        ]
+        result = self.service.import_and_add(
+            po=self.po, supplier_id=str(self.supplier.id), rows=rows
+        )
+        self.assertEqual(len(result["added"]), 1)
+        detail = PurchaseOrderDetail.objects.get(purchase_order=self.po)
+        self.assertEqual(detail.supplier_link, "https://shop.com/item1")
+
+    # ---- import_and_add: duplicate dedup ----
+
+    def test_import_and_add_duplicate_row_key_deduped(self):
+        rows = [
+            {
+                "product_name": "Dup",
+                "variant_name": "Red",
+                "variant_id": str(self.variant.id),
+                "category_id": str(self.category.id),
+                "unit_price": "10.000",
+            },
+            {
+                "product_name": "Dup",
+                "variant_name": "Red",
+                "variant_id": str(self.variant.id),
+                "category_id": str(self.category.id),
+                "unit_price": "10.000",
+            },
+        ]
+        result = self.service.import_and_add(
+            po=self.po, supplier_id=str(self.supplier.id), rows=rows
+        )
+        self.assertEqual(len(result["added"]), 1)
+
+    # ---- import_and_add: category auto-creation ----
+
+    def test_import_and_add_auto_creates_category_from_code(self):
+        rows = [
+            {
+                "product_name": "Auto Cat",
+                "variant_name": "Red",
+                "variant_id": str(self.variant.id),
+                "category_code": "AUTOCAT",
+                "unit_price": "10.000",
+            }
+        ]
+        result = self.service.import_and_add(
+            po=self.po, supplier_id=str(self.supplier.id), rows=rows
+        )
+        self.assertEqual(len(result["added"]), 1)
+        self.assertTrue(
+            Category.objects.filter(company=self.company, category_code="AUTOCAT").exists()
+        )
+
+    # ---- resolve_sourcing_conflicts ----
+
+    def test_resolve_sourcing_conflicts_add_to_existing(self):
+        existing_product = ProductFactory(
+            company=self.company, category=self.category, sku_code="EXIST"
+        )
+        resolutions = [
+            {
+                "action": "add_to_existing",
+                "product_id": str(existing_product.id),
+                "row": {
+                    "product_name": "Existing Prod",
+                    "variant_name": "Blue",
+                    "category_id": str(self.category.id),
+                    "unit_price": "30.000",
+                    "variant_code": "EXIST-BLUE",
+                },
+            }
+        ]
+        result = self.service.resolve_sourcing_conflicts(po=self.po, resolutions=resolutions)
+        self.assertEqual(len(result["added"]), 1)
+        self.assertTrue(
+            ProductVariant.objects.filter(
+                company=self.company, sku_variant_code="EXIST-BLUE"
+            ).exists()
+        )
+
+    def test_resolve_sourcing_conflicts_skip(self):
+        resolutions = [
+            {
+                "action": "skip",
+                "row": {
+                    "product_name": "Skip Me",
+                    "variant_name": "Red",
+                    "category_id": str(self.category.id),
+                    "unit_price": "10.000",
+                },
+            }
+        ]
+        result = self.service.resolve_sourcing_conflicts(po=self.po, resolutions=resolutions)
+        self.assertEqual(len(result["added"]), 0)
+        self.assertEqual(len(result["skipped"]), 1)
+        self.assertEqual(result["skipped"][0]["reason"], "Skipped by user")
+
+    def test_resolve_sourcing_conflicts_unknown_action(self):
+        resolutions = [
+            {
+                "action": "unknown_action",
+                "row": {
+                    "product_name": "Bad",
+                    "variant_name": "Red",
+                    "category_id": str(self.category.id),
+                    "unit_price": "10.000",
+                },
+            }
+        ]
+        with self.assertRaises(ValidationError) as ctx:
+            self.service.resolve_sourcing_conflicts(po=self.po, resolutions=resolutions)
+        self.assertIn("Unknown action", str(ctx.exception))
+
+    def test_resolve_sourcing_conflicts_missing_product_id(self):
+        resolutions = [
+            {
+                "action": "add_to_existing",
+                "row": {
+                    "product_name": "No Prod",
+                    "variant_name": "Red",
+                    "category_id": str(self.category.id),
+                    "unit_price": "10.000",
+                },
+            }
+        ]
+        with self.assertRaises(ValidationError) as ctx:
+            self.service.resolve_sourcing_conflicts(po=self.po, resolutions=resolutions)
+        self.assertIn("product_id is required", str(ctx.exception))
+
+    def test_resolve_sourcing_conflicts_product_not_found(self):
+        resolutions = [
+            {
+                "action": "add_to_existing",
+                "product_id": "00000000000000000000000000",
+                "row": {
+                    "product_name": "Ghost Prod",
+                    "variant_name": "Red",
+                    "category_id": str(self.category.id),
+                    "unit_price": "10.000",
+                },
+            }
+        ]
+        result = self.service.resolve_sourcing_conflicts(po=self.po, resolutions=resolutions)
+        self.assertEqual(len(result["added"]), 0)
+        self.assertEqual(len(result["skipped"]), 1)
+        self.assertEqual(result["skipped"][0]["reason"], "Product not found")
+
+    def test_resolve_sourcing_conflicts_malformed_product_id_skipped(self):
+        resolutions = [
+            {
+                "action": "add_to_existing",
+                "product_id": "nonexistent-id",
+                "row": {
+                    "product_name": "Bad ID",
+                    "variant_name": "Red",
+                    "category_id": str(self.category.id),
+                    "unit_price": "10.000",
+                },
+            }
+        ]
+        result = self.service.resolve_sourcing_conflicts(po=self.po, resolutions=resolutions)
+        self.assertEqual(len(result["added"]), 0)
+        self.assertEqual(len(result["skipped"]), 1)
+        self.assertEqual(result["skipped"][0]["reason"], "Product not found")
+
+    def test_resolve_sourcing_conflicts_distinct_index_for_rows_without_identity(self):
+        resolutions = [
+            {
+                "action": "skip",
+                "row": {
+                    "variant_name": "Red",
+                    "unit_price": "10.000",
+                },
+            },
+            {
+                "action": "skip",
+                "row": {
+                    "variant_name": "Blue",
+                    "unit_price": "12.000",
+                },
+            },
+        ]
+        result = self.service.resolve_sourcing_conflicts(po=self.po, resolutions=resolutions)
+        self.assertEqual(len(result["added"]), 0)
+        self.assertEqual(len(result["skipped"]), 2)
+        self.assertEqual(result["skipped"][0]["item_id"], "0")
+        self.assertEqual(result["skipped"][1]["item_id"], "1")
+
+    # ---- import_and_add: missing tests from review ----
+
+    def test_import_and_add_wrong_company_supplier_returns_404(self):
+        other_company = CompanyFactory()
+        other_supplier = SupplierFactory(company=other_company)
+        staff_user = User.objects.create_user(username="staff", password="x", is_staff=True)
+        UserProfile.objects.create(user=staff_user, company=self.company, role="admin")
         client = APIClient()
-        user = User.objects.create_user(username="phase3_patch", password="p", is_staff=True)
-        UserProfile.objects.create(user=user, company=self.company, role="admin")
-        client.force_authenticate(user=user)
-        detail = self.service.add_draft_line(
-            po=self.po,
-            sourcing_item_id=str(self.sourcing_item.id),
-            ordered_qty=5,
-        )
-        response = client.patch(
-            f"/purchase-order/{self.po.id}/",
-            {"order_details": [{"id": str(detail.id), "ordered_qty": 15}]},
+        client.force_authenticate(user=staff_user)
+        url = f"/purchase-order/{self.po.id}/import-and-add/"
+        response = client.post(
+            url,
+            {
+                "supplier_id": str(other_supplier.id),
+                "rows": [
+                    {
+                        "product_name": "Test",
+                        "variant_name": "Red",
+                        "category_id": str(self.category.id),
+                        "unit_price": "10.000",
+                    }
+                ],
+            },
             format="json",
         )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        detail.refresh_from_db()
-        self.assertEqual(detail.ordered_qty, 15)
+        self.assertEqual(response.status_code, 404)
+
+    def test_import_and_add_track_b_resubmit_same_rows_creates_single_product(self):
+        """Submitting the same Track B rows twice must create only one Product."""
+        row = {
+            "product_name": "Widget Resubmit",
+            "variant_name": "Red",
+            "dim1_value": "Red",
+            "category_id": str(self.category.id),
+            "unit_price": "15.000",
+        }
+        service = SourcingProductService()
+        service.import_and_add(po=self.po, supplier_id=str(self.supplier.id), rows=[row])
+        po2 = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DRAFT,
+            exchange_rate=2000,
+            commission_fee_pct=0,
+            delivery_fee=0,
+        )
+        service.import_and_add(po=po2, supplier_id=str(self.supplier.id), rows=[row])
+        count = Product.objects.filter(company=self.company, name="Widget Resubmit").count()
+        self.assertEqual(count, 1)
+
+    def test_import_and_add_non_staff_returns_403(self):
+        """Non-staff authenticated user POSTing to import-and-add must get 403."""
+        from unittest.mock import patch
+
+        import rest_framework.permissions as rfp
+
+        import core.permissions as core_perms
+
+        def _staff_check(self_perm, request, view):
+            from rest_framework.permissions import SAFE_METHODS
+
+            if request.method in SAFE_METHODS:
+                return bool(request.user and request.user.is_authenticated)
+            return bool(request.user and request.user.is_staff)
+
+        def _auth_check(self_perm, request, view):
+            return bool(request.user and request.user.is_authenticated)
+
+        non_staff = User.objects.create_user(username="readonly_403", password="x", is_staff=False)
+        UserProfileFactory(user=non_staff, company=self.company)
+
+        with (
+            patch.object(core_perms.IsStaffOrReadOnly, "has_permission", _staff_check),
+            patch.object(rfp.IsAuthenticated, "has_permission", _auth_check),
+        ):
+            client = APIClient()
+            client.force_authenticate(user=non_staff)
+            url = f"/purchase-order/{self.po.id}/import-and-add/"
+            response = client.post(
+                url,
+                {
+                    "supplier_id": str(self.supplier.id),
+                    "rows": [
+                        {
+                            "product_name": "Test",
+                            "variant_name": "Red",
+                            "category_id": str(self.category.id),
+                            "unit_price": "10.000",
+                        }
+                    ],
+                },
+                format="json",
+            )
+            self.assertEqual(response.status_code, 403)
+
+    def test_import_and_add_unauthenticated_returns_401(self):
+        """Unauthenticated client POSTing to import-and-add must get 401."""
+        from unittest.mock import patch
+
+        import rest_framework.permissions as rfp
+
+        import core.permissions as core_perms
+
+        def _staff_check(self_perm, request, view):
+            from rest_framework.permissions import SAFE_METHODS
+
+            if request.method in SAFE_METHODS:
+                return bool(request.user and request.user.is_authenticated)
+            return bool(request.user and request.user.is_staff)
+
+        def _auth_check(self_perm, request, view):
+            return bool(request.user and request.user.is_authenticated)
+
+        with (
+            patch.object(core_perms.IsStaffOrReadOnly, "has_permission", _staff_check),
+            patch.object(rfp.IsAuthenticated, "has_permission", _auth_check),
+        ):
+            client = APIClient()
+            url = f"/purchase-order/{self.po.id}/import-and-add/"
+            response = client.post(
+                url,
+                {
+                    "supplier_id": str(self.supplier.id),
+                    "rows": [
+                        {
+                            "product_name": "Test",
+                            "variant_name": "Red",
+                            "category_id": str(self.category.id),
+                            "unit_price": "10.000",
+                        }
+                    ],
+                },
+                format="json",
+            )
+            self.assertIn(response.status_code, (401, 403))
+
+    def test_import_and_add_wrong_company_po_returns_404(self):
+        """POSTing to a PO from another company must return 404."""
+        other_company = CompanyFactory()
+        other_po = PurchaseOrderFactory(
+            company=other_company,
+            warehouse=WarehouseFactory(company=other_company),
+            status=PurchaseOrder.POStatus.DRAFT,
+        )
+        staff_user = User.objects.create_user(username="staff_wp", password="x", is_staff=True)
+        UserProfile.objects.create(user=staff_user, company=self.company, role="admin")
+        client = APIClient()
+        client.force_authenticate(user=staff_user)
+        url = f"/purchase-order/{other_po.id}/import-and-add/"
+        response = client.post(
+            url,
+            {
+                "supplier_id": str(self.supplier.id),
+                "rows": [
+                    {
+                        "product_name": "Test",
+                        "variant_name": "Red",
+                        "category_id": str(self.category.id),
+                        "unit_price": "10.000",
+                    }
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_import_and_add_no_category_skips(self):
+        """Row without category_id and category_code should be skipped."""
+        rows = [
+            {
+                "product_name": "No Cat Product",
+                "unit_price": "15.000",
+            }
+        ]
+        result = self.service.import_and_add(
+            po=self.po, supplier_id=str(self.supplier.id), rows=rows
+        )
+        self.assertEqual(len(result["added"]), 0)
+        self.assertEqual(len(result["skipped"]), 1)
+        self.assertEqual(result["skipped"][0]["reason"], "No category assigned")
+
+    def test_resolve_sourcing_conflicts_non_string_product_id_skipped(self):
+        """Integer product_id in resolve_sourcing_conflicts should be skipped, not crash."""
+        resolutions = [
+            {
+                "action": "add_to_existing",
+                "product_id": 123,
+                "row": {
+                    "product_name": "Int ID",
+                    "variant_name": "Red",
+                    "category_id": str(self.category.id),
+                    "unit_price": "10.000",
+                },
+            }
+        ]
+        result = self.service.resolve_sourcing_conflicts(po=self.po, resolutions=resolutions)
+        self.assertEqual(len(result["added"]), 0)
+        self.assertEqual(len(result["skipped"]), 1)
+        self.assertEqual(result["skipped"][0]["reason"], "Product not found")
+
+    def test_import_and_add_malformed_category_id_returns_400(self):
+        """Malformed ULID string for category_id should return a clean ValidationError."""
+        rows = [
+            {
+                "product_name": "Test",
+                "variant_name": "Red",
+                "category_id": "not-a-real-id",
+                "unit_price": "10.000",
+            }
+        ]
+        with self.assertRaises(ValidationError) as ctx:
+            self.service.import_and_add(po=self.po, supplier_id=str(self.supplier.id), rows=rows)
+        self.assertIn("Invalid category_id", str(ctx.exception))
+
+    def test_import_and_add_malformed_variant_id_returns_400(self):
+        """Malformed ULID string for variant_id should return a clean ValidationError."""
+        rows = [
+            {
+                "product_name": "Test",
+                "variant_name": "Red",
+                "variant_id": "not-a-real-id",
+                "category_id": str(self.category.id),
+                "unit_price": "10.000",
+            }
+        ]
+        with self.assertRaises(ValidationError) as ctx:
+            self.service.import_and_add(po=self.po, supplier_id=str(self.supplier.id), rows=rows)
+        self.assertIn("Invalid variant_id", str(ctx.exception))
