@@ -304,7 +304,11 @@ def main():
             cur.execute("SELECT company_id FROM core_company WHERE name = 'Mirako' LIMIT 1")
             row = cur.fetchone()
             if not row:
-                raise RuntimeError("Company 'Mirako' not found — run seed_test_user.py first")
+                raise RuntimeError(
+                    "Company 'Mirako' not found — run: "
+                    "uv run python scripts/create_user.py --username admin --role admin "
+                    "--password admin123 --company Mirako"
+                )
             company_id = str(row[0])
             print(f"Company 'Mirako' id: {company_id}")
 

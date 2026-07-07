@@ -1,4 +1,4 @@
-.PHONY: setup test lint fmt type-check create-user change-role run
+.PHONY: setup test lint fmt type-check create-user run
 
 run:
 	uv run manage.py runserver
@@ -19,13 +19,7 @@ fmt:
 type-check:
 	uv run mypy apps/
 
-# example -> make create-user username=albert
+# example -> make create-user username=albert role=finance password=secret123 company=Acme
 create-user:
 	@test -n "$(username)" || (echo "Usage: make create-user username=<name>"; exit 1)
-	uv run python manage.py create_user --username $(username) $(if $(role),--role $(role),)
-
-# example -> make change-role username=albert role=finance
-change-role:
-	@test -n "$(username)" || (echo "Usage: make change-role username=<name> role=<role>"; exit 1)
-	@test -n "$(role)" || (echo "Usage: make change-role username=<name> role=<role>"; exit 1)
-	uv run python manage.py change_user_role --username $(username) --role $(role)
+	uv run python scripts/create_user.py --username $(username) $(if $(role),--role $(role),) $(if $(password),--password $(password),) $(if $(company),--company $(company),)
