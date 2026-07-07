@@ -5381,6 +5381,47 @@ class TestStatelessSourcingService(TestCase):
         self.assertEqual(len(result["skipped"]), 1)
         self.assertEqual(result["skipped"][0]["reason"], "Product not found")
 
+    def test_resolve_sourcing_conflicts_malformed_product_id_skipped(self):
+        resolutions = [
+            {
+                "action": "add_to_existing",
+                "product_id": "nonexistent-id",
+                "row": {
+                    "product_name": "Bad ID",
+                    "variant_name": "Red",
+                    "category_id": str(self.category.id),
+                    "unit_price": "10.000",
+                },
+            }
+        ]
+        result = self.service.resolve_sourcing_conflicts(po=self.po, resolutions=resolutions)
+        self.assertEqual(len(result["added"]), 0)
+        self.assertEqual(len(result["skipped"]), 1)
+        self.assertEqual(result["skipped"][0]["reason"], "Product not found")
+
+    def test_resolve_sourcing_conflicts_distinct_index_for_rows_without_identity(self):
+        resolutions = [
+            {
+                "action": "skip",
+                "row": {
+                    "variant_name": "Red",
+                    "unit_price": "10.000",
+                },
+            },
+            {
+                "action": "skip",
+                "row": {
+                    "variant_name": "Blue",
+                    "unit_price": "12.000",
+                },
+            },
+        ]
+        result = self.service.resolve_sourcing_conflicts(po=self.po, resolutions=resolutions)
+        self.assertEqual(len(result["added"]), 0)
+        self.assertEqual(len(result["skipped"]), 2)
+        self.assertEqual(result["skipped"][0]["item_id"], "0")
+        self.assertEqual(result["skipped"][1]["item_id"], "1")
+
     # ---- import_and_add: missing tests from review ----
 
     def test_import_and_add_wrong_company_supplier_returns_404(self):
@@ -5561,3 +5602,51 @@ class TestStatelessSourcingService(TestCase):
         self.assertEqual(len(result["added"]), 0)
         self.assertEqual(len(result["skipped"]), 1)
         self.assertEqual(result["skipped"][0]["reason"], "No category assigned")
+
+    def test_resolve_sourcing_conflicts_non_string_product_id_skipped(self):
+        """Integer product_id in resolve_sourcing_conflicts should be skipped, not crash."""
+        resolutions = [
+            {
+                "action": "add_to_existing",
+                "product_id": 123,
+                "row": {
+                    "product_name": "Int ID",
+                    "variant_name": "Red",
+                    "category_id": str(self.category.id),
+                    "unit_price": "10.000",
+                },
+            }
+        ]
+        result = self.service.resolve_sourcing_conflicts(po=self.po, resolutions=resolutions)
+        self.assertEqual(len(result["added"]), 0)
+        self.assertEqual(len(result["skipped"]), 1)
+        self.assertEqual(result["skipped"][0]["reason"], "Product not found")
+
+    def test_import_and_add_malformed_category_id_returns_400(self):
+        """Malformed ULID string for category_id should return a clean ValidationError."""
+        rows = [
+            {
+                "product_name": "Test",
+                "variant_name": "Red",
+                "category_id": "not-a-real-id",
+                "unit_price": "10.000",
+            }
+        ]
+        with self.assertRaises(ValidationError) as ctx:
+            self.service.import_and_add(po=self.po, supplier_id=str(self.supplier.id), rows=rows)
+        self.assertIn("Invalid category_id", str(ctx.exception))
+
+    def test_import_and_add_malformed_variant_id_returns_400(self):
+        """Malformed ULID string for variant_id should return a clean ValidationError."""
+        rows = [
+            {
+                "product_name": "Test",
+                "variant_name": "Red",
+                "variant_id": "not-a-real-id",
+                "category_id": str(self.category.id),
+                "unit_price": "10.000",
+            }
+        ]
+        with self.assertRaises(ValidationError) as ctx:
+            self.service.import_and_add(po=self.po, supplier_id=str(self.supplier.id), rows=rows)
+        self.assertIn("Invalid variant_id", str(ctx.exception))
