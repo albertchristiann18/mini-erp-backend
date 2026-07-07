@@ -210,6 +210,152 @@ class ShopeeOrderSyncTest(TestCase):
         self.assertIsNotNone(so2)
         self.assertEqual(SalesOrder.objects.filter(marketplace_order_id="SH_ORDER_DUP").count(), 1)
 
+    @patch("apps.omnichannel.vendor.shopee.order_sync.ShopeeClient")
+    def test_sync_recent_orders_paginates_and_upserts_orders(self, MockClient):
+        sku = self.variant.sku_variant_code
+        mock_client = MockClient.return_value
+        # Page 1: more=True, 2 orders
+        mock_client.get_order_list.side_effect = [
+            {
+                "order_list": [{"order_sn": "SH_PAGE1_A"}, {"order_sn": "SH_PAGE1_B"}],
+                "more": True,
+                "next_cursor": "cursor2",
+            },
+            {
+                "order_list": [{"order_sn": "SH_PAGE2_C"}],
+                "more": False,
+            },
+        ]
+
+        def detail_side_effect(batch):
+            orders = {
+                "SH_PAGE1_A": {
+                    "order_sn": "SH_PAGE1_A",
+                    "order_status": "COMPLETED",
+                    "create_time": 0,
+                    "item_list": [
+                        {
+                            "item_id": 1,
+                            "model_sku": sku,
+                            "model_original_price": 100000,
+                            "model_quantity_purchased": 1,
+                        }
+                    ],
+                    "recipient_address": {
+                        "name": "A",
+                        "phone": "0",
+                        "full_address": "A",
+                        "city": "A",
+                        "state": "A",
+                    },
+                },
+                "SH_PAGE1_B": {
+                    "order_sn": "SH_PAGE1_B",
+                    "order_status": "COMPLETED",
+                    "create_time": 0,
+                    "item_list": [
+                        {
+                            "item_id": 2,
+                            "model_sku": sku,
+                            "model_original_price": 100000,
+                            "model_quantity_purchased": 1,
+                        }
+                    ],
+                    "recipient_address": {
+                        "name": "B",
+                        "phone": "0",
+                        "full_address": "B",
+                        "city": "B",
+                        "state": "B",
+                    },
+                },
+                "SH_PAGE2_C": {
+                    "order_sn": "SH_PAGE2_C",
+                    "order_status": "COMPLETED",
+                    "create_time": 0,
+                    "item_list": [
+                        {
+                            "item_id": 3,
+                            "model_sku": sku,
+                            "model_original_price": 100000,
+                            "model_quantity_purchased": 1,
+                        }
+                    ],
+                    "recipient_address": {
+                        "name": "C",
+                        "phone": "0",
+                        "full_address": "C",
+                        "city": "C",
+                        "state": "C",
+                    },
+                },
+            }
+            return {"order_list": [orders[sn] for sn in batch if sn in orders]}
+
+        mock_client.get_order_detail.side_effect = detail_side_effect
+
+        from apps.omnichannel.vendor.shopee.order_sync import ShopeeOrderSyncer
+
+        syncer = ShopeeOrderSyncer(self.shop)
+        count = syncer.sync_recent_orders()
+
+        self.assertEqual(count, 3)
+        mock_client.get_order_list.assert_called()
+        self.assertEqual(mock_client.get_order_detail.call_count, 2)
+        self.assertEqual(
+            SalesOrder.objects.filter(
+                marketplace_order_id__in=["SH_PAGE1_A", "SH_PAGE1_B", "SH_PAGE2_C"]
+            ).count(),
+            3,
+        )
+
+    @patch("apps.omnichannel.vendor.shopee.order_sync.ShopeeClient")
+    def test_sync_recent_orders_respects_hours_back_window(self, MockClient):
+        mock_client = MockClient.return_value
+        mock_client.get_order_list.return_value = {"order_list": [], "more": False}
+
+        from apps.omnichannel.vendor.shopee.order_sync import ShopeeOrderSyncer
+
+        syncer = ShopeeOrderSyncer(self.shop)
+        syncer.sync_recent_orders(hours_back=48)
+
+        call_args = mock_client.get_order_list.call_args[1]
+        time_diff = call_args["time_to"] - call_args["time_from"]
+        # 48 hours = 172800 seconds
+        self.assertAlmostEqual(time_diff, 172800, delta=10)
+
+    @patch("apps.omnichannel.vendor.shopee.order_sync.ShopeeClient")
+    def test_sync_recent_orders_logs_and_stops_on_get_order_list_failure(self, MockClient):
+        mock_client = MockClient.return_value
+        mock_client.get_order_list.side_effect = ShopeeAPIError(500, "API_ERROR", "list failed")
+
+        from apps.omnichannel.vendor.shopee.order_sync import ShopeeOrderSyncer
+
+        syncer = ShopeeOrderSyncer(self.shop)
+        count = syncer.sync_recent_orders()
+
+        self.assertEqual(count, 0)
+        self.shop.refresh_from_db()
+        self.assertIsNotNone(self.shop.last_order_sync_at)
+
+    @patch("apps.omnichannel.vendor.shopee.order_sync.ShopeeClient")
+    def test_sync_recent_orders_continues_after_get_order_detail_failure(self, MockClient):
+        mock_client = MockClient.return_value
+        mock_client.get_order_list.return_value = {
+            "order_list": [{"order_sn": "SH_DETAIL_FAIL"}],
+            "more": False,
+        }
+        mock_client.get_order_detail.side_effect = ShopeeAPIError(500, "API_ERROR", "detail failed")
+
+        from apps.omnichannel.vendor.shopee.order_sync import ShopeeOrderSyncer
+
+        syncer = ShopeeOrderSyncer(self.shop)
+        count = syncer.sync_recent_orders()
+
+        self.assertEqual(count, 0)
+        self.shop.refresh_from_db()
+        self.assertIsNotNone(self.shop.last_order_sync_at)
+
 
 class TestShopeeOrderWebhook(TestCase):
     def setUp(self):
@@ -346,6 +492,25 @@ class ShopeeShopAPITest(APITestCase):
         ShopeeWebhookLogFactory(shop_id=self.shop.shop_id)
         response = self.client.get("/shopee/webhook-logs/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    @patch(
+        "apps.omnichannel.vendor.shopee.order_sync.ShopeeOrderSyncer.sync_recent_orders",
+        return_value=7,
+    )
+    def test_sync_orders_view_action_calls_sync_recent_orders(self, mock_sync):
+        response = self.client.post(f"/shopee/shops/{self.shop.id}/sync-orders/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, {"synced": 7})
+        mock_sync.assert_called_once()
+
+    @patch(
+        "apps.omnichannel.vendor.shopee.order_sync.ShopeeOrderSyncer.sync_recent_orders",
+        side_effect=Exception("boom"),
+    )
+    def test_sync_orders_view_action_returns_500_on_exception(self, mock_sync):
+        response = self.client.post(f"/shopee/shops/{self.shop.id}/sync-orders/")
+        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        self.assertEqual(response.data, {"error": "boom"})
 
 
 class ShopeeUtilsTest(TestCase):
@@ -1229,11 +1394,9 @@ class TestShopeeManagementCommand(TestCase):
             "apps.omnichannel.vendor.shopee.product_push.ShopeeProductPushService.push_product",
             side_effect=Exception("crash"),
         ):
-            from apps.omnichannel.vendor.shopee.management.commands.shopee_push_products import (
-                Command,
-            )
+            from scripts.shopee_push_products import run
 
-            Command().handle()
+            run()
         log = ShopeeSyncLog.objects.get(shop=shop, sync_type="product_push")
         self.assertEqual(log.status, "failed")
         self.assertIsNotNone(log.finished_at)
@@ -1262,11 +1425,9 @@ class TestShopeeManagementCommand(TestCase):
             "apps.omnichannel.vendor.shopee.product_push.ShopeeProductPushService.push_product",
             return_value={"item_id": None, "models_pushed": 0, "errors": ["API error"]},
         ):
-            from apps.omnichannel.vendor.shopee.management.commands.shopee_push_products import (
-                Command,
-            )
+            from scripts.shopee_push_products import run
 
-            Command().handle()
+            run()
         log = ShopeeSyncLog.objects.get(shop=shop, sync_type="product_push")
         self.assertEqual(log.status, "failed")
 
@@ -1289,11 +1450,9 @@ class TestShopeeManagementCommand(TestCase):
             "apps.omnichannel.vendor.shopee.product_push.ShopeeProductPushService.update_product",
             side_effect=Exception("crash"),
         ):
-            from apps.omnichannel.vendor.shopee.management.commands.shopee_update_products import (
-                Command,
-            )
+            from scripts.shopee_update_products import run
 
-            Command().handle()
+            run()
         log = ShopeeSyncLog.objects.get(shop=shop, sync_type="product_update")
         self.assertEqual(log.status, "failed")
         self.assertIsNotNone(log.finished_at)
@@ -1322,11 +1481,9 @@ class TestShopeeManagementCommand(TestCase):
             "apps.omnichannel.vendor.shopee.product_push.ShopeeProductPushService.update_product",
             return_value={"updated": False, "errors": ["API error"]},
         ):
-            from apps.omnichannel.vendor.shopee.management.commands.shopee_update_products import (
-                Command,
-            )
+            from scripts.shopee_update_products import run
 
-            Command().handle()
+            run()
         log = ShopeeSyncLog.objects.get(shop=shop, sync_type="product_update")
         self.assertEqual(log.status, "failed")
 
@@ -1337,9 +1494,9 @@ class TestShopeeManagementCommand(TestCase):
             "apps.omnichannel.vendor.shopee.stock_sync.ShopeeStockSyncService.sync_all_variants",
             return_value={"success": 5, "failed": 0, "errors": []},
         ):
-            from apps.omnichannel.vendor.shopee.management.commands.shopee_sync_stock import Command
+            from scripts.shopee_sync_stock import run
 
-            Command().handle()
+            run()
 
         self.assertTrue(
             ShopeeSyncLog.objects.filter(shop=shop, sync_type="stock", status="success").exists()
@@ -1354,9 +1511,9 @@ class TestShopeeManagementCommand(TestCase):
             "apps.omnichannel.vendor.shopee.stock_sync.ShopeeStockSyncService.sync_all_variants",
             side_effect=Exception("boom"),
         ):
-            from apps.omnichannel.vendor.shopee.management.commands.shopee_sync_stock import Command
+            from scripts.shopee_sync_stock import run
 
-            Command().handle()
+            run()
 
         log = ShopeeSyncLog.objects.get(shop=shop)
         self.assertEqual(log.status, "failed")
@@ -1561,11 +1718,9 @@ class TestShopeeProductMatch(TestCase):
             "apps.omnichannel.vendor.shopee.product_match.ShopeeProductMatchService.match_products_for_shop",
             return_value={"matched": 3, "skipped": 1, "errors": []},
         ):
-            from apps.omnichannel.vendor.shopee.management.commands.shopee_match_products import (
-                Command,
-            )
+            from scripts.shopee_match_products import run
 
-            Command().handle()
+            run()
 
         log = ShopeeSyncLog.objects.get(shop=shop, sync_type="product_match")
         self.assertEqual(log.status, "success")
@@ -1654,11 +1809,9 @@ class TestShopeeProductPush(TestCase):
             "apps.omnichannel.vendor.shopee.product_push.ShopeeProductPushService.push_product",
             return_value={"item_id": 100, "models_pushed": 1, "errors": []},
         ):
-            from apps.omnichannel.vendor.shopee.management.commands.shopee_push_products import (
-                Command,
-            )
+            from scripts.shopee_push_products import run
 
-            Command().handle()
+            run()
 
         log = ShopeeSyncLog.objects.filter(shop=shop, sync_type="product_push").first()
         self.assertIsNotNone(log)
@@ -1778,11 +1931,9 @@ class TestShopeeProductUpdate(TestCase):
             "apps.omnichannel.vendor.shopee.product_push.ShopeeProductPushService.update_product",
             return_value={"updated": True, "errors": []},
         ):
-            from apps.omnichannel.vendor.shopee.management.commands.shopee_update_products import (
-                Command,
-            )
+            from scripts.shopee_update_products import run
 
-            Command().handle()
+            run()
 
         log = ShopeeSyncLog.objects.filter(shop=shop, sync_type="product_update").first()
         self.assertIsNotNone(log)
@@ -1948,11 +2099,9 @@ class TestShopeePriceSync(TestCase):
             "apps.omnichannel.vendor.shopee.product_push.ShopeeProductPushService.update_price_for_listing",
             return_value={"updated": True, "errors": []},
         ):
-            from apps.omnichannel.vendor.shopee.management.commands.shopee_update_prices import (
-                Command,
-            )
+            from scripts.shopee_update_prices import run
 
-            Command().handle()
+            run()
 
         log = ShopeeSyncLog.objects.get(shop=shop, sync_type="product_price")
         self.assertEqual(log.status, "success")
@@ -2016,3 +2165,101 @@ class TestShopeePriceSync(TestCase):
         call_args = mock_trigger.call_args[0]
         self.assertIn(str(listing.id), call_args[0])
         self.assertEqual(call_args[1], str(company.id))
+
+
+class TestScriptsShopeeSyncOrders(TestCase):
+    def test_scripts_shopee_sync_orders_run_creates_sync_log(self):
+        company = CompanyFactory()
+        marketplace = MarketplaceFactory()
+        warehouse = WarehouseFactory(company=company)
+        shop = ShopeeShopFactory(
+            is_active=True,
+            company=company,
+            marketplace=marketplace,
+            default_warehouse=warehouse,
+        )
+
+        with patch(
+            "apps.omnichannel.vendor.shopee.order_sync.ShopeeOrderSyncer.sync_recent_orders",
+            return_value=3,
+        ):
+            from scripts.shopee_sync_orders import run
+
+            run()
+
+        log = ShopeeSyncLog.objects.get(shop=shop, sync_type="orders")
+        self.assertEqual(log.status, "success")
+        self.assertEqual(log.records_synced, 3)
+
+    def test_scripts_shopee_sync_orders_run_filters_by_shop_id(self):
+        company = CompanyFactory()
+        marketplace = MarketplaceFactory()
+        warehouse = WarehouseFactory(company=company)
+        shop1 = ShopeeShopFactory(
+            is_active=True,
+            company=company,
+            marketplace=marketplace,
+            default_warehouse=warehouse,
+        )
+        ShopeeShopFactory(
+            is_active=True,
+            company=company,
+            marketplace=marketplace,
+            default_warehouse=warehouse,
+        )
+
+        with patch(
+            "apps.omnichannel.vendor.shopee.order_sync.ShopeeOrderSyncer.sync_recent_orders",
+            return_value=1,
+        ):
+            from scripts.shopee_sync_orders import run
+
+            run(shop_id=shop1.shop_id)
+
+        logs = ShopeeSyncLog.objects.filter(sync_type="orders")
+        self.assertEqual(logs.count(), 1)
+        self.assertEqual(logs.first().shop, shop1)
+
+    def test_scripts_shopee_sync_orders_run_logs_failure_on_exception(self):
+        company = CompanyFactory()
+        marketplace = MarketplaceFactory()
+        warehouse = WarehouseFactory(company=company)
+        shop = ShopeeShopFactory(
+            is_active=True,
+            company=company,
+            marketplace=marketplace,
+            default_warehouse=warehouse,
+        )
+
+        with patch(
+            "apps.omnichannel.vendor.shopee.order_sync.ShopeeOrderSyncer.sync_recent_orders",
+            side_effect=Exception("oops"),
+        ):
+            from scripts.shopee_sync_orders import run
+
+            run()
+
+        log = ShopeeSyncLog.objects.get(shop=shop, sync_type="orders")
+        self.assertEqual(log.status, "failed")
+        self.assertEqual(log.error_message, "oops")
+
+
+class TestManagementCommandsUnregistered(TestCase):
+    def test_management_commands_no_longer_registered(self):
+        from django.core.management import get_commands
+
+        commands = get_commands()
+        removed = [
+            "shopee_match_products",
+            "shopee_push_products",
+            "shopee_sync_orders",
+            "shopee_sync_stock",
+            "shopee_update_prices",
+            "shopee_update_products",
+            "tiktok_sync_orders",
+            "tiktok_sync_stock",
+        ]
+        for name in removed:
+            self.assertNotIn(name, commands, f"{name} should not be registered")
+        self.assertIn("create_user", commands, "core management commands must remain")
+        self.assertIn("change_user_role", commands, "core management commands must remain")

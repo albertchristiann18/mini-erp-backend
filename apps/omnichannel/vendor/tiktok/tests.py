@@ -17,7 +17,7 @@ from apps.omnichannel.vendor.tiktok.factories import (
     TikTokShopFactory,
     TikTokWebhookLogFactory,
 )
-from apps.omnichannel.vendor.tiktok.models import TikTokWebhookLog
+from apps.omnichannel.vendor.tiktok.models import TikTokSyncLog, TikTokWebhookLog
 from apps.omnichannel.vendor.tiktok.views import _verify_signature
 from apps.sales.models import SalesOrder
 from core.factories import CompanyFactory, WarehouseFactory
@@ -218,3 +218,90 @@ class TikTokRefreshTokenTest(APITestCase):
         self.shop.refresh_from_db()
         self.assertEqual(self.shop.access_token, "new_access_token")
         self.assertEqual(self.shop.refresh_token, "new_refresh_token")
+
+
+class TestTikTokSyncScripts(TestCase):
+    def test_scripts_tiktok_sync_orders_run_creates_sync_log(self):
+        company = CompanyFactory()
+        warehouse = WarehouseFactory(company=company)
+        shop = TikTokShopFactory(company=company, warehouse=warehouse, is_active=True)
+
+        with patch(
+            "apps.omnichannel.vendor.tiktok.order_sync.TikTokOrderSyncer.sync_orders",
+            return_value=2,
+        ):
+            from scripts.tiktok_sync_orders import run
+
+            run()
+
+        log = TikTokSyncLog.objects.get(shop=shop, sync_type="orders")
+        self.assertEqual(log.status, "success")
+        self.assertEqual(log.orders_synced, 2)
+
+    def test_scripts_tiktok_sync_orders_run_filters_by_shop_id(self):
+        company = CompanyFactory()
+        warehouse = WarehouseFactory(company=company)
+        shop1 = TikTokShopFactory(company=company, warehouse=warehouse, is_active=True)
+        TikTokShopFactory(company=company, warehouse=warehouse, is_active=True)
+
+        with patch(
+            "apps.omnichannel.vendor.tiktok.order_sync.TikTokOrderSyncer.sync_orders",
+            return_value=1,
+        ):
+            from scripts.tiktok_sync_orders import run
+
+            run(shop_id=shop1.shop_id)
+
+        logs = TikTokSyncLog.objects.filter(sync_type="orders")
+        self.assertEqual(logs.count(), 1)
+        self.assertEqual(logs.first().shop, shop1)
+
+    def test_scripts_tiktok_sync_orders_run_logs_error_on_exception(self):
+        company = CompanyFactory()
+        warehouse = WarehouseFactory(company=company)
+        shop = TikTokShopFactory(company=company, warehouse=warehouse, is_active=True)
+
+        with patch(
+            "apps.omnichannel.vendor.tiktok.order_sync.TikTokOrderSyncer.sync_orders",
+            side_effect=Exception("fail"),
+        ):
+            from scripts.tiktok_sync_orders import run
+
+            run()
+
+        log = TikTokSyncLog.objects.get(shop=shop, sync_type="orders")
+        self.assertEqual(log.status, "error")
+        self.assertEqual(log.message, "fail")
+
+    def test_scripts_tiktok_sync_stock_run_creates_sync_log(self):
+        company = CompanyFactory()
+        warehouse = WarehouseFactory(company=company)
+        shop = TikTokShopFactory(company=company, warehouse=warehouse, is_active=True)
+
+        with patch(
+            "apps.omnichannel.vendor.tiktok.stock_sync.TikTokStockSyncer.push_stock",
+            return_value=4,
+        ):
+            from scripts.tiktok_sync_stock import run
+
+            run()
+
+        log = TikTokSyncLog.objects.get(shop=shop, sync_type="stock")
+        self.assertEqual(log.status, "success")
+        self.assertEqual(log.orders_synced, 4)
+
+    def test_scripts_tiktok_sync_stock_run_logs_error_on_exception(self):
+        company = CompanyFactory()
+        warehouse = WarehouseFactory(company=company)
+        shop = TikTokShopFactory(company=company, warehouse=warehouse, is_active=True)
+
+        with patch(
+            "apps.omnichannel.vendor.tiktok.stock_sync.TikTokStockSyncer.push_stock",
+            side_effect=Exception("stock fail"),
+        ):
+            from scripts.tiktok_sync_stock import run
+
+            run()
+
+        log = TikTokSyncLog.objects.get(shop=shop, sync_type="stock")
+        self.assertEqual(log.status, "error")

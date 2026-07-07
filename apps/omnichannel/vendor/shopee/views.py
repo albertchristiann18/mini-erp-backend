@@ -94,12 +94,10 @@ class ShopeeShopViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="sync-orders")
     def sync_orders(self, request: Request, pk: str | None = None) -> Response:
         shop = self.get_object()
-        from apps.omnichannel.vendor.shopee.management.commands.shopee_sync_orders import (
-            sync_orders_for_shop,
-        )
+        from apps.omnichannel.vendor.shopee.order_sync import ShopeeOrderSyncer
 
         try:
-            count = sync_orders_for_shop(shop)
+            count = ShopeeOrderSyncer(shop).sync_recent_orders()
             return Response({"synced": count})
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
