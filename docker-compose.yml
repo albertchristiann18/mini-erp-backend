@@ -1,19 +1,21 @@
+x-db-name: &db_name mini_erp
+x-db-user: &db_user postgres
+x-db-password: &db_password postgres
+
 services:
   db:
     image: postgres:15
     container_name: db
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    env_file:
-      - .env
     environment:
-      - POSTGRES_DB=${DB_NAME}
-      - POSTGRES_USER=${DB_USER}
-      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      POSTGRES_DB: *db_name
+      POSTGRES_USER: *db_user
+      POSTGRES_PASSWORD: *db_password
     ports:
-      - "${DB_PORT:-5432}:5432"
+      - "5433:5432"
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}" ]
+      test: [ "CMD-SHELL", "pg_isready -U postgres -d mini_erp" ]
       interval: 10s
       timeout: 10s
       retries: 5
@@ -30,6 +32,9 @@ services:
     environment:
       DB_HOST: db
       DB_PORT: "5432"
+      DB_NAME: *db_name
+      DB_USER: *db_user
+      DB_PASSWORD: *db_password
     depends_on:
       db:
         condition: service_healthy
