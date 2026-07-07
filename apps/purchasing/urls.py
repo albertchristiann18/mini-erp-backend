@@ -5,8 +5,14 @@ from apps.purchasing import views as purchasing_views
 
 router = DefaultRouter()
 router.register(r"purchase-order", purchasing_views.PurchaseOrderViewSet, basename="purchase-order")
+router.register(r"sourcing-pool", purchasing_views.SourcingPoolViewSet, basename="sourcing-pool")
 
 urlpatterns = [
     path("replenishment/", purchasing_views.ReplenishmentView.as_view(), name="replenishment"),
+    path(
+        "sourcing-pool/items/<str:item_id>/image/",
+        purchasing_views.SourcingPoolItemImageView.as_view(),
+        name="sourcing-pool-item-image",
+    ),
 ]
 urlpatterns += router.urls

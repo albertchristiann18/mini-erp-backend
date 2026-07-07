@@ -1,11 +1,13 @@
+import mimetypes
 from typing import Any, Type, cast
 
 from django.db import models, transaction
 from django.db.models import Prefetch, QuerySet
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.parsers import FormParser, MultiPartParser
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -98,7 +100,7 @@ class ProductViewSet(viewsets.ModelViewSet):
         ALLOWED_ORDERINGS = {"name", "-name", "sku_code", "-sku_code"}
         if ordering and ordering in ALLOWED_ORDERINGS:
             qs = qs.order_by(ordering)
-        return qs
+        return qs.prefetch_related("dimension_images", "photos")
 
     def get_serializer_class(self) -> Type[Serializer]:
         if self.action == "create":
@@ -106,14 +108,20 @@ class ProductViewSet(viewsets.ModelViewSet):
         return ProductSerializer
 
     def update(self, request: Request, *args: Any, **kwargs: Any) -> Response:
-        from django.db import transaction
-
         from apps.inventory.services.product_service import ProductService
 
+        current = self.get_object()
+        old_dim1_key = current.dim1_key
+        old_dim2_key = current.dim2_key
+        _product_id = str(current.id)
+
         response = super().update(request, *args, **kwargs)
-        instance = self.get_object()
+
+        transaction.on_commit(lambda: ProductService()._trigger_shopee_product_update(_product_id))
         transaction.on_commit(
-            lambda: ProductService()._trigger_shopee_product_update(str(instance.id))
+            lambda: ProductService().cleanup_orphan_dimension_images(
+                _product_id, old_dim1_key, old_dim2_key
+            )
         )
         return response
 
@@ -291,6 +299,128 @@ class ProductViewSet(viewsets.ModelViewSet):
         services.create_product_with_variants(serializer.validated_data)
         return Response({"created": len(request.data), "errors": []}, status=201)
 
+    @action(
+        detail=True,
+        methods=["post", "delete"],
+        url_path=r"variants/(?P<variant_id>[^/.]+)/photo",
+        parser_classes=[MultiPartParser, FormParser],
+    )
+    def manage_variant_photo(
+        self, request: Request, pk: str | None = None, variant_id: str | None = None
+    ) -> Response:
+        product = self.get_object()
+        variant = get_object_or_404(
+            ProductVariant, id=variant_id, product=product, company=product.company
+        )
+        if request.method == "DELETE":
+            if variant.photo:
+                variant.photo.delete(save=False)
+                variant.save(update_fields=["photo", "udate"])
+            return Response(status=204)
+        image = request.FILES.get("image")
+        if not image:
+            return Response({"error": "No image provided"}, status=400)
+        if variant.photo:
+            variant.photo.delete(save=False)
+        variant.photo = image
+        variant.save(update_fields=["photo", "udate"])
+        photo_url = variant.photo.url if variant.photo else None
+        return Response({"photo_url": photo_url}, status=200)
+
+    @action(
+        detail=True,
+        methods=["post", "delete"],
+        url_path="dimension-image",
+        parser_classes=[MultiPartParser, FormParser, JSONParser],
+    )
+    def manage_dimension_image(self, request: Request, pk: str | None = None) -> Response:
+        product = self.get_object()
+        if request.method == "DELETE":
+            dim_key = (request.data.get("dim_key") or "").strip()
+            dim_value = (request.data.get("dim_value") or "").strip()
+
+            if not dim_key:
+                return Response(
+                    {"error": "dim_key is required"}, status=status.HTTP_400_BAD_REQUEST
+                )
+            if not dim_value:
+                return Response(
+                    {"error": "dim_value is required"}, status=status.HTTP_400_BAD_REQUEST
+                )
+
+            from apps.inventory.services.product_service import ProductService
+
+            try:
+                ProductService().delete_dimension_image(product, dim_key, dim_value)
+            except ValueError:
+                return Response(
+                    {"error": "Dimension image not found"}, status=status.HTTP_404_NOT_FOUND
+                )
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        # POST
+        dim_key = request.data.get("dim_key", "").strip()
+        dim_value = request.data.get("dim_value", "").strip()
+        photo_file = request.FILES.get("photo")
+
+        if not dim_key:
+            return Response({"error": "dim_key is required"}, status=status.HTTP_400_BAD_REQUEST)
+        if not dim_value:
+            return Response({"error": "dim_value is required"}, status=status.HTTP_400_BAD_REQUEST)
+        if not photo_file:
+            return Response({"error": "photo is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        from apps.inventory.services.product_service import ProductService
+
+        try:
+            dim_img = ProductService().upsert_dimension_image(
+                product, dim_key, dim_value, photo_file
+            )
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {
+                "id": str(dim_img.id),
+                "dim_key": dim_img.dim_key,
+                "dim_value": dim_img.dim_value,
+                "photo_url": dim_img.photo.url if dim_img.photo else None,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=True, methods=["get"], url_path="photo-proxy")
+    def photo_proxy(self, request: Request, pk: str | None = None) -> Response:
+        product = self.get_object()
+        dim_key = request.query_params.get("dim_key", "").strip()
+        dim_value = request.query_params.get("dim_value", "").strip()
+
+        photo_file = None
+
+        if dim_key and dim_value:
+            for di in product.dimension_images.all():
+                if di.dim_key == dim_key and di.dim_value == dim_value:
+                    if di.photo:
+                        photo_file = di.photo
+                    break
+
+        if photo_file is None:
+            gallery_list = sorted(product.photos.all(), key=lambda p: p.order)
+            if gallery_list and gallery_list[0].image:
+                photo_file = gallery_list[0].image
+            elif product.product_photo:
+                photo_file = product.product_photo
+
+        if photo_file is None:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        content_type = mimetypes.guess_type(photo_file.name)[0] or "image/jpeg"
+        photo_file.open("rb")
+        data: bytes = photo_file.read()
+        photo_file.close()
+        http_response = HttpResponse(data, content_type=content_type)
+        http_response["Cache-Control"] = "private, max-age=3600"
+        return http_response  # type: ignore[return-value]
+
 
 class ProductVariantStockViewSet(viewsets.ReadOnlyModelViewSet):
     """
@@ -308,9 +438,11 @@ class ProductVariantStockViewSet(viewsets.ReadOnlyModelViewSet):
 
         if not self.request.user.is_authenticated:
             return ProductVariant.objects.none()
-        qs = ProductVariant.objects.filter(
-            is_active=True, company=self.request.user.profile.company
-        ).select_related("product", "product__category")
+        qs = (
+            ProductVariant.objects.filter(is_active=True, company=self.request.user.profile.company)
+            .select_related("product", "product__category")
+            .prefetch_related("product__product_suppliers", "product__photos")
+        )
         search = self.request.query_params.get("search")
         if search:
             from django.db import models as db_models

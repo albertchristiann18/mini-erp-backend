@@ -196,12 +196,56 @@ def is_valid_pdf(file_input: Union[UploadedFile, str], max_size_mb: int = 2) -> 
         return False, f"Could not process file: {str(e)}"
 
 
+def compress_pdf_iterative(uploaded_file: Any, target_mb: float = 2.0) -> tuple[ContentFile, bool]:
+    """
+    Compress a PDF file iteratively at increasing power levels until it is under
+    target_mb. Returns (ContentFile, was_compressed: bool).
+
+    If even power=4 cannot reach target_mb, returns the smallest result achieved.
+    The input file must already be a valid PDF -- call is_valid_pdf() before this.
+    """
+    target_bytes = int(target_mb * 1024 * 1024)
+
+    # If already under target, return as-is wrapped in ContentFile
+    uploaded_file.seek(0)
+    original_bytes = uploaded_file.read()
+    uploaded_file.seek(0)
+    if len(original_bytes) <= target_bytes:
+        return ContentFile(original_bytes, name=uploaded_file.name), False
+
+    best: ContentFile | None = None
+    best_size = len(original_bytes)
+
+    for power in range(1, 5):  # 1, 2, 3, 4
+        try:
+            # compress_pdf_file reads from uploaded_file.chunks() -- reset pointer first
+            uploaded_file.seek(0)
+            compressed = compress_pdf_file(uploaded_file, power=power)
+            compressed_size = len(compressed.read())
+            compressed.seek(0)
+            if best is None or compressed_size < best_size:
+                best = compressed
+                best_size = compressed_size
+            if compressed_size <= target_bytes:
+                break
+        except Exception:
+            continue
+        finally:
+            uploaded_file.seek(0)
+
+    if best is None:
+        # All compression attempts failed -- return original
+        return ContentFile(original_bytes, name=uploaded_file.name), False
+
+    return best, True
+
+
 def compress_pdf_file(uploaded_file: Any, power: int = 3) -> ContentFile:
     """
     Takes an InMemoryUploadedFile (Django), compresses it using your proven logic
     via temporary disk files (to save RAM), and returns a Django ContentFile.
     """
-    is_valid, message = is_valid_pdf(uploaded_file)
+    is_valid, message = is_valid_pdf(uploaded_file, max_size_mb=100)
     if not is_valid:
         raise ValidationError(f"Uploaded file is not a valid PDF. reason : {message}")
 

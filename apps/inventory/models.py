@@ -56,6 +56,11 @@ class Product(DefaultModel):
         help_text="Stores marketplace-specific shipping and insurance settings",
     )
 
+    dim1_key = models.CharField(max_length=100, blank=True, default="")
+    dim2_key = models.CharField(max_length=100, blank=True, default="")
+    dim1_options = models.JSONField(default=list, blank=True)
+    dim2_options = models.JSONField(default=list, blank=True)
+
     def get_shopee_reguler_shipping(self) -> Any:
         """Combines General Reguler and Shopee-specific Reguler expeditions"""
         general = self.shipping_config.get("general", {}).get("reguler", {}).get("expeditions", [])
@@ -125,6 +130,16 @@ class ProductVariant(DefaultModel):
 
     is_active = models.BooleanField(default=True)
     is_fake = models.BooleanField(default=False)
+    photo = models.FileField(upload_to="variants/photos/", null=True, blank=True)
+
+    last_unit_price_foreign = models.DecimalField(
+        max_digits=14, decimal_places=4, null=True, blank=True
+    )
+    last_currency = models.CharField(max_length=10, null=True, blank=True)
+    last_discounted_unit_price_foreign = models.DecimalField(
+        max_digits=15, decimal_places=3, null=True, blank=True
+    )
+    price_updated_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self) -> str:
         return f"{self.sku_variant_code}-{self.name}"
@@ -372,3 +387,21 @@ class ProductBusinessEntity(DefaultModel):
 
     def __str__(self) -> str:
         return f"{self.product.sku_code} → {self.business_entity.name}"
+
+
+class ProductDimensionImage(DefaultModel):
+    """Per-dimension-value image for a product (e.g. Warna=White → image)."""
+
+    id = ULIDField(
+        primary_key=True, default=generate_ulid, editable=False, db_column="product_dim_image_id"
+    )
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="dimension_images")
+    dim_key = models.CharField(max_length=100)
+    dim_value = models.CharField(max_length=100)
+    photo = models.FileField(upload_to="variants/dimension_images/")
+
+    class Meta:
+        unique_together = [["product", "dim_key", "dim_value"]]
+
+    def __str__(self) -> str:
+        return f"{self.product.sku_code} — {self.dim_key}={self.dim_value}"

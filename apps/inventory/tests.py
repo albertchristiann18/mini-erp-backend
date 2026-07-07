@@ -4,6 +4,7 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import connection
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
@@ -18,7 +19,9 @@ _real_auth_has_permission = IsAuthenticatedPermission.has_permission
 from apps.inventory.factories import (
     CategoryFactory,
     ProductCogsFactory,
+    ProductDimensionImageFactory,
     ProductFactory,
+    ProductPhotoFactory,
     ProductSupplierFactory,
     ProductVariantFactory,
     ProductVariantWarehouseFactory,
@@ -28,8 +31,10 @@ from apps.inventory.factories import (
 from apps.inventory.models import (
     Category,
     Product,
+    ProductBusinessEntity,
     ProductCogs,
-    ProductPhoto,
+    ProductDimensionImage,
+    ProductSupplier,
     ProductVariant,
     ProductVariantWarehouse,
     StockMovement,
@@ -67,10 +72,12 @@ class InventoryAPITest(APITestCase):
                 "variants": [
                     {
                         "variant_values": {"warna": "Navy", "size": "L"},
+                        "sku_variant_code": "NAVY-L",
                         "base_price": 180000,
                     },
                     {
                         "variant_values": {"warna": "Navy", "size": "XL"},
+                        "sku_variant_code": "NAVY-XL",
                         "base_price": 185000,
                     },
                 ],
@@ -111,10 +118,12 @@ class InventoryAPITest(APITestCase):
                 "variants": [
                     {
                         "variant_values": {"warna": "Blue", "size": "L"},
+                        "sku_variant_code": "BLUE-L",
                         "base_price": 180000,
                     },
                     {
                         "variant_values": {"warna": "Blue", "size": "XL"},
+                        "sku_variant_code": "BLUE-XL",
                         "base_price": 185000,
                     },
                 ],
@@ -144,7 +153,7 @@ class InventoryAPITest(APITestCase):
         # This confirms your global counter logic worked!
         for v in variants_b:
             self.assertEqual(v.product_id, product_b.id)
-            self.assertIn("BLUE", v.sku_variant_code)  # Assuming your trigger uppercases it
+            self.assertIn("BLUE", v.sku_variant_code)
 
     def test_create_multiple_products_with_nested_variants_and_listings(self):
         """
@@ -172,10 +181,12 @@ class InventoryAPITest(APITestCase):
                 "variants": [
                     {
                         "variant_values": {"warna": "Blue", "size": "L"},
+                        "sku_variant_code": "BLUE-L",
                         "base_price": 180000,
                     },
                     {
                         "variant_values": {"warna": "Blue", "size": "XL"},
+                        "sku_variant_code": "BLUE-XL",
                         "base_price": 185000,
                     },
                 ],
@@ -209,7 +220,7 @@ class InventoryAPITest(APITestCase):
             "variants": [
                 {
                     "variant_values": {"color": "Blue"},
-                    "sku_variant_code": "TSH-001-BLU-M",
+                    "sku_variant_code": "BLU-M",
                     "base_price": 50000,
                 }
             ],
@@ -218,11 +229,14 @@ class InventoryAPITest(APITestCase):
         self.assertEqual(response.status_code, 201)
         self.assertIn("id", response.data)
         self.assertEqual(len(response.data["variants"]), 1)
-        self.assertEqual(response.data["variants"][0]["sku_variant_code"], "TSH-001-BLU-M")
+        product = Product.objects.get(name="Test Product Quick")
+        self.assertEqual(
+            response.data["variants"][0]["sku_variant_code"], f"{product.sku_code}-BLU-M"
+        )
         self.assertEqual(response.data["variants"][0]["name"], "Blue")
 
     def test_create_product_sets_sku_variant_code_in_db(self):
-        """sku_variant_code from request is saved to the ProductVariant record."""
+        """sku_variant_code from request is saved to the ProductVariant record with sku_code prefix."""
         payload = {
             "company_id": str(self.company.id),
             "category_id": str(self.category.id),
@@ -231,7 +245,7 @@ class InventoryAPITest(APITestCase):
             "variants": [
                 {
                     "variant_values": {"color": "red"},
-                    "sku_variant_code": "SKU-001-RED-L",
+                    "sku_variant_code": "RED-L",
                     "base_price": 75000,
                 }
             ],
@@ -240,7 +254,8 @@ class InventoryAPITest(APITestCase):
         self.assertEqual(response.status_code, 201)
         variant_id = response.data["variants"][0]["id"]
         variant = ProductVariant.objects.get(id=variant_id)
-        self.assertEqual(variant.sku_variant_code, "SKU-001-RED-L")
+        product = Product.objects.get(name="SKU Test Product")
+        self.assertEqual(variant.sku_variant_code, f"{product.sku_code}-RED-L")
 
 
 class InventoryServiceStockUpdateTest(TestCase):
@@ -1774,8 +1789,6 @@ class InventorySummaryAPITest(APITestCase):
 
     def test_photo_url_uses_primary_photo_from_gallery(self):
         """Photo URL comes from the primary ProductPhoto gallery, not legacy product_photo."""
-        from django.core.files.uploadedfile import SimpleUploadedFile
-
         category = CategoryFactory(company=self.company)
         product = ProductFactory(
             company=self.company,
@@ -1790,19 +1803,13 @@ class InventorySummaryAPITest(APITestCase):
             current_cogs=10000,
             base_price=20000,
         )
-        ProductPhoto.objects.create(
-            product=product,
-            company=self.company,
-            image=SimpleUploadedFile("primary_test.jpg", b"x"),
-            is_primary=True,
-            order=0,
-        )
+        ProductPhotoFactory(product=product, company=self.company, is_primary=True, order=0)
 
         response = self.client.get("/inventory-summary/")
         self.assertEqual(response.status_code, 200)
         photo_url = response.data["products"][0]["photo_url"]
         self.assertIsNotNone(photo_url)
-        self.assertIn("primary_test.jpg", photo_url)
+        self.assertIn("test_photo", photo_url)
 
     def test_no_n1_queries(self):
         """Number of queries is bounded (no N+1)."""
@@ -2669,7 +2676,6 @@ class TestBusinessEntityService(TestCase):
             CompanyMarketplaceFactory,
             ProductFactory,
         )
-        from apps.inventory.models import ProductBusinessEntity
         from apps.inventory.services.business_entity_service import BusinessEntityService
 
         self.ProductBusinessEntity = ProductBusinessEntity
@@ -3573,3 +3579,729 @@ class AdjustStockBatchServiceTest(TestCase):
         self.assertIsNotNone(movement)
         self.assertEqual(movement.movement_type, StockMovement.MovementType.ADJUSTMENT)
         self.assertEqual(movement.quantity, -3)
+
+
+class QCPPhase1Test(APITestCase):
+    """Tests for QCP Phase 1 — Variant Photo, Supplier Link, Default Variant."""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.category = CategoryFactory(company=self.company)
+        self.user = User.objects.create_user(
+            username="qcp1_user", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def test_product_variant_photo_field_nullable(self):
+        """Variant photo is nullable (None by default)."""
+        variant = ProductVariantFactory(company=self.company)
+        self.assertFalse(variant.photo)
+
+    def test_variant_serializer_photo_url_none_when_no_photo(self):
+        """VariantSerializer returns None photo_url when no photo."""
+        from apps.inventory.serializers import VariantSerializer
+
+        variant = ProductVariantFactory(company=self.company)
+        serializer = VariantSerializer(variant)
+        self.assertIsNone(serializer.data["photo_url"])
+
+    def test_product_photo_url_falls_back_to_product_photo(self):
+        """ProductVariantStockSerializer falls back to product photo when variant has none."""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        from apps.inventory.serializers import ProductVariantStockSerializer
+
+        product = ProductFactory(company=self.company, category=self.category)
+        variant = ProductVariantFactory(product=product, company=self.company)
+        product.product_photo = SimpleUploadedFile("test.jpg", b"x")
+        product.save()
+        serializer = ProductVariantStockSerializer(variant)
+        photo_url = serializer.data["product_photo_url"]
+        self.assertIsNotNone(photo_url)
+        self.assertIn("test.jpg", photo_url)
+
+    def test_product_photo_url_uses_variant_photo_when_set(self):
+        """ProductVariantStockSerializer uses variant photo when set."""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        from apps.inventory.serializers import ProductVariantStockSerializer
+
+        product = ProductFactory(company=self.company, category=self.category)
+        variant = ProductVariantFactory(product=product, company=self.company)
+        variant.photo = SimpleUploadedFile("variant.jpg", b"x")
+        variant.save()
+        serializer = ProductVariantStockSerializer(variant)
+        photo_url = serializer.data["product_photo_url"]
+        self.assertIsNotNone(photo_url)
+        self.assertIn("variant", photo_url)
+
+    def test_product_supplier_link_returns_none_when_no_supplier(self):
+        """product_supplier_link is None when no ProductSupplier exists."""
+        from apps.inventory.serializers import ProductVariantStockSerializer
+
+        product = ProductFactory(company=self.company, category=self.category)
+        variant = ProductVariantFactory(product=product, company=self.company)
+        serializer = ProductVariantStockSerializer(variant)
+        self.assertIsNone(serializer.data["product_supplier_link"])
+
+    def test_product_supplier_link_returns_first_supplier_link(self):
+        """product_supplier_link returns first ProductSupplier link without supplier_id filter."""
+        from apps.inventory.serializers import ProductVariantStockSerializer
+
+        product = ProductFactory(company=self.company, category=self.category)
+        variant = ProductVariantFactory(product=product, company=self.company)
+        ProductSupplierFactory(
+            product=product, company=self.company, supplier_link="https://example.com"
+        )
+        serializer = ProductVariantStockSerializer(variant)
+        self.assertEqual(serializer.data["product_supplier_link"], "https://example.com")
+
+    def test_product_supplier_link_filtered_by_supplier_id(self):
+        """product_supplier_link respects supplier_id query param."""
+        from apps.inventory.serializers import ProductVariantStockSerializer
+
+        product = ProductFactory(company=self.company, category=self.category)
+        variant = ProductVariantFactory(product=product, company=self.company)
+        supplier1 = SupplierFactory(company=self.company)
+        supplier2 = SupplierFactory(company=self.company)
+        ProductSupplierFactory(
+            product=product,
+            supplier=supplier1,
+            company=self.company,
+            supplier_link="https://link1.com",
+        )
+        ProductSupplierFactory(
+            product=product,
+            supplier=supplier2,
+            company=self.company,
+            supplier_link="https://link2.com",
+        )
+        request = self.client.get("/").wsgi_request
+        request.query_params = {"supplier_id": str(supplier2.id)}  # type: ignore[attr-defined]
+        serializer = ProductVariantStockSerializer(variant, context={"request": request})
+        self.assertEqual(serializer.data["product_supplier_link"], "https://link2.com")
+
+    def test_create_product_auto_creates_default_variant(self):
+        """POST /product/ with variants=[] creates a Default variant."""
+        payload = {
+            "company_id": str(self.company.id),
+            "category_id": str(self.category.id),
+            "name": "Default Variant Product",
+            "description": "A" * 25,
+            "variant_options": {},
+            "variants": [],
+        }
+        response = self.client.post("/product/", payload, format="json")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(len(response.data["variants"]), 1)
+        self.assertEqual(response.data["variants"][0]["name"], "Default")
+        self.assertTrue(response.data["variants"][0]["sku_variant_code"].endswith("-DEFAULT"))
+
+    def test_create_product_with_variants_does_not_create_default(self):
+        """POST /product/ with explicit variants does not create a Default variant."""
+        payload = {
+            "company_id": str(self.company.id),
+            "category_id": str(self.category.id),
+            "name": "Normal Product",
+            "description": "A" * 25,
+            "variants": [
+                {
+                    "variant_values": {"size": "L"},
+                    "base_price": 100000,
+                }
+            ],
+        }
+        response = self.client.post("/product/", payload, format="json")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(len(response.data["variants"]), 1)
+        self.assertNotEqual(response.data["variants"][0]["name"], "Default")
+        self.assertFalse(response.data["variants"][0]["sku_variant_code"].endswith("-DEFAULT"))
+
+    def test_create_product_with_supplier_creates_product_supplier(self):
+        """POST /product/ with supplier_id and supplier_link creates ProductSupplier."""
+        supplier = SupplierFactory(company=self.company)
+        payload = {
+            "company_id": str(self.company.id),
+            "category_id": str(self.category.id),
+            "name": "Supplier Linked Product",
+            "description": "A" * 25,
+            "variants": [
+                {
+                    "variant_values": {"color": "Red"},
+                    "base_price": 50000,
+                }
+            ],
+            "supplier_id": str(supplier.id),
+            "supplier_link": "https://1688.com/product/123",
+        }
+        response = self.client.post("/product/", payload, format="json")
+        self.assertEqual(response.status_code, 201)
+        product_id = response.data["id"]
+        self.assertEqual(ProductSupplier.objects.filter(product_id=product_id).count(), 1)
+        ps = ProductSupplier.objects.filter(product_id=product_id).first()
+        self.assertEqual(ps.supplier_link, "https://1688.com/product/123")
+        self.assertEqual(ps.supplier_id, supplier.id)
+
+    def test_create_product_supplier_id_optional(self):
+        """POST /product/ without supplier_id does not create ProductSupplier."""
+        payload = {
+            "company_id": str(self.company.id),
+            "category_id": str(self.category.id),
+            "name": "No Supplier Product",
+            "description": "A" * 25,
+            "variants": [
+                {
+                    "variant_values": {"color": "Blue"},
+                    "base_price": 60000,
+                }
+            ],
+        }
+        response = self.client.post("/product/", payload, format="json")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(ProductSupplier.objects.count(), 0)
+
+    def test_upload_variant_photo(self):
+        """POST /product/<pid>/variants/<vid>/photo/ uploads photo."""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        product = ProductFactory(company=self.company, category=self.category)
+        variant = ProductVariantFactory(product=product, company=self.company)
+        image = SimpleUploadedFile("photo.jpg", b"image_data", content_type="image/jpeg")
+        response = self.client.post(
+            f"/product/{product.id}/variants/{variant.id}/photo/",
+            {"image": image},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNotNone(response.data["photo_url"])
+        variant.refresh_from_db()
+        self.assertTrue(variant.photo)
+
+    def test_delete_variant_photo(self):
+        """DELETE /product/<pid>/variants/<vid>/photo/ deletes photo."""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        product = ProductFactory(company=self.company, category=self.category)
+        variant = ProductVariantFactory(product=product, company=self.company)
+        variant.photo = SimpleUploadedFile("photo.jpg", b"x")
+        variant.save()
+        response = self.client.delete(
+            f"/product/{product.id}/variants/{variant.id}/photo/",
+        )
+        self.assertEqual(response.status_code, 204)
+        variant.refresh_from_db()
+        self.assertFalse(variant.photo)
+
+    def test_upload_variant_photo_wrong_product(self):
+        """Uploading photo to variant that belongs to a different product returns 404."""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        product = ProductFactory(company=self.company, category=self.category)
+        other_product = ProductFactory(company=self.company, category=self.category)
+        variant = ProductVariantFactory(product=other_product, company=self.company)
+        image = SimpleUploadedFile("photo.jpg", b"x", content_type="image/jpeg")
+        response = self.client.post(
+            f"/product/{product.id}/variants/{variant.id}/photo/",
+            {"image": image},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 404)
+
+
+class QCPPhase5Test(APITestCase):
+    """Tests for QCP Phase 5 — product_photo_url from gallery photos."""
+
+    def setUp(self):
+        from core.models import UserProfile
+
+        self.company = CompanyFactory()
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(category=self.category, company=self.company)
+        self.user = User.objects.create_user(
+            username="qcp5_inv_user", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def test_variant_stock_photo_url_from_gallery(self):
+        """Gallery photo is returned when variant.photo is null."""
+        variant = ProductVariantFactory(product=self.product, company=self.company)
+        ProductPhotoFactory(product=self.product, company=self.company, order=0)
+        response = self.client.get("/product-variants/", format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        result = next(r for r in response.data["results"] if r["id"] == str(variant.id))
+        photo_url = result["product_photo_url"]
+        self.assertIsNotNone(photo_url)
+        self.assertIn("test_photo", photo_url)
+
+    def test_variant_stock_photo_url_variant_takes_priority(self):
+        """Variant photo takes priority over gallery photo."""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        variant = ProductVariantFactory(product=self.product, company=self.company)
+        variant.photo = SimpleUploadedFile("variant.jpg", b"x")
+        variant.save()
+        ProductPhotoFactory(product=self.product, company=self.company, order=0)
+        response = self.client.get("/product-variants/", format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        result = next(r for r in response.data["results"] if r["id"] == str(variant.id))
+        photo_url = result["product_photo_url"]
+        self.assertIsNotNone(photo_url)
+        self.assertIn("variant", photo_url)
+
+
+class QCPPhase6Test(APITestCase):
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.user = User.objects.create_user(username="qcp6", password="pass")
+        from core.models import UserProfile
+
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+        category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(company=self.company, category=category)
+
+    def test_photo_proxy_returns_image_bytes(self):
+        """photo-proxy returns image bytes when gallery photo exists."""
+        ProductPhotoFactory(product=self.product, company=self.company, order=0)
+        response = self.client.get(f"/product/{self.product.id}/photo-proxy/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("image", response.get("Content-Type", ""))
+
+    def test_photo_proxy_returns_404_when_no_photo(self):
+        """photo-proxy returns 404 when product has no photos."""
+        response = self.client.get(f"/product/{self.product.id}/photo-proxy/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_photo_proxy_requires_auth(self):
+        """photo-proxy returns 404 when unauthenticated (empty queryset)."""
+        self.client.force_authenticate(user=None)
+        response = self.client.get(f"/product/{self.product.id}/photo-proxy/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class QCPPhase7Test(APITestCase):
+    """Tests for QCP Phase 7 — variant last price tracking and variant_values."""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(category=self.category, company=self.company)
+        self.product_variant = ProductVariantFactory(product=self.product)
+        self.user = User.objects.create_user(
+            username="qcp7_inv_user", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def test_variant_stock_serializer_includes_last_price(self):
+        self.product_variant.last_unit_price_foreign = Decimal("18.50")
+        self.product_variant.last_currency = "CNY"
+        self.product_variant.save()
+        response = self.client.get("/product-variants/", format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        result = next(
+            r for r in response.data["results"] if r["id"] == str(self.product_variant.id)
+        )
+        self.assertEqual(result["last_unit_price_foreign"], "18.5000")
+        self.assertEqual(result["last_currency"], "CNY")
+
+    def test_po_detail_serializer_includes_variant_values(self):
+        from apps.purchasing.factories import PurchaseOrderDetailFactory, PurchaseOrderFactory
+
+        self.product_variant.variant_values = {"color": "Red", "size": "M"}
+        self.product_variant.save()
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+        )
+        response = self.client.get(f"/purchase-order/{po.id}/", format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.data["order_details"][0]["variant_values"],
+            {"color": "Red", "size": "M"},
+        )
+
+    def test_supplier_link_populated_on_detail_creation(self):
+        from apps.inventory.factories import ProductSupplierFactory, SupplierFactory
+        from apps.purchasing.factories import PurchaseOrderFactory
+
+        supplier = SupplierFactory(company=self.company)
+        ProductSupplierFactory(
+            product=self.product,
+            supplier=supplier,
+            company=self.company,
+            supplier_link="https://supplier.com/item",
+        )
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            supplier=supplier,
+            status="DRAFT",
+        )
+        response = self.client.patch(
+            f"/purchase-order/{po.id}/",
+            {
+                "order_details": [
+                    {
+                        "product_variant_id": str(self.product_variant.id),
+                        "ordered_qty": 10,
+                        "unit_price_foreign": 15.00,
+                    }
+                ]
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        detail_response = self.client.get(f"/purchase-order/{po.id}/", format="json")
+        self.assertEqual(detail_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            detail_response.data["order_details"][0]["product_supplier_link"],
+            "https://supplier.com/item",
+        )
+
+    def test_supplier_link_prefers_po_supplier(self):
+        from apps.inventory.factories import ProductSupplierFactory, SupplierFactory
+        from apps.purchasing.factories import PurchaseOrderFactory
+
+        supplier_a = SupplierFactory(company=self.company)
+        supplier_b = SupplierFactory(company=self.company)
+        ProductSupplierFactory(
+            product=self.product,
+            supplier=supplier_a,
+            company=self.company,
+            supplier_link="https://po-supplier.com",
+        )
+        ProductSupplierFactory(
+            product=self.product,
+            supplier=supplier_b,
+            company=self.company,
+            supplier_link="https://other.com",
+        )
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            supplier=supplier_a,
+            status="DRAFT",
+        )
+        response = self.client.patch(
+            f"/purchase-order/{po.id}/",
+            {
+                "order_details": [
+                    {
+                        "product_variant_id": str(self.product_variant.id),
+                        "ordered_qty": 10,
+                        "unit_price_foreign": 15.00,
+                    }
+                ]
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        from apps.purchasing.models import PurchaseOrderDetail
+
+        detail = PurchaseOrderDetail.objects.filter(purchase_order=po).first()
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail.supplier_link, "https://po-supplier.com")
+        detail_response = self.client.get(f"/purchase-order/{po.id}/", format="json")
+        self.assertEqual(
+            detail_response.data["order_details"][0]["product_supplier_link"],
+            "https://po-supplier.com",
+        )
+
+
+class DimensionImageAPITest(APITestCase):
+    def setUp(self):
+        from core.models import UserProfile
+
+        self.company = CompanyFactory()
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(
+            category=self.category, company=self.company, dim1_key="Warna"
+        )
+        self.user = User.objects.create_user(
+            username="dim_api_user", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def test_product_dim_fields_default_to_empty_string_and_list(self):
+        product = ProductFactory(company=self.company, category=self.category)
+        self.assertEqual(product.dim1_key, "")
+        self.assertEqual(product.dim2_key, "")
+        self.assertEqual(product.dim1_options, [])
+        self.assertEqual(product.dim2_options, [])
+
+    def test_dimension_image_upload_creates_record(self):
+        photo = SimpleUploadedFile("w.jpg", b"imgdata", content_type="image/jpeg")
+        url = f"/product/{self.product.id}/dimension-image/"
+        response = self.client.post(
+            url,
+            {"dim_key": "Warna", "dim_value": "White", "photo": photo},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(
+            ProductDimensionImage.objects.filter(
+                product=self.product, dim_key="Warna", dim_value="White"
+            ).exists()
+        )
+        self.assertIn("photo_url", response.data)
+        created = ProductDimensionImage.objects.get(
+            product=self.product, dim_key="Warna", dim_value="White"
+        )
+        self.assertEqual(created.company, self.product.company)
+
+    def test_dimension_image_upload_replaces_existing_for_same_key_and_value(self):
+        existing = ProductDimensionImageFactory(
+            product=self.product, dim_key="Warna", dim_value="White"
+        )
+        original_pk = existing.pk
+        photo = SimpleUploadedFile("w2.jpg", b"newdata", content_type="image/jpeg")
+        url = f"/product/{self.product.id}/dimension-image/"
+        response = self.client.post(
+            url,
+            {"dim_key": "Warna", "dim_value": "White", "photo": photo},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            ProductDimensionImage.objects.filter(
+                product=self.product, dim_key="Warna", dim_value="White"
+            ).count(),
+            1,
+        )
+        updated = ProductDimensionImage.objects.get(
+            product=self.product, dim_key="Warna", dim_value="White"
+        )
+        self.assertEqual(updated.pk, original_pk)
+
+    def test_dimension_image_delete_removes_record(self):
+        ProductDimensionImageFactory(product=self.product, dim_key="Warna", dim_value="White")
+        url = f"/product/{self.product.id}/dimension-image/"
+        response = self.client.delete(
+            url, {"dim_key": "Warna", "dim_value": "White"}, format="json"
+        )
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(
+            ProductDimensionImage.objects.filter(
+                product=self.product, dim_key="Warna", dim_value="White"
+            ).exists()
+        )
+
+    def test_dimension_image_delete_missing_returns_404(self):
+        url = f"/product/{self.product.id}/dimension-image/"
+        response = self.client.delete(
+            url, {"dim_key": "Warna", "dim_value": "NonExistent"}, format="json"
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_photo_proxy_returns_dimension_image_when_dim_key_and_value_provided(self):
+        ProductDimensionImageFactory(product=self.product, dim_key="Warna", dim_value="White")
+        url = f"/product/{self.product.id}/photo-proxy/?dim_key=Warna&dim_value=White"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+
+    def test_photo_proxy_falls_back_to_gallery_when_no_dimension_image_matches(self):
+        from apps.inventory.factories import ProductPhotoFactory
+
+        ProductPhotoFactory(product=self.product, company=self.company, order=0)
+        url = f"/product/{self.product.id}/photo-proxy/?dim_key=Warna&dim_value=NonExistent"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+
+    def test_dimension_image_upload_missing_dim_key_returns_400(self):
+        photo = SimpleUploadedFile("w.jpg", b"imgdata", content_type="image/jpeg")
+        url = f"/product/{self.product.id}/dimension-image/"
+        response = self.client.post(url, {"dim_value": "White", "photo": photo}, format="multipart")
+        self.assertEqual(response.status_code, 400)
+
+    def test_dimension_image_upload_missing_dim_value_returns_400(self):
+        photo = SimpleUploadedFile("w.jpg", b"imgdata", content_type="image/jpeg")
+        url = f"/product/{self.product.id}/dimension-image/"
+        response = self.client.post(url, {"dim_key": "Warna", "photo": photo}, format="multipart")
+        self.assertEqual(response.status_code, 400)
+
+    def test_dimension_image_upload_missing_photo_returns_400(self):
+        url = f"/product/{self.product.id}/dimension-image/"
+        response = self.client.post(
+            url, {"dim_key": "Warna", "dim_value": "White"}, format="multipart"
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_product_detail_response_includes_dim_fields_and_dimension_images(self):
+        response = self.client.get(f"/product/{self.product.id}/")
+        self.assertEqual(response.status_code, 200)
+        for field in ("dim1_key", "dim2_key", "dim1_options", "dim2_options", "dimension_images"):
+            self.assertIn(field, response.data)
+        self.assertIsInstance(response.data["dimension_images"], list)
+
+    def test_dimension_image_upload_rejected_for_product_from_other_company(self):
+        """A user from company A cannot upload a dimension image on a product from company B."""
+        other_company = CompanyFactory()
+        other_category = CategoryFactory(company=other_company)
+        other_product = ProductFactory(company=other_company, category=other_category)
+        photo = SimpleUploadedFile("w.jpg", b"imgdata", content_type="image/jpeg")
+        url = f"/product/{other_product.id}/dimension-image/"
+        response = self.client.post(
+            url,
+            {"dim_key": "Warna", "dim_value": "White", "photo": photo},
+            format="multipart",
+        )
+        # get_queryset filters by company, so this returns 404 (not 403)
+        self.assertEqual(response.status_code, 404)
+
+    def test_dimension_image_upload_rejected_when_dim_key_not_configured_on_product(self):
+        photo = SimpleUploadedFile("c.jpg", b"imgdata", content_type="image/jpeg")
+        url = f"/product/{self.product.id}/dimension-image/"
+        response = self.client.post(
+            url,
+            {"dim_key": "Color", "dim_value": "White", "photo": photo},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Color", response.data["error"])
+
+    def test_dimension_image_upload_allowed_when_product_has_no_configured_dims(self):
+        product_no_dims = ProductFactory(company=self.company, category=self.category)
+        photo = SimpleUploadedFile("x.jpg", b"imgdata", content_type="image/jpeg")
+        url = f"/product/{product_no_dims.id}/dimension-image/"
+        response = self.client.post(
+            url,
+            {"dim_key": "AnyKey", "dim_value": "AnyValue", "photo": photo},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 200)
+
+    def test_dimension_image_delete_strips_whitespace_from_dim_key_and_value(self):
+        ProductDimensionImageFactory(product=self.product, dim_key="Warna", dim_value="White")
+        url = f"/product/{self.product.id}/dimension-image/"
+        response = self.client.delete(
+            url, {"dim_key": " Warna ", "dim_value": " White "}, format="json"
+        )
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(
+            ProductDimensionImage.objects.filter(
+                product=self.product, dim_key="Warna", dim_value="White"
+            ).exists()
+        )
+
+    def test_product_detail_dimension_images_returns_proxy_urls(self):
+        ProductDimensionImageFactory(product=self.product, dim_key="Warna", dim_value="White")
+        response = self.client.get(f"/product/{self.product.id}/")
+        self.assertEqual(response.status_code, 200)
+        dim_images = response.data["dimension_images"]
+        self.assertEqual(len(dim_images), 1)
+        photo_url = dim_images[0]["photo_url"]
+        self.assertIsNotNone(photo_url)
+        self.assertIn("photo-proxy", photo_url)
+        self.assertIn("dim_key=Warna", photo_url)
+        self.assertIn("dim_value=White", photo_url)
+
+    def test_changing_dim1_key_removes_orphan_dimension_images(self):
+        ProductDimensionImageFactory(product=self.product, dim_key="Warna", dim_value="White")
+        self.assertEqual(
+            ProductDimensionImage.objects.filter(product=self.product, dim_key="Warna").count(), 1
+        )
+        url = f"/product/{self.product.id}/"
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.patch(url, {"dim1_key": "Color"}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            ProductDimensionImage.objects.filter(product=self.product, dim_key="Warna").count(), 0
+        )
+
+
+class PODetailDimensionPhotoTest(APITestCase):
+    def setUp(self):
+        from core.models import UserProfile
+
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(
+            category=self.category, company=self.company, dim1_key="Warna"
+        )
+        self.variant = ProductVariantFactory(
+            product=self.product,
+            company=self.company,
+            variant_values={"Warna": "White"},
+        )
+        self.user = User.objects.create_user(
+            username="po_dim_user", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def test_po_detail_returns_dimension_image_url_when_variant_has_matching_dim_value(self):
+        from apps.inventory.factories import ProductDimensionImageFactory
+        from apps.purchasing.factories import PurchaseOrderDetailFactory, PurchaseOrderFactory
+
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        PurchaseOrderDetailFactory(
+            purchase_order=po, product_variant=self.variant, company=self.company
+        )
+        ProductDimensionImageFactory(product=self.product, dim_key="Warna", dim_value="White")
+
+        response = self.client.get(f"/purchase-order/{po.id}/", format="json")
+        self.assertEqual(response.status_code, 200)
+        detail_data = response.data["order_details"][0]
+        self.assertIn("product_photo_url", detail_data)
+        self.assertIsNotNone(detail_data["product_photo_url"])
+        self.assertIn("dimension_images", detail_data["product_photo_url"])
+
+    def test_po_detail_falls_back_to_variant_photo_when_no_dimension_image(self):
+        from django.core.files.base import ContentFile
+
+        from apps.purchasing.factories import PurchaseOrderDetailFactory, PurchaseOrderFactory
+
+        self.variant.photo.save("variant.jpg", ContentFile(b"variant_img"), save=True)
+
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        PurchaseOrderDetailFactory(
+            purchase_order=po, product_variant=self.variant, company=self.company
+        )
+
+        response = self.client.get(f"/purchase-order/{po.id}/", format="json")
+        self.assertEqual(response.status_code, 200)
+        detail_data = response.data["order_details"][0]
+        self.assertIsNotNone(detail_data["product_photo_url"])
+        self.assertIn("variants/photos/", detail_data["product_photo_url"])
+
+    def test_po_detail_returns_product_dim1_key_field(self):
+        from apps.purchasing.factories import PurchaseOrderDetailFactory, PurchaseOrderFactory
+
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        PurchaseOrderDetailFactory(
+            purchase_order=po, product_variant=self.variant, company=self.company
+        )
+
+        response = self.client.get(f"/purchase-order/{po.id}/", format="json")
+        self.assertEqual(response.status_code, 200)
+        detail_data = response.data["order_details"][0]
+        self.assertIn("product_dim1_key", detail_data)
+        self.assertEqual(detail_data["product_dim1_key"], "Warna")
+
+    def test_po_detail_product_dim1_key_is_none_for_product_without_dim1_key(self):
+        from apps.purchasing.factories import PurchaseOrderDetailFactory, PurchaseOrderFactory
+
+        product_no_dim = ProductFactory(category=self.category, company=self.company, dim1_key="")
+        variant_no_dim = ProductVariantFactory(
+            product=product_no_dim, company=self.company, variant_values={}
+        )
+        po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
+        PurchaseOrderDetailFactory(
+            purchase_order=po, product_variant=variant_no_dim, company=self.company
+        )
+
+        response = self.client.get(f"/purchase-order/{po.id}/", format="json")
+        self.assertEqual(response.status_code, 200)
+        detail_data = response.data["order_details"][0]
+        self.assertIsNone(detail_data["product_dim1_key"])

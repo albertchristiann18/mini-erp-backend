@@ -1,10 +1,8 @@
 name: CI
 
 on:
-  push:
-    branches: [main, develop, "**"]
   pull_request:
-    branches: [main, develop]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 env:
   PYTHONUNBUFFERED: "1"
@@ -12,8 +10,8 @@ env:
   PYTHON_VERSION: "3.12"
 
 jobs:
-  ruff-imports:
-    name: Ruff Import Order
+  lint:
+    name: Lint & Type Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,43 +20,14 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           enable-cache: true
       - run: uv sync --all-extras --dev
-      - run: uv run ruff check . --select I --diff
-
-  ruff-format:
-    name: Ruff Formatting
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          enable-cache: true
-      - run: uv sync --all-extras --dev
-      - run: uv run ruff format . --check
-
-  ruff-lint:
-    name: Ruff Lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          enable-cache: true
-      - run: uv sync --all-extras --dev
-      - run: uv run ruff check .
-
-  mypy:
-    name: Mypy Type Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          enable-cache: true
-      - run: uv sync --all-extras --dev
-      - run: uv run mypy . --config-file mypy.ini
+      - name: Ruff import order
+        run: uv run ruff check . --select I --diff
+      - name: Ruff format
+        run: uv run ruff format . --check
+      - name: Ruff lint
+        run: uv run ruff check .
+      - name: Mypy
+        run: uv run mypy . --config-file mypy.ini
         env:
           SECRET_KEY: ${{ secrets.CI_SECRET_KEY }}
 

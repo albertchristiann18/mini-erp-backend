@@ -4,10 +4,15 @@ from typing import Any
 from rest_framework import serializers
 
 from apps.inventory.models import ProductVariant, Warehouse
-from apps.purchasing.models import PurchaseOrder, PurchaseOrderDetail, PurchaseOrderStatusHistory
+from apps.purchasing.models import (
+    PurchaseOrder,
+    PurchaseOrderDetail,
+    PurchaseOrderStatusHistory,
+    SourcingPoolItem,
+)
 from apps.purchasing.services.purchasing_service import PurchaseOrderService
 from core.models import Company
-from core.utils import compress_pdf_file
+from core.utils import compress_pdf_iterative
 
 
 def _calc_shipping_fee(shipping_fee_per_cbm: Decimal, cbm: Decimal) -> int:
@@ -27,16 +32,32 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
     """Serializer for Purchase Order Details"""
 
     id = serializers.CharField(required=False)
-    product_variant_id = serializers.CharField(write_only=True)
-    variant_id = serializers.CharField(source="product_variant.id", read_only=True)
-    product_variant_name = serializers.CharField(source="product_variant.name", read_only=True)
-    product_id = serializers.CharField(source="product_variant.product.id", read_only=True)
-    product_name = serializers.CharField(source="product_variant.product.name", read_only=True)
+    product_variant_id = serializers.CharField(
+        write_only=True, required=False, allow_null=True, allow_blank=True
+    )
+    variant_id = serializers.SerializerMethodField()
+    product_variant_name = serializers.SerializerMethodField()
+    sku_variant_code = serializers.SerializerMethodField()
+    product_id = serializers.SerializerMethodField()
+    product_name = serializers.SerializerMethodField()
     product_supplier_link = serializers.CharField(
         source="supplier_link", read_only=True, allow_null=True
     )
+    variant_values = serializers.SerializerMethodField()
     product_photo_url = serializers.SerializerMethodField()
+    last_unit_price_foreign = serializers.SerializerMethodField()
+    last_currency = serializers.SerializerMethodField()
+    last_discounted_unit_price_foreign = serializers.SerializerMethodField()
     updated_qty = serializers.IntegerField(read_only=True)
+    sourcing_item_id = serializers.SerializerMethodField()
+    is_draft = serializers.SerializerMethodField()
+    draft_product_name = serializers.CharField(read_only=True)
+    product_dim1_key = serializers.SerializerMethodField()
+
+    def get_product_dim1_key(self, obj: "PurchaseOrderDetail") -> str | None:
+        if not obj.product_variant_id:  # type: ignore[attr-defined]
+            return None
+        return obj.product_variant.product.dim1_key or None  # type: ignore[union-attr]
 
     class Meta:
         model = PurchaseOrderDetail
@@ -45,10 +66,12 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
             "product_variant_id",
             "variant_id",
             "product_variant_name",
+            "sku_variant_code",
             "product_id",
             "product_name",
             "product_supplier_link",
             "product_photo_url",
+            "variant_values",
             "ordered_qty",
             "received_qty",
             "updated_qty",
@@ -65,6 +88,13 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
             "avg_sales_7d",
             "stock_on_hand",
             "incoming_qty",
+            "last_unit_price_foreign",
+            "last_currency",
+            "last_discounted_unit_price_foreign",
+            "sourcing_item_id",
+            "is_draft",
+            "draft_product_name",
+            "product_dim1_key",
         ]
         read_only_fields = [
             "updated_qty",
@@ -73,20 +103,97 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
             "stock_on_hand",
             "incoming_qty",
             "variant_id",
+            "sourcing_item_id",
+            "is_draft",
+            "draft_product_name",
+            "product_dim1_key",
         ]
 
-    def get_product_photo_url(self, obj: PurchaseOrderDetail) -> str | None:
-        photo = obj.product_variant.product.product_photo
-        return photo.url if photo else None
+    def get_variant_id(self, obj: PurchaseOrderDetail) -> str | None:
+        return str(obj.product_variant.id) if obj.product_variant_id else None  # type: ignore[union-attr, attr-defined]
+
+    def get_product_variant_name(self, obj: PurchaseOrderDetail) -> str | None:
+        return obj.product_variant.name if obj.product_variant_id else None  # type: ignore[union-attr, attr-defined]
+
+    def get_sku_variant_code(self, obj: PurchaseOrderDetail) -> str | None:
+        return obj.product_variant.sku_variant_code if obj.product_variant_id else None  # type: ignore[union-attr, attr-defined]
+
+    def get_product_id(self, obj: PurchaseOrderDetail) -> str | None:
+        return str(obj.product_variant.product.id) if obj.product_variant_id else None  # type: ignore[union-attr, attr-defined]
+
+    def get_product_name(self, obj: PurchaseOrderDetail) -> str | None:
+        return obj.product_variant.product.name if obj.product_variant_id else None  # type: ignore[union-attr, attr-defined]
+
+    def get_variant_values(self, obj: PurchaseOrderDetail) -> dict | None:
+        return obj.product_variant.variant_values if obj.product_variant_id else None  # type: ignore[union-attr, attr-defined]
+
+    def get_sourcing_item_id(self, obj: PurchaseOrderDetail) -> str | None:
+        return str(obj.sourcing_item_id) if obj.sourcing_item_id else None  # type: ignore[attr-defined]
+
+    def get_is_draft(self, obj: PurchaseOrderDetail) -> bool:
+        return obj.sourcing_item_id is not None and obj.product_variant_id is None  # type: ignore[attr-defined]
+
+    def get_product_photo_url(self, obj: "PurchaseOrderDetail") -> str | None:
+        if not obj.product_variant_id:  # type: ignore[attr-defined]
+            return None
+        variant = obj.product_variant
+        product = variant.product  # type: ignore[union-attr]
+
+        # 1. Per-dimension-value image (highest priority)
+        dim1_key = product.dim1_key  # type: ignore[union-attr]
+        if dim1_key:
+            dim1_value = (variant.variant_values or {}).get(dim1_key)  # type: ignore[union-attr]
+            if dim1_value:
+                # Iterate the prefetch cache — do NOT call .filter() or .order_by()
+                for dim_img in product.dimension_images.all():  # type: ignore[union-attr]
+                    if dim_img.dim_key == dim1_key and dim_img.dim_value == dim1_value:
+                        return dim_img.photo.url  # type: ignore[no-any-return]
+
+        # 2. Variant-level photo
+        if variant.photo:  # type: ignore[union-attr]
+            return variant.photo.url  # type: ignore[union-attr, no-any-return]
+
+        # 3. Product gallery — use prefetch cache, sort in Python (avoids bypassing prefetch)
+        gallery = sorted(product.photos.all(), key=lambda p: p.order)  # type: ignore[union-attr]
+        if gallery:
+            return gallery[0].image.url  # type: ignore[no-any-return]
+
+        # 4. Product-level photo field
+        if variant.product.product_photo:  # type: ignore[union-attr]
+            return variant.product.product_photo.url  # type: ignore[union-attr, no-any-return]
+
+        return None
+
+    def get_last_unit_price_foreign(self, obj: PurchaseOrderDetail) -> str | None:
+        if not obj.product_variant_id:  # type: ignore[attr-defined]
+            return None
+        val = obj.product_variant.last_unit_price_foreign  # type: ignore[union-attr]
+        return str(val) if val is not None else None
+
+    def get_last_currency(self, obj: PurchaseOrderDetail) -> str | None:
+        if not obj.product_variant_id:  # type: ignore[attr-defined]
+            return None
+        return obj.product_variant.last_currency  # type: ignore[union-attr]
+
+    def get_last_discounted_unit_price_foreign(self, obj: PurchaseOrderDetail) -> str | None:
+        if not obj.product_variant_id:  # type: ignore[attr-defined]
+            return None
+        val = obj.product_variant.last_discounted_unit_price_foreign  # type: ignore[union-attr]
+        return str(val) if val is not None else None
 
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        if not attrs.get("id") and not attrs.get("product_variant_id"):
+            raise serializers.ValidationError(
+                {"product_variant_id": "This field is required when adding a new order line."}
+            )
         return self._calculate_prices(attrs)
 
     def create(self, validated_data: dict[str, Any]) -> PurchaseOrderDetail:
         validated_data = self._calculate_prices(validated_data)
-        product_variant_id = validated_data.pop("product_variant_id")
-        product_variant = ProductVariant.objects.get(id=product_variant_id)
-        validated_data["product_variant"] = product_variant
+        product_variant_id = validated_data.pop("product_variant_id", None)
+        if product_variant_id:
+            product_variant = ProductVariant.objects.get(id=product_variant_id)
+            validated_data["product_variant"] = product_variant
         return super().create(validated_data)  # type: ignore
 
     def _calculate_prices(self, attrs: dict[str, Any]) -> dict[str, Any]:
@@ -126,8 +233,10 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
 
         attrs["total_price_foreign"] = unit_price_foreign * ordered_qty
         attrs["discounted_total_price_foreign"] = discounted_unit_price_foreign * ordered_qty
-        attrs["total_price_base"] = attrs["unit_price_base"] * ordered_qty
-        attrs["discounted_total_price_base"] = attrs["discounted_unit_price_base"] * ordered_qty
+        attrs["total_price_base"] = int(round(unit_price_foreign * exchange_rate * ordered_qty))
+        attrs["discounted_total_price_base"] = int(
+            round(discounted_unit_price_foreign * exchange_rate * ordered_qty)
+        )
 
         return attrs
 
@@ -173,6 +282,7 @@ class PurchaseOrderListSerializer(serializers.ModelSerializer):
             "cdate",
             "udate",
             "note",
+            "has_discount",
         ]
         read_only_fields = ["id", "cdate", "udate"]
 
@@ -227,6 +337,7 @@ class PurchaseOrderCreateSerializer(serializers.ModelSerializer):
             "delivery_order_invoice_file",
             "packing_list_file",
             "note",
+            "has_discount",
         ]
         extra_kwargs = {
             "purchase_order_number": {"required": False},
@@ -352,6 +463,9 @@ class PurchaseOrderCreateSerializer(serializers.ModelSerializer):
         return ret
 
 
+PDF_COMPRESS_THRESHOLD_MB = 2.0
+
+
 class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
     """Serializer for updating Purchase Orders and Details"""
 
@@ -399,6 +513,7 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
             "delivery_order_invoice_file",
             "packing_list_file",
             "note",
+            "has_discount",
         ]
         extra_kwargs = {
             "purchase_order_number": {"required": False},
@@ -459,7 +574,7 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
 
         if current_status != PurchaseOrder.POStatus.DRAFT:
             new_exchange_rate = attrs.get("exchange_rate")
-            if new_exchange_rate is not None:
+            if new_exchange_rate is not None and new_exchange_rate != self.instance.exchange_rate:
                 raise serializers.ValidationError(
                     {
                         "exchange_rate": f"Cannot change exchange_rate when status is {current_status}. Exchange rate can only be changed in DRAFT status."
@@ -653,20 +768,30 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
 
         return attrs
 
-    @staticmethod
-    def _compress_file(value: Any) -> Any:
-        if value:
-            return compress_pdf_file(value)
-        return value
+    def _compress_file(self, field_name: str, value: Any) -> Any:
+        if not value:
+            return value
+        file_size_mb = (value.size or 0) / (1024 * 1024)
+        if file_size_mb <= PDF_COMPRESS_THRESHOLD_MB:
+            return value
+        result, was_compressed = compress_pdf_iterative(value, target_mb=PDF_COMPRESS_THRESHOLD_MB)
+        if was_compressed:
+            if not hasattr(self, "_compressed_fields"):
+                self._compressed_fields: list[str] = []
+            self._compressed_fields.append(field_name)
+        return result
 
     def validate_purchase_order_invoice_file(self, value: Any) -> Any:
-        return self._compress_file(value)
+        return self._compress_file("purchase_order_invoice_file", value)
 
     def validate_delivery_order_file(self, value: Any) -> Any:
-        return self._compress_file(value)
+        return self._compress_file("delivery_order_file", value)
 
     def validate_delivery_order_invoice_file(self, value: Any) -> Any:
-        return self._compress_file(value)
+        return self._compress_file("delivery_order_invoice_file", value)
+
+    def validate_packing_list_file(self, value: Any) -> Any:
+        return self._compress_file("packing_list_file", value)
 
     def _calculate_totals_from_details(
         self, order_details: list, existing_details_map: dict | None = None
@@ -774,6 +899,19 @@ class PurchaseOrderReadSerializer(serializers.ModelSerializer):
     editable_fields = serializers.SerializerMethodField()
     supplier_id = serializers.CharField(source="supplier.id", read_only=True, allow_null=True)
 
+    def to_representation(self, instance: PurchaseOrder) -> dict[str, Any]:
+        ret: dict[str, Any] = super().to_representation(instance)
+        freight_map = self._build_freight_map(instance)
+        for item in ret.get("order_details") or []:
+            detail_id = str(item.get("id", ""))
+            f = freight_map.get(detail_id, {})
+            item["shipping_per_unit_idr"] = f.get("shipping_per_unit_idr")
+            item["delivery_per_unit_idr"] = f.get("delivery_per_unit_idr")
+            item["commission_per_unit_idr"] = f.get("commission_per_unit_idr")
+            item["cogs_per_unit_idr"] = f.get("cogs_per_unit_idr")
+            item["product_has_dimensions"] = f.get("product_has_dimensions")
+        return ret
+
     class Meta:
         model = PurchaseOrder
         fields = [
@@ -820,6 +958,7 @@ class PurchaseOrderReadSerializer(serializers.ModelSerializer):
             "delivery_order_invoice_file",
             "packing_list_file",
             "note",
+            "has_discount",
             "editable_fields",
             "cdate",
             "udate",
@@ -837,3 +976,175 @@ class PurchaseOrderReadSerializer(serializers.ModelSerializer):
 
     def get_editable_fields(self, obj: PurchaseOrder) -> dict[str, list[str]]:
         return PurchaseOrder.get_editable_fields(obj.status)
+
+    @staticmethod
+    def _build_freight_map(po: PurchaseOrder) -> dict[str, dict]:
+        details = list(po.order_details.all())
+
+        dims_map: dict[str, bool] = {}
+        for detail in details:
+            if detail.product_variant_id is None:  # type: ignore[attr-defined]
+                dims_map[str(detail.id)] = False
+                continue
+            p = detail.product_variant.product  # type: ignore[union-attr]
+            dims_map[str(detail.id)] = p.length > 0 and p.width > 0 and p.height > 0
+
+        is_delivered = po.status in [
+            PurchaseOrder.POStatus.DELIVERED,
+            PurchaseOrder.POStatus.COMPLETED,
+        ]
+
+        if not is_delivered:
+            return {
+                detail_id: {
+                    "shipping_per_unit_idr": None,
+                    "delivery_per_unit_idr": None,
+                    "commission_per_unit_idr": None,
+                    "cogs_per_unit_idr": None,
+                    "product_has_dimensions": has_dims,
+                }
+                for detail_id, has_dims in dims_map.items()
+            }
+
+        shipping_fee = Decimal(str(po.shipping_fee or 0))
+        delivery_fee = Decimal(str(po.delivery_fee or 0))
+        exchange_rate = Decimal(str(po.exchange_rate or 1))
+        commission_fee_total = Decimal(str(po.commission_fee or 0))
+        total_item_amount_idr = Decimal(str(po.total_item_amount or 0))
+        delivery_fee_idr = delivery_fee * exchange_rate
+
+        total_cbm = Decimal("0")
+        item_data: dict[str, dict] = {}
+        for detail in details:
+            if detail.product_variant_id is None:  # type: ignore[attr-defined]
+                item_data[str(detail.id)] = {
+                    "cbm": Decimal("0"),
+                    "item_value_idr": Decimal(str(detail.discounted_total_price_base or 0)),
+                    "received_qty": 0,
+                    "unit_price_idr": Decimal("0"),
+                }
+                continue
+            p = detail.product_variant.product  # type: ignore[union-attr]
+            length = Decimal(str(p.length or 0))
+            width = Decimal(str(p.width or 0))
+            height = Decimal(str(p.height or 0))
+            ordered_qty = Decimal(str(detail.ordered_qty or 0))
+            received_qty = detail.received_qty or 0
+            cbm_per_unit = length * width * height / Decimal("1000000")
+            detail_total_cbm = cbm_per_unit * ordered_qty
+            total_cbm += detail_total_cbm
+            item_data[str(detail.id)] = {
+                "cbm": detail_total_cbm,
+                "item_value_idr": Decimal(str(detail.discounted_total_price_base or 0)),
+                "received_qty": received_qty,
+                "unit_price_idr": Decimal(
+                    str(detail.discounted_unit_price_base or detail.unit_price_base or 0)
+                ),
+            }
+
+        result: dict[str, dict] = {}
+        for detail in details:
+            detail_id = str(detail.id)
+            data = item_data[detail_id]
+            received_qty = data["received_qty"]
+
+            if received_qty <= 0:
+                result[detail_id] = {
+                    "shipping_per_unit_idr": None,
+                    "delivery_per_unit_idr": None,
+                    "commission_per_unit_idr": None,
+                    "cogs_per_unit_idr": None,
+                    "product_has_dimensions": dims_map[detail_id],
+                }
+                continue
+
+            qty = Decimal(str(received_qty))
+
+            shipping_share = (
+                int(round(shipping_fee * data["cbm"] / total_cbm)) if total_cbm > 0 else 0
+            )
+            if total_item_amount_idr > 0:
+                value_ratio = data["item_value_idr"] / total_item_amount_idr
+                delivery_share = int(round(delivery_fee_idr * value_ratio))
+                commission_share = int(round(commission_fee_total * value_ratio))
+            else:
+                delivery_share = 0
+                commission_share = 0
+
+            shipping_per_unit = int(round(Decimal(str(shipping_share)) / qty))
+            delivery_per_unit = int(round(Decimal(str(delivery_share)) / qty))
+            commission_per_unit = int(round(Decimal(str(commission_share)) / qty))
+            cogs_per_unit = int(
+                round(
+                    data["unit_price_idr"]
+                    + Decimal(str(shipping_share)) / qty
+                    + Decimal(str(delivery_share)) / qty
+                    + Decimal(str(commission_share)) / qty
+                )
+            )
+
+            result[detail_id] = {
+                "shipping_per_unit_idr": shipping_per_unit,
+                "delivery_per_unit_idr": delivery_per_unit,
+                "commission_per_unit_idr": commission_per_unit,
+                "cogs_per_unit_idr": cogs_per_unit,
+                "product_has_dimensions": dims_map[detail_id],
+            }
+
+        return result
+
+
+class SourcingPoolItemSerializer(serializers.ModelSerializer):
+    id = serializers.CharField(read_only=True)
+    category_id = serializers.CharField(read_only=True, allow_null=True)
+    category_name = serializers.CharField(source="category.name", read_only=True, allow_null=True)
+    category_code = serializers.CharField(
+        source="category.category_code", read_only=True, allow_null=True
+    )
+    image_proxy_url = serializers.SerializerMethodField()
+    variant_id = serializers.CharField(read_only=True, allow_null=True)
+    variant_code = serializers.CharField(read_only=True, allow_null=True)
+
+    def get_image_proxy_url(self, obj: SourcingPoolItem) -> str | None:
+        if not obj.image_file:
+            return None
+        request = self.context.get("request")
+        if request:
+            url: str = request.build_absolute_uri(
+                f"/api/purchasing/sourcing-pool/items/{obj.id}/image/"
+            )
+            return url
+        return None
+
+    class Meta:
+        model = SourcingPoolItem
+        fields = [
+            "id",
+            "product_name",
+            "variant_name",
+            "category_id",
+            "category_name",
+            "category_code",
+            "unit_price",
+            "discounted_price",
+            "qty_suggested",
+            "supplier_link",
+            "image_url",
+            "image_proxy_url",
+            "image_download_status",
+            "notes",
+            "times_ordered",
+            "variant_id",
+            "variant_code",
+            "cdate",
+            "udate",
+        ]
+        read_only_fields = [
+            "id",
+            "image_download_status",
+            "times_ordered",
+            "variant_id",
+            "variant_code",
+            "cdate",
+            "udate",
+        ]
