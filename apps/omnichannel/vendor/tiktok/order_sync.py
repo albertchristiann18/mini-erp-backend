@@ -4,7 +4,7 @@ from typing import List, Optional
 from django.db import transaction
 from django.utils import timezone
 
-from apps.inventory.models import ProductVariant
+from apps.catalog.models import ProductVariant
 from apps.omnichannel.vendor.tiktok.client import TikTokAPIError, TikTokClient
 from apps.omnichannel.vendor.tiktok.models import TikTokShop
 from apps.sales.models import SalesOrder

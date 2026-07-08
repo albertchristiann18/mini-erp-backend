@@ -1,7 +1,7 @@
 import factory
 from django.utils import timezone
 
-from apps.inventory.factories import ProductVariantFactory
+from apps.catalog.factories import ProductVariantFactory
 from apps.sales.models import (
     SalesOrder,
     SalesOrderItem,

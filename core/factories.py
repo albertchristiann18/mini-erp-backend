@@ -1,7 +1,8 @@
 import factory
 from django.contrib.auth.models import User
 
-from apps.inventory.models import Category, Warehouse
+from apps.catalog.models import Category
+from apps.inventory.models import Warehouse
 from core.models import Company, Marketplace, MarketplaceConnection, UserProfile
 
 

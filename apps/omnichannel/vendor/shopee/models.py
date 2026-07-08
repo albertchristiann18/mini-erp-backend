@@ -125,7 +125,7 @@ class ShopeeStockSyncLog(DefaultModel):
         related_name="stock_sync_logs",
     )
     variant = models.ForeignKey(
-        "inventory.ProductVariant",
+        "catalog.ProductVariant",
         on_delete=models.SET_NULL,
         null=True,
         blank=True,

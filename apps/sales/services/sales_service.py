@@ -4,11 +4,8 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
-from apps.inventory.models import (
-    ProductVariant,
-    ProductVariantWarehouse,
-    StockMovement,
-)
+from apps.catalog.models import ProductVariant
+from apps.inventory.models import ProductVariantWarehouse, StockMovement
 from apps.sales.models import (
     SalesOrder,
     SalesOrderItem,

@@ -4,7 +4,8 @@ from django.conf import settings
 from django.db import models
 from django_ulid.models import ULIDField
 
-from apps.inventory.models import ProductVariant, Warehouse
+from apps.catalog.models import ProductVariant
+from apps.inventory.models import Warehouse
 from core.models import DefaultModel
 from core.utils import generate_ulid, round_decimal
 

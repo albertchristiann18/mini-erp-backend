@@ -321,7 +321,8 @@ class ReplenishmentView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request: Request) -> Response:
-        from apps.inventory.models import ProductVariant, ProductVariantWarehouse
+        from apps.catalog.models import ProductVariant
+        from apps.inventory.models import ProductVariantWarehouse
         from apps.inventory.services.inventory_service import InventoryService
 
         warehouse_id = request.query_params.get("warehouse_id")

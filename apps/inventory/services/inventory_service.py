@@ -9,9 +9,9 @@ from django_ulid.models import ULIDField
 
 logger = logging.getLogger(__name__)
 
+from apps.catalog.models import ProductVariant
 from apps.inventory.models import (
     ProductCogs,
-    ProductVariant,
     ProductVariantWarehouse,
     StockMovement,
 )
@@ -116,7 +116,7 @@ class InventoryService:
         from django.db.models import Sum
         from django.utils import timezone
 
-        from apps.inventory.models import ProductVariant
+        from apps.catalog.models import ProductVariant
         from apps.sales.models import SalesOrder, SalesOrderItem
 
         date_from = timezone.now().date() - timedelta(days=days)
@@ -978,7 +978,8 @@ class InventoryService:
           - If different: compute delta = target - current; update physical_qty; create MARKETPLACE_SYNC movement
         dry_run=True: compute all results but do NOT save anything.
         """
-        from apps.inventory.models import ProductVariant, ProductVariantWarehouse, StockMovement
+        from apps.catalog.models import ProductVariant
+        from apps.inventory.models import ProductVariantWarehouse, StockMovement
 
         reconciled = []
         skipped = []

@@ -9,7 +9,7 @@ from typing import Optional
 from django.db import transaction
 from django.utils import timezone
 
-from apps.inventory.models import ProductVariant
+from apps.catalog.models import ProductVariant
 from apps.omnichannel.vendor.shopee.client import ShopeeAPIError, ShopeeClient
 from apps.omnichannel.vendor.shopee.models import ShopeeShop
 from apps.sales.models import SalesOrder

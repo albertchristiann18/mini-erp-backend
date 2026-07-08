@@ -26,7 +26,8 @@ class BusinessEntityService:
 
     @transaction.atomic
     def attach_product(self, product_id: str, business_entity_id: str, company_id: str) -> dict:
-        from apps.inventory.models import BusinessEntity, Product, ProductBusinessEntity
+        from apps.catalog.models import Product
+        from apps.inventory.models import BusinessEntity, ProductBusinessEntity
 
         product = Product.objects.get(id=product_id, company_id=company_id)
         business_entity = BusinessEntity.objects.select_related("marketplace").get(

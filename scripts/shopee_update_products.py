@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 def run() -> None:
-    from apps.inventory.models import Product, ProductVariantMarketplace
+    from apps.catalog.models import Product, ProductVariantMarketplace
 
     shops = ShopeeShop.objects.filter(is_active=True).select_related("marketplace")
     service = ShopeeProductPushService()

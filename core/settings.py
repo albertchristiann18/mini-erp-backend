@@ -57,6 +57,7 @@ INSTALLED_APPS = [
     "corsheaders",
     "rest_framework",
     "rest_framework_simplejwt",
+    "apps.catalog",
     "apps.inventory",
     "apps.purchasing",
     "apps.sales",

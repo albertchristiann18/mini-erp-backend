@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 class ShopeeProductPushService:
     def push_product(self, product: Any, shop: ShopeeShop) -> dict[str, Any]:
-        from apps.inventory.models import ProductVariantMarketplace
+        from apps.catalog.models import ProductVariantMarketplace
 
         errors: list[str] = []
 
@@ -204,7 +204,7 @@ class ShopeeProductPushService:
             return {"item_id": None, "models_pushed": 0, "errors": errors}
 
     def update_product(self, product: Any, shop: ShopeeShop) -> dict[str, Any]:
-        from apps.inventory.models import ProductVariantMarketplace
+        from apps.catalog.models import ProductVariantMarketplace
 
         errors: list[str] = []
         marketplace = shop.marketplace

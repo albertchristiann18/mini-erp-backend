@@ -7,12 +7,8 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 
-from apps.inventory.factories import (
-    ProductCogsFactory,
-    ProductFactory,
-    ProductVariantFactory,
-    ProductVariantWarehouseFactory,
-)
+from apps.catalog.factories import ProductFactory, ProductVariantFactory
+from apps.inventory.factories import ProductCogsFactory, ProductVariantWarehouseFactory
 from apps.inventory.models import StockMovement
 from apps.sales.factories import SalesOrderFactory, SalesOrderItemFactory, SalesReturnFactory
 from apps.sales.models import SalesOrder, SalesOrderCogsDetail, SalesOrderItem, SalesReturn

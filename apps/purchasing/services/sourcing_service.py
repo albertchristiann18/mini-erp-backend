@@ -4,7 +4,7 @@ from decimal import Decimal, InvalidOperation
 
 import openpyxl
 
-from apps.inventory.models import Category, ProductVariant
+from apps.catalog.models import Category, ProductVariant
 from apps.purchasing.models import ColorAbbreviation
 from core.models import Company
 

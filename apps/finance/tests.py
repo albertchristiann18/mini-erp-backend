@@ -7,6 +7,7 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 
+from apps.catalog.factories import ProductFactory, ProductVariantFactory
 from apps.finance.factories import (
     AccountsPayableFactory,
     AccountsReceivableFactory,
@@ -19,12 +20,7 @@ from apps.finance.models import AccountsPayable, AccountsReceivable, CashTransac
 from apps.finance.services.accounts_payable_service import AccountsPayableService
 from apps.finance.services.report_service import ReportService
 from apps.finance.services.stock_report_service import StockReportService
-from apps.inventory.factories import (
-    CompanyFactory,
-    ProductCogsFactory,
-    ProductFactory,
-    ProductVariantFactory,
-)
+from apps.inventory.factories import CompanyFactory, ProductCogsFactory
 from apps.inventory.models import StockMovement
 from apps.purchasing.factories import PurchaseOrderFactory
 from apps.sales.factories import SalesOrderFactory, SalesOrderItemFactory

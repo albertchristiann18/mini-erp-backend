@@ -3,7 +3,8 @@ from typing import Any
 
 from rest_framework import serializers
 
-from apps.inventory.models import ProductVariant, Warehouse
+from apps.catalog.models import ProductVariant
+from apps.inventory.models import Warehouse
 from apps.purchasing.models import (
     PurchaseOrder,
     PurchaseOrderDetail,

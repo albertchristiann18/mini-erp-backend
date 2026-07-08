@@ -1,10 +1,7 @@
 import factory
 
-from apps.inventory.factories import (
-    CompanyFactory,
-    ProductVariantFactory,
-    WarehouseFactory,
-)
+from apps.catalog.factories import ProductVariantFactory
+from apps.inventory.factories import CompanyFactory, WarehouseFactory
 from apps.purchasing.models import (
     PurchaseOrder,
     PurchaseOrderDetail,

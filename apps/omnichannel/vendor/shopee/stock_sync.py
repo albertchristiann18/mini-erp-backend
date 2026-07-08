@@ -20,7 +20,7 @@ class ShopeeStockSyncService:
         variant_id: str,
         shop: ShopeeShop,
     ) -> bool:
-        from apps.inventory.models import ProductVariant, ProductVariantMarketplace
+        from apps.catalog.models import ProductVariant, ProductVariantMarketplace
 
         try:
             variant = ProductVariant.objects.select_related("company").get(
@@ -90,7 +90,7 @@ class ShopeeStockSyncService:
             return False
 
     def sync_all_variants(self, shop: ShopeeShop) -> dict[str, Any]:
-        from apps.inventory.models import ProductVariantMarketplace
+        from apps.catalog.models import ProductVariantMarketplace
 
         if not shop.marketplace:
             return {"success": 0, "failed": 0, "errors": []}
@@ -182,7 +182,7 @@ class ShopeeStockSyncService:
         }
 
     def sync_batch(self, variant_ids: list[str], shop: ShopeeShop) -> dict[str, Any]:
-        from apps.inventory.models import ProductVariantMarketplace
+        from apps.catalog.models import ProductVariantMarketplace
 
         if not variant_ids:
             return {"synced": 0, "failed": 0, "failed_variant_ids": []}

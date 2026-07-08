@@ -15,24 +15,20 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 
-from apps.inventory.factories import (
+from apps.catalog.factories import (
     CategoryFactory,
-    CompanyFactory,
     ProductFactory,
     ProductPhotoFactory,
-    ProductSupplierFactory,
     ProductVariantFactory,
+)
+from apps.catalog.models import Category, Product, ProductVariant
+from apps.inventory.factories import (
+    CompanyFactory,
+    ProductSupplierFactory,
     ProductVariantWarehouseFactory,
     SupplierFactory,
 )
-from apps.inventory.models import (
-    Category,
-    Product,
-    ProductCogs,
-    ProductSupplier,
-    ProductVariant,
-    ProductVariantWarehouse,
-)
+from apps.inventory.models import ProductCogs, ProductSupplier, ProductVariantWarehouse
 from apps.inventory.services.inventory_service import InventoryService
 from apps.purchasing.factories import (
     PurchaseOrderDetailFactory,

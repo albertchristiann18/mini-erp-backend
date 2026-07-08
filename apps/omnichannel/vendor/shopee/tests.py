@@ -11,20 +11,14 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 
-from apps.inventory.factories import (
-    ProductCogsFactory,
+from apps.catalog.factories import (
     ProductFactory,
     ProductVariantFactory,
     ProductVariantMarketplaceFactory,
-    ProductVariantWarehouseFactory,
 )
-from apps.inventory.models import (
-    Category,
-    Product,
-    ProductVariant,
-    ProductVariantWarehouse,
-    StockMovement,
-)
+from apps.catalog.models import Category, Product, ProductVariant
+from apps.inventory.factories import ProductCogsFactory, ProductVariantWarehouseFactory
+from apps.inventory.models import ProductVariantWarehouse, StockMovement
 from apps.inventory.services.inventory_service import InventoryService
 from apps.omnichannel.vendor.shopee.client import ShopeeClient
 from apps.omnichannel.vendor.shopee.exceptions import ShopeeAPIError, ShopeeAuthError
@@ -1527,7 +1521,7 @@ class TestShopeeSyncBatchFix(TestCase):
         shop = ShopeeShopFactory(company=company, marketplace=marketplace, is_active=True)
         service = ShopeeStockSyncService()
         with patch(
-            "apps.inventory.models.ProductVariantMarketplace.objects.filter",
+            "apps.catalog.models.ProductVariantMarketplace.objects.filter",
             side_effect=Exception("db down"),
         ):
             with self.assertLogs("apps.omnichannel.vendor.shopee.stock_sync", level="ERROR") as cm:
@@ -1913,7 +1907,7 @@ class TestShopeeProductUpdate(TestCase):
         client.force_authenticate(user=user)
 
         with patch(
-            "apps.inventory.services.product_service.ProductService._trigger_shopee_product_update"
+            "apps.catalog.services.product_service.ProductService._trigger_shopee_product_update"
         ) as mock_trigger:
             with self.captureOnCommitCallbacks(execute=True):
                 client.patch(
@@ -2143,7 +2137,7 @@ class TestShopeePriceSync(TestCase):
         client.force_authenticate(user=user)
 
         with patch(
-            "apps.inventory.services.product_service.ProductService._trigger_shopee_price_update"
+            "apps.catalog.services.product_service.ProductService._trigger_shopee_price_update"
         ) as mock_trigger:
             with self.captureOnCommitCallbacks(execute=True):
                 resp = client.patch(

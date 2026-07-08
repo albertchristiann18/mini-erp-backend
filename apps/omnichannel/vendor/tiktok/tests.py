@@ -7,12 +7,8 @@ from django.test import TestCase
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 
-from apps.inventory.factories import (
-    ProductCogsFactory,
-    ProductFactory,
-    ProductVariantFactory,
-    ProductVariantWarehouseFactory,
-)
+from apps.catalog.factories import ProductFactory, ProductVariantFactory
+from apps.inventory.factories import ProductCogsFactory, ProductVariantWarehouseFactory
 from apps.omnichannel.vendor.tiktok.factories import (
     TikTokShopFactory,
     TikTokWebhookLogFactory,

@@ -3,7 +3,7 @@ from typing import Any
 
 from django.db import transaction
 
-from apps.inventory.models import (
+from apps.catalog.models import (
     Product,
     ProductVariant,
 )
@@ -222,7 +222,7 @@ class ProductService:
         }
 
     def _trigger_shopee_product_update(self, product_id: str) -> None:
-        from apps.inventory.models import Product
+        from apps.catalog.models import Product
         from apps.omnichannel.vendor.shopee.product_push import ShopeeProductPushService
         from core.models import MarketplaceConnection
 
@@ -255,7 +255,7 @@ class ProductService:
                 )
 
     def update_variant_base_price(self, variant_id: str, base_price: int) -> dict[str, str | int]:
-        from apps.inventory.models import ProductVariant
+        from apps.catalog.models import ProductVariant
 
         variant = ProductVariant.objects.get(id=variant_id)
         variant.base_price = base_price
@@ -315,7 +315,8 @@ class ProductService:
     def cleanup_orphan_dimension_images(
         self, product_id: str, old_dim1_key: str, old_dim2_key: str
     ) -> None:
-        from apps.inventory.models import Product, ProductDimensionImage
+        from apps.catalog.models import Product
+        from apps.inventory.models import ProductDimensionImage
 
         try:
             product = Product.objects.get(id=product_id)
@@ -340,7 +341,7 @@ class ProductService:
         ProductDimensionImage.objects.filter(product=product, dim_key__in=keys_to_clean).delete()
 
     def _trigger_shopee_price_update(self, listing_ids: list[str], company_id: str) -> None:
-        from apps.inventory.models import ProductVariantMarketplace
+        from apps.catalog.models import ProductVariantMarketplace
         from apps.omnichannel.vendor.shopee.product_push import ShopeeProductPushService
         from core.models import MarketplaceConnection
 

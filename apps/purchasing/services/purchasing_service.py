@@ -9,7 +9,8 @@ from django.db.models import Q
 from django.utils import timezone
 from django_ulid.models import ULIDField
 
-from apps.inventory.models import ProductCogs, ProductVariant, ProductVariantWarehouse, Warehouse
+from apps.catalog.models import ProductVariant
+from apps.inventory.models import ProductCogs, ProductVariantWarehouse, Warehouse
 from apps.inventory.services.inventory_service import InventoryService
 from apps.purchasing.models import PurchaseOrder, PurchaseOrderDetail
 from core.models import Company

@@ -2,8 +2,9 @@ from datetime import date
 
 from django.db.models import F, Sum
 
+from apps.catalog.models import ProductVariant
 from apps.finance.models import AccountsPayable, AccountsReceivable, Expense, PaymentRecord
-from apps.inventory.models import ProductCogs, ProductVariant
+from apps.inventory.models import ProductCogs
 from apps.sales.models import SalesOrder, SalesOrderItem
 
 

@@ -1,7 +1,7 @@
 # mypy: disable-error-code="no-untyped-call"
 import factory
 
-from apps.inventory.factories import ProductVariantFactory
+from apps.catalog.factories import ProductVariantFactory
 from apps.omnichannel.vendor.shopee.models import ShopeeShop, ShopeeStockSyncLog, ShopeeWebhookLog
 from core.factories import CompanyFactory
 
