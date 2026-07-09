@@ -212,7 +212,7 @@ def main():
             print(f"Company 'Mirako' id: {company_id}")
 
             cur.execute(
-                "SELECT warehouse_id FROM inventory_warehouse WHERE company_id = %s ORDER BY cdate LIMIT 1",
+                "SELECT warehouse_id FROM master_warehouse WHERE company_id = %s ORDER BY cdate LIMIT 1",
                 (company_id,),
             )
             row = cur.fetchone()
@@ -234,7 +234,7 @@ def main():
             # Build variant_map: sku_variant_code → (product_variant_id, product_id)
             cur.execute(
                 "SELECT product_variant_id, product_id, sku_variant_code "
-                "FROM inventory_productvariant WHERE company_id = %s",
+                "FROM master_productvariant WHERE company_id = %s",
                 (company_id,),
             )
             variant_map: dict[str, tuple[str, str]] = {}
@@ -285,11 +285,11 @@ def main():
                 "UPDATE inventory_productvariantwarehouse "
                 "SET incoming_qty=0, outgoing_qty=0, physical_qty=0, checkout_qty=0 "
                 "WHERE product_variant_id IN ("
-                "  SELECT product_variant_id FROM inventory_productvariant WHERE company_id=%s)",
+                "  SELECT product_variant_id FROM master_productvariant WHERE company_id=%s)",
                 (company_id,),
             )
             cur.execute(
-                "UPDATE inventory_productvariant "
+                "UPDATE master_productvariant "
                 "SET total_incoming_qty=0, total_outgoing_qty=0, total_available_qty=0 "
                 "WHERE company_id=%s",
                 (company_id,),
@@ -297,13 +297,13 @@ def main():
             cur.execute(
                 "DELETE FROM inventory_stockmovement "
                 "WHERE product_variant_id IN ("
-                "  SELECT product_variant_id FROM inventory_productvariant WHERE company_id=%s)",
+                "  SELECT product_variant_id FROM master_productvariant WHERE company_id=%s)",
                 (company_id,),
             )
             cur.execute(
                 "DELETE FROM inventory_productcogs "
                 "WHERE product_variant_id IN ("
-                "  SELECT product_variant_id FROM inventory_productvariant WHERE company_id=%s)",
+                "  SELECT product_variant_id FROM master_productvariant WHERE company_id=%s)",
                 (company_id,),
             )
             print("Stock reset complete.")
@@ -617,7 +617,7 @@ def main():
 
                     # UPDATE ProductVariant — only total_available_qty for COMPLETED POs
                     cur.execute(
-                        "UPDATE inventory_productvariant "
+                        "UPDATE master_productvariant "
                         "SET total_available_qty = total_available_qty + %s "
                         "WHERE product_variant_id = %s",
                         (order_qty, variant_id),
@@ -710,7 +710,7 @@ def main():
 
             cur.execute(
                 "SELECT SUM(physical_qty) FROM inventory_productvariantwarehouse pvw "
-                "JOIN inventory_productvariant pv ON pvw.product_variant_id = pv.product_variant_id "
+                "JOIN master_productvariant pv ON pvw.product_variant_id = pv.product_variant_id "
                 "WHERE pv.company_id = %s",
                 (company_id,),
             )
@@ -719,7 +719,7 @@ def main():
 
             cur.execute(
                 "SELECT COUNT(*) FROM inventory_productvariantwarehouse pvw "
-                "JOIN inventory_productvariant pv ON pvw.product_variant_id = pv.product_variant_id "
+                "JOIN master_productvariant pv ON pvw.product_variant_id = pv.product_variant_id "
                 "WHERE pv.company_id = %s AND pvw.physical_qty < 0",
                 (company_id,),
             )

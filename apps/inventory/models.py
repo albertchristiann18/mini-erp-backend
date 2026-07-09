@@ -1,9 +1,21 @@
 from django.db import models
 from django_ulid.models import ULIDField
 
-from apps.catalog.models import Product, ProductVariant
+from apps.catalog.models import (
+    Product,
+    ProductVariant as CatalogProductVariant,
+)
 from core.models import DefaultModel
 from core.utils import generate_ulid
+
+
+class ProductVariant(CatalogProductVariant):
+    """Proxy model for migration compatibility - ProductVariant is owned by catalog app."""
+
+    class Meta:
+        proxy = True
+        # Register under inventory app for old migrations that reference it
+        # This allows 'inventory.ProductVariant' to be resolved during migration
 
 
 class Warehouse(DefaultModel):
@@ -15,6 +27,9 @@ class Warehouse(DefaultModel):
     address = models.TextField(blank=True, null=True)
     is_marketplace_visible = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
+
+    class Meta:
+        db_table = "master_warehouse"
 
 
 class ProductVariantWarehouse(DefaultModel):

@@ -19,7 +19,7 @@ class Category(DefaultModel):
     shopee_category_id = models.BigIntegerField(null=True, blank=True)
 
     class Meta:
-        db_table = "inventory_category"
+        db_table = "master_category"
 
     def __str__(self) -> str:
         return self.name
@@ -65,7 +65,7 @@ class Product(DefaultModel):
     dim2_options = models.JSONField(default=list, blank=True)
 
     class Meta:
-        db_table = "inventory_product"
+        db_table = "master_product"
 
     def get_shopee_reguler_shipping(self) -> Any:
         """Combines General Reguler and Shopee-specific Reguler expeditions"""
@@ -99,7 +99,7 @@ class ProductPhoto(DefaultModel):
 
     class Meta:
         ordering = ["order"]
-        db_table = "product_photo"
+        db_table = "master_productphoto"
 
     def save(self, *args: Any, **kwargs: Any) -> None:
         if self.is_primary:
@@ -148,7 +148,7 @@ class ProductVariant(DefaultModel):
     price_updated_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        db_table = "inventory_productvariant"
+        db_table = "master_productvariant"
 
     def __str__(self) -> str:
         return f"{self.sku_variant_code}-{self.name}"
@@ -180,4 +180,4 @@ class ProductVariantMarketplace(DefaultModel):
 
     class Meta:
         unique_together = ["product_variant", "marketplace"]
-        db_table = "inventory_productvariantmarketplace"
+        db_table = "master_productvariantmarketplace"

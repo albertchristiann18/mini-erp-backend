@@ -148,12 +148,12 @@ def step_reset() -> None:
             purchasing_purchaseorderdetail, purchasing_purchaseorder,
             po_number_counter,
             inventory_stockmovement,
-            inventory_productvariantwarehouse, inventory_productvariantmarketplace,
+            inventory_productvariantwarehouse, master_productvariantmarketplace,
             inventory_productbusinessentity, inventory_productsupplier,
-            inventory_productdimensionimage, product_photo,
+            inventory_productdimensionimage, master_productphoto,
             purchasing_sourcingpoolitem, purchasing_sourcingpool,
-            inventory_productvariant, inventory_product,
-            inventory_supplier, inventory_category
+            master_productvariant, master_product,
+            inventory_supplier, master_category
         RESTART IDENTITY CASCADE
     """)
     conn.close()
@@ -209,7 +209,7 @@ def step_master_data() -> None:
     # Apply default dimensions to all products (weight in grams, dimensions in cm)
     conn = psycopg.connect(**DB_PARAMS, autocommit=True)
     conn.cursor().execute(
-        "UPDATE inventory_product SET weight = 200, height = 1, width = 30, length = 30"
+        "UPDATE master_product SET weight = 200, height = 1, width = 30, length = 30"
     )
     conn.close()
     print("[OK] Default dimensions set on all products (200g, 1×30×30 cm)")
@@ -257,7 +257,7 @@ def step_product_links() -> None:
             """
             UPDATE inventory_productsupplier ps
             SET supplier_link = %s
-            FROM inventory_product p
+            FROM master_product p
             WHERE ps.product_id = p.product_id
               AND p.sku_code = %s
             """,
@@ -719,7 +719,7 @@ def step_split_deliveries() -> None:
         cur.execute(
             """
             SELECT pv.product_variant_id, pv.sku_variant_code
-            FROM inventory_productvariant pv
+            FROM master_productvariant pv
             WHERE pv.sku_variant_code = ANY(%s)
             """,
             (list(split_variant_skus),),
@@ -859,8 +859,8 @@ def step_reconciliation() -> None:
     cur = conn.cursor()
 
     checks = [
-        ("Products", "SELECT COUNT(*) FROM inventory_product"),
-        ("Variants", "SELECT COUNT(*) FROM inventory_productvariant"),
+        ("Products", "SELECT COUNT(*) FROM master_product"),
+        ("Variants", "SELECT COUNT(*) FROM master_productvariant"),
         ("Purchase Orders", "SELECT COUNT(*) FROM purchasing_purchaseorder"),
         ("PO Details", "SELECT COUNT(*) FROM purchasing_purchaseorderdetail"),
         ("FIFO records", "SELECT COUNT(*) FROM inventory_productcogs"),

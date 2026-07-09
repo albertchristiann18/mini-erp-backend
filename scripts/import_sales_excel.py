@@ -230,7 +230,7 @@ def main():
             print(f"  Company 'Mirako' id: {company_id}")
 
             cur.execute(
-                "SELECT warehouse_id FROM inventory_warehouse "
+                "SELECT warehouse_id FROM master_warehouse "
                 "WHERE company_id = %s ORDER BY cdate LIMIT 1",
                 (company_id,),
             )
@@ -243,7 +243,7 @@ def main():
             # Build variant_map: sku_variant_code -> product_variant_id
             cur.execute(
                 "SELECT product_variant_id, sku_variant_code "
-                "FROM inventory_productvariant WHERE company_id = %s",
+                "FROM master_productvariant WHERE company_id = %s",
                 (company_id,),
             )
             variant_map: dict[str, str] = {}
@@ -275,7 +275,7 @@ def main():
             cur.execute(
                 "SELECT pv.product_variant_id, pvw.physical_qty "
                 "FROM inventory_productvariantwarehouse pvw "
-                "JOIN inventory_productvariant pv "
+                "JOIN master_productvariant pv "
                 "  ON pvw.product_variant_id = pv.product_variant_id "
                 "WHERE pv.company_id = %s",
                 (company_id,),
@@ -320,7 +320,7 @@ def main():
                 "DELETE FROM inventory_stockmovement "
                 "WHERE movement_type = 'OUT' "
                 "AND product_variant_id IN ("
-                "  SELECT product_variant_id FROM inventory_productvariant "
+                "  SELECT product_variant_id FROM master_productvariant "
                 "  WHERE company_id = %s"
                 ")",
                 (company_id,),
@@ -344,7 +344,7 @@ def main():
                 "), "
                 "outgoing_qty = 0 "
                 "WHERE pvw.product_variant_id IN ("
-                "  SELECT product_variant_id FROM inventory_productvariant "
+                "  SELECT product_variant_id FROM master_productvariant "
                 "  WHERE company_id = %s"
                 ")",
                 (company_id,),
@@ -352,13 +352,13 @@ def main():
             print(f"  Restored warehouse stock: {cur.rowcount}")
 
             cur.execute(
-                "UPDATE inventory_productvariant "
+                "UPDATE master_productvariant "
                 "SET total_outgoing_qty = 0, "
                 "    total_available_qty = ("
                 "      SELECT COALESCE(SUM(pvw.physical_qty), 0) "
                 "      FROM inventory_productvariantwarehouse pvw "
                 "      WHERE pvw.product_variant_id = "
-                "            inventory_productvariant.product_variant_id"
+                "            master_productvariant.product_variant_id"
                 "    ) "
                 "WHERE company_id = %s",
                 (company_id,),
@@ -392,7 +392,7 @@ def main():
             cur.execute(
                 "SELECT pv.product_variant_id, pvw.physical_qty "
                 "FROM inventory_productvariantwarehouse pvw "
-                "JOIN inventory_productvariant pv "
+                "JOIN master_productvariant pv "
                 "  ON pvw.product_variant_id = pv.product_variant_id "
                 "WHERE pv.company_id = %s",
                 (company_id,),
@@ -800,7 +800,7 @@ def main():
                             )
 
                             cur.execute(
-                                "UPDATE inventory_productvariant "
+                                "UPDATE master_productvariant "
                                 "SET total_outgoing_qty = total_outgoing_qty + %s, "
                                 "    total_available_qty = "
                                 "        total_available_qty - %s "
@@ -881,7 +881,7 @@ def main():
 
             cur.execute(
                 "SELECT COUNT(*) FROM inventory_productvariantwarehouse pvw "
-                "JOIN inventory_productvariant pv "
+                "JOIN master_productvariant pv "
                 "  ON pvw.product_variant_id = pv.product_variant_id "
                 "WHERE pv.company_id = %s AND pvw.physical_qty < 0",
                 (company_id,),
@@ -900,7 +900,7 @@ def main():
             cur.execute(
                 "SELECT COALESCE(SUM(pvw.physical_qty), 0) "
                 "FROM inventory_productvariantwarehouse pvw "
-                "JOIN inventory_productvariant pv "
+                "JOIN master_productvariant pv "
                 "  ON pvw.product_variant_id = pv.product_variant_id "
                 "WHERE pv.company_id = %s",
                 (company_id,),

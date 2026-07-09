@@ -316,7 +316,7 @@ def main():
             # Step 2 — Ensure warehouse exists
             # ---------------------------------------------------------------
             cur.execute(
-                "SELECT warehouse_id FROM inventory_warehouse WHERE name = 'Master Warehouse' AND company_id = %s LIMIT 1",
+                "SELECT warehouse_id FROM master_warehouse WHERE name = 'Master Warehouse' AND company_id = %s LIMIT 1",
                 (company_id,),
             )
             row = cur.fetchone()
@@ -327,7 +327,7 @@ def main():
                 warehouse_id = new_ulid()
                 cur.execute(
                     """
-                    INSERT INTO inventory_warehouse
+                    INSERT INTO master_warehouse
                       (warehouse_id, company_id, name, address, is_marketplace_visible, is_active, cdate, udate)
                     VALUES (%s, %s, 'Master Warehouse', NULL, TRUE, TRUE, %s, %s)
                     ON CONFLICT DO NOTHING
@@ -382,7 +382,7 @@ def main():
 
                 # Look up by category_code (globally unique in this schema)
                 cur.execute(
-                    "SELECT category_id FROM inventory_category WHERE category_code = %s LIMIT 1",
+                    "SELECT category_id FROM master_category WHERE category_code = %s LIMIT 1",
                     (cat_code,),
                 )
                 existing = cur.fetchone()
@@ -393,7 +393,7 @@ def main():
                     cid = new_ulid()
                     cur.execute(
                         """
-                        INSERT INTO inventory_category
+                        INSERT INTO master_category
                           (category_id, company_id, name, category_code,
                            shopee_category_id, is_active, master_category_key, cdate, udate)
                         VALUES (%s, %s, %s, %s, %s, TRUE, '', %s, %s)
@@ -403,7 +403,7 @@ def main():
                     )
                     # Re-fetch after insert
                     cur.execute(
-                        "SELECT category_id FROM inventory_category WHERE category_code = %s LIMIT 1",
+                        "SELECT category_id FROM master_category WHERE category_code = %s LIMIT 1",
                         (cat_code,),
                     )
                     cat_map[cat_code] = str(cur.fetchone()[0])
@@ -416,7 +416,7 @@ def main():
             # Step 5 — Disable SKU trigger, insert products, re-enable
             # ---------------------------------------------------------------
             print("\nDisabling trigger trg_generate_sku ...")
-            cur.execute("ALTER TABLE inventory_product DISABLE TRIGGER trg_generate_sku")
+            cur.execute("ALTER TABLE master_product DISABLE TRIGGER trg_generate_sku")
 
             products_inserted = 0
             products_skipped = 0
@@ -449,7 +449,7 @@ def main():
 
                 cur.execute(
                     """
-                    INSERT INTO inventory_product (
+                    INSERT INTO master_product (
                       product_id, company_id, category_id, name, sku_code,
                       total_qty, total_cogs,
                       variant_options, specifications, shipping_config,
@@ -484,7 +484,7 @@ def main():
 
                 # Fetch actual product_id (may already exist via ON CONFLICT)
                 cur.execute(
-                    "SELECT product_id FROM inventory_product WHERE sku_code = %s LIMIT 1",
+                    "SELECT product_id FROM master_product WHERE sku_code = %s LIMIT 1",
                     (sku_code,),
                 )
                 actual_pid = str(cur.fetchone()[0])
@@ -497,11 +497,11 @@ def main():
                     product_supplier_map[sku_code] = supplier_name
 
             print("Re-enabling trigger trg_generate_sku ...")
-            cur.execute("ALTER TABLE inventory_product ENABLE TRIGGER trg_generate_sku")
+            cur.execute("ALTER TABLE master_product ENABLE TRIGGER trg_generate_sku")
 
             # Reset sequence
             cur.execute(
-                "SELECT setval('product_sku_seq', GREATEST((SELECT COUNT(*) FROM inventory_product WHERE company_id = %s), 1))",
+                "SELECT setval('product_sku_seq', GREATEST((SELECT COUNT(*) FROM master_product WHERE company_id = %s), 1))",
                 (company_id,),
             )
             seq_val = cur.fetchone()[0]
@@ -592,7 +592,7 @@ def main():
                 vid = new_ulid()
                 cur.execute(
                     """
-                    INSERT INTO inventory_productvariant (
+                    INSERT INTO master_productvariant (
                       product_variant_id, company_id, product_id, name,
                       sku_variant_code, variant_values,
                       current_cogs, base_price,
@@ -626,7 +626,7 @@ def main():
 
                 # Fetch actual variant id
                 cur.execute(
-                    "SELECT product_variant_id FROM inventory_productvariant WHERE sku_variant_code = %s LIMIT 1",
+                    "SELECT product_variant_id FROM master_productvariant WHERE sku_variant_code = %s LIMIT 1",
                     (sku_variant_code,),
                 )
                 actual_vid = str(cur.fetchone()[0])
@@ -665,31 +665,27 @@ def main():
             # ---------------------------------------------------------------
             # Step 7 — Summary (autocommit: no explicit commit needed)
             # ---------------------------------------------------------------
-            cur.execute(
-                "SELECT COUNT(*) FROM inventory_category WHERE company_id = %s", (company_id,)
-            )
+            cur.execute("SELECT COUNT(*) FROM master_category WHERE company_id = %s", (company_id,))
             n_cats = cur.fetchone()[0]
 
-            cur.execute(
-                "SELECT COUNT(*) FROM inventory_product WHERE company_id = %s", (company_id,)
-            )
+            cur.execute("SELECT COUNT(*) FROM master_product WHERE company_id = %s", (company_id,))
             n_products = cur.fetchone()[0]
 
             cur.execute(
-                "SELECT COUNT(*) FROM inventory_productvariant WHERE company_id = %s", (company_id,)
+                "SELECT COUNT(*) FROM master_productvariant WHERE company_id = %s", (company_id,)
             )
             n_variants = cur.fetchone()[0]
 
             cur.execute(
                 "SELECT COUNT(*) FROM inventory_productvariantwarehouse pvw "
-                "JOIN inventory_productvariant pv ON pvw.product_variant_id = pv.product_variant_id "
+                "JOIN master_productvariant pv ON pvw.product_variant_id = pv.product_variant_id "
                 "WHERE pv.company_id = %s",
                 (company_id,),
             )
             n_stocks = cur.fetchone()[0]
 
             cur.execute(
-                "SELECT COUNT(*) FROM inventory_productvariant WHERE sku_variant_code = '' AND company_id = %s",
+                "SELECT COUNT(*) FROM master_productvariant WHERE sku_variant_code = '' AND company_id = %s",
                 (company_id,),
             )
             n_empty_codes = cur.fetchone()[0]
