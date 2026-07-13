@@ -549,6 +549,236 @@ class CompanyScopedViewsTest(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
 
+# ---- Cash Transaction Import Tests ----
+
+
+class CashTransactionParserTest(TestCase):
+    """Tests for parse_cash_transactions_sheet (pure parsing, no DB)."""
+
+    def _make_row(
+        self,
+        row_num: object = 1,
+        col1: object = None,
+        transaction_date: object = date(2025, 4, 8),
+        description: object = "Chip In Albert",
+        type1: object = "In",
+        type_str: object = "In (In)",
+        value: object = 25000000,
+    ) -> tuple:
+        return (row_num, col1, transaction_date, description, type1, type_str, value)
+
+    def test_happy_path_inflow_row(self):
+        from core.management.commands.import_cash_transactions_parser import (
+            parse_cash_transactions_sheet,
+        )
+
+        header = ("No", None, "Date", "Desc", "Type1", "Type", "Value")
+        row = self._make_row(
+            row_num=1,
+            transaction_date=date(2025, 4, 8),
+            description="Chip In Albert",
+            type1="In",
+            type_str="In (In)",
+            value=25000000,
+        )
+        result = parse_cash_transactions_sheet([header, row])
+        self.assertEqual(len(result), 1)
+        parsed = result[0]
+        self.assertEqual(parsed.transaction_date, date(2025, 4, 8))
+        self.assertEqual(parsed.description, "Chip In Albert")
+        self.assertEqual(parsed.transaction_type, "INFLOW")
+        self.assertEqual(parsed.amount, 25000000)
+        self.assertEqual(parsed.category, "EQUITY_INJECTION")
+        self.assertEqual(parsed.note, "Excel Type: In (In)")
+
+    def test_happy_path_outflow_row(self):
+        from core.management.commands.import_cash_transactions_parser import (
+            parse_cash_transactions_sheet,
+        )
+
+        header = ("No", None, "Date", "Desc", "Type1", "Type", "Value")
+        row = self._make_row(
+            row_num=2,
+            transaction_date=date(2025, 5, 1),
+            description="Server costs",
+            type1="Out",
+            type_str="Out (Ops)",
+            value=500000,
+        )
+        result = parse_cash_transactions_sheet([header, row])
+        self.assertEqual(len(result), 1)
+        parsed = result[0]
+        self.assertEqual(parsed.transaction_type, "OUTFLOW")
+        self.assertEqual(parsed.category, "OTHER_EXPENSE")
+        self.assertEqual(parsed.amount, 500000)
+
+    def test_decimal_precision_no_float(self):
+        from core.management.commands.import_cash_transactions_parser import (
+            parse_cash_transactions_sheet,
+        )
+
+        header = ("No", None, "Date", "Desc", "Type1", "Type", "Value")
+        row = self._make_row(value=12345678)
+        result = parse_cash_transactions_sheet([header, row])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].amount, 12345678)
+
+    def test_skip_row_no_row_number(self):
+        from core.management.commands.import_cash_transactions_parser import (
+            parse_cash_transactions_sheet,
+        )
+
+        header = ("No", None, "Date", "Desc", "Type1", "Type", "Value")
+        row = self._make_row(row_num=None)
+        result = parse_cash_transactions_sheet([header, row])
+        self.assertEqual(result, [])
+
+    def test_skip_row_non_integer_row_number(self):
+        from core.management.commands.import_cash_transactions_parser import (
+            parse_cash_transactions_sheet,
+        )
+
+        header = ("No", None, "Date", "Desc", "Type1", "Type", "Value")
+        row = self._make_row(row_num="abc")
+        result = parse_cash_transactions_sheet([header, row])
+        self.assertEqual(result, [])
+
+    def test_skip_row_no_value(self):
+        from core.management.commands.import_cash_transactions_parser import (
+            parse_cash_transactions_sheet,
+        )
+
+        header = ("No", None, "Date", "Desc", "Type1", "Type", "Value")
+        row = self._make_row(value=None)
+        result = parse_cash_transactions_sheet([header, row])
+        self.assertEqual(result, [])
+
+    def test_skip_row_unparseable_value(self):
+        from core.management.commands.import_cash_transactions_parser import (
+            parse_cash_transactions_sheet,
+        )
+
+        header = ("No", None, "Date", "Desc", "Type1", "Type", "Value")
+        row = self._make_row(value="N/A")
+        result = parse_cash_transactions_sheet([header, row])
+        self.assertEqual(result, [])
+
+    def test_unknown_category_defaults_to_other_expense(self):
+        from core.management.commands.import_cash_transactions_parser import (
+            parse_cash_transactions_sheet,
+        )
+
+        header = ("No", None, "Date", "Desc", "Type1", "Type", "Value")
+        row = self._make_row(type_str="Unknown Type")
+        result = parse_cash_transactions_sheet([header, row])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].category, "OTHER_EXPENSE")
+
+    def test_description_truncated_to_2000_chars(self):
+        from core.management.commands.import_cash_transactions_parser import (
+            parse_cash_transactions_sheet,
+        )
+
+        header = ("No", None, "Date", "Desc", "Type1", "Type", "Value")
+        long_desc = "x" * 2500
+        row = self._make_row(description=long_desc)
+        result = parse_cash_transactions_sheet([header, row])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(len(result[0].description), 2000)
+
+
+class CashTransactionImportServiceTest(TestCase):
+    """Tests for CashTransactionImportService (requires DB)."""
+
+    def setUp(self):
+        from core.factories import CompanyFactory
+
+        self.company = CompanyFactory()
+
+    def _make_parsed_row(
+        self,
+        transaction_date: date | None = None,
+        description: str = "Test",
+        amount: int = 1000000,
+        transaction_type: str = "INFLOW",
+        category: str = "EQUITY_INJECTION",
+        note: str = "Excel Type: In (In)",
+    ) -> "object":
+        from core.management.commands.import_cash_transactions_parser import ParsedCashTransaction
+
+        return ParsedCashTransaction(
+            transaction_date=transaction_date or date(2025, 4, 8),
+            description=description,
+            amount=amount,
+            transaction_type=transaction_type,
+            category=category,
+            note=note,
+        )
+
+    def test_import_inserts_rows(self):
+        from apps.finance.models import CashTransaction
+        from apps.finance.services.cash_transaction_import_service import (
+            CashTransactionImportService,
+        )
+
+        rows = [self._make_parsed_row(), self._make_parsed_row(description="Row 2")]
+        CashTransactionImportService().import_cash_transactions(
+            company=self.company,
+            parsed_rows=rows,
+        )
+        self.assertEqual(CashTransaction.objects.filter(company=self.company).count(), 2)
+
+    def test_import_is_idempotent(self):
+        from apps.finance.models import CashTransaction
+        from apps.finance.services.cash_transaction_import_service import (
+            CashTransactionImportService,
+        )
+
+        rows = [self._make_parsed_row(), self._make_parsed_row(description="Row 2")]
+        service = CashTransactionImportService()
+        service.import_cash_transactions(
+            company=self.company,
+            parsed_rows=rows,
+        )
+        service.import_cash_transactions(
+            company=self.company,
+            parsed_rows=rows,
+        )
+        self.assertEqual(CashTransaction.objects.filter(company=self.company).count(), 2)
+
+    def test_import_sets_amount_always_positive(self):
+        from apps.finance.models import CashTransaction
+        from apps.finance.services.cash_transaction_import_service import (
+            CashTransactionImportService,
+        )
+
+        rows = [
+            self._make_parsed_row(amount=5000000),
+            self._make_parsed_row(amount=300000, transaction_type="OUTFLOW"),
+        ]
+        CashTransactionImportService().import_cash_transactions(
+            company=self.company,
+            parsed_rows=rows,
+        )
+        amounts = list(
+            CashTransaction.objects.filter(company=self.company).values_list("amount", flat=True)
+        )
+        for amt in amounts:
+            self.assertGreater(amt, 0)
+
+    def test_import_result_counts_match(self):
+        from apps.finance.services.cash_transaction_import_service import (
+            CashTransactionImportService,
+        )
+
+        rows = [self._make_parsed_row(), self._make_parsed_row(description="Row 2")]
+        result = CashTransactionImportService().import_cash_transactions(
+            company=self.company,
+            parsed_rows=rows,
+        )
+        self.assertEqual(result.inserted, 2)
+
+
 class CashTransactionAPITest(APITestCase):
     def setUp(self):
         self.client = APIClient()
