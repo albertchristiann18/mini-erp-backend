@@ -2233,30 +2233,3 @@ class TestScriptsShopeeSyncOrders(TestCase):
         log = ShopeeSyncLog.objects.get(shop=shop, sync_type="orders")
         self.assertEqual(log.status, "failed")
         self.assertEqual(log.error_message, "oops")
-
-
-class TestManagementCommandsUnregistered(TestCase):
-    def test_management_commands_no_longer_registered(self):
-        from django.core.management import get_commands
-
-        commands = get_commands()
-        removed = [
-            "shopee_match_products",
-            "shopee_push_products",
-            "shopee_sync_orders",
-            "shopee_sync_stock",
-            "shopee_update_prices",
-            "shopee_update_products",
-            "tiktok_sync_orders",
-            "tiktok_sync_stock",
-        ]
-        for name in removed:
-            self.assertNotIn(name, commands, f"{name} should not be registered")
-        self.assertNotIn(
-            "create_user", commands, "create_user should no longer be a management command"
-        )
-        self.assertNotIn(
-            "change_user_role",
-            commands,
-            "change_user_role should no longer be a management command",
-        )

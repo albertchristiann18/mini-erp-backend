@@ -2,7 +2,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 
 from core.factories import CompanyFactory, UserProfileFactory
-from scripts.create_user import run
+from core.services.user_service import create_user as run
 
 User = get_user_model()
 
