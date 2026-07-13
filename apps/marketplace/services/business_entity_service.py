@@ -9,7 +9,7 @@ class BusinessEntityService:
         Returns all CompanyMarketplace records for the company.
         If none exist yet, seeds Shopee and TikTok as defaults.
         """
-        from apps.inventory.models import CompanyMarketplace
+        from apps.marketplace.models import CompanyMarketplace
         from core.models import Company
 
         qs = CompanyMarketplace.objects.filter(company_id=company_id)
@@ -27,7 +27,7 @@ class BusinessEntityService:
     @transaction.atomic
     def attach_product(self, product_id: str, business_entity_id: str, company_id: str) -> dict:
         from apps.catalog.models import Product
-        from apps.inventory.models import BusinessEntity, ProductBusinessEntity
+        from apps.marketplace.models import BusinessEntity, ProductBusinessEntity
 
         product = Product.objects.get(id=product_id, company_id=company_id)
         business_entity = BusinessEntity.objects.select_related("marketplace").get(
@@ -67,7 +67,7 @@ class BusinessEntityService:
 
     @transaction.atomic
     def detach_product(self, product_business_entity_id: str, company_id: str) -> None:
-        from apps.inventory.models import ProductBusinessEntity
+        from apps.marketplace.models import ProductBusinessEntity
 
         try:
             obj = ProductBusinessEntity.objects.get(

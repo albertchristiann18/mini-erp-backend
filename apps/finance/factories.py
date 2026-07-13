@@ -12,9 +12,9 @@ from apps.finance.models import (
     ExpenseCategory,
     PaymentRecord,
 )
-from apps.inventory.factories import CompanyFactory
 from apps.purchasing.factories import PurchaseOrderFactory
 from apps.sales.factories import SalesOrderFactory
+from core.factories import CompanyFactory
 
 
 class AccountsPayableFactory(factory.django.DjangoModelFactory):

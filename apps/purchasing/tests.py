@@ -23,7 +23,6 @@ from apps.catalog.factories import (
 )
 from apps.catalog.models import Category, Product, ProductVariant
 from apps.inventory.factories import (
-    CompanyFactory,
     ProductVariantWarehouseFactory,
 )
 from apps.inventory.models import ProductCogs, ProductVariantWarehouse
@@ -45,7 +44,7 @@ from apps.purchasing.serializers import PurchaseOrderReadSerializer, PurchaseOrd
 from apps.purchasing.services.purchasing_service import PurchaseOrderService
 from apps.purchasing.services.sourcing_product_service import SourcingProductService
 from apps.purchasing.services.sourcing_service import SourcingService
-from core.factories import UserProfileFactory, WarehouseFactory
+from core.factories import CompanyFactory, UserProfileFactory, WarehouseFactory
 from core.models import UserProfile
 from core.utils import compress_pdf_iterative
 

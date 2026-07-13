@@ -28,8 +28,8 @@ class PurchaseOrderService:
     """
 
     def _trigger_shopee_sync_batch(self, variant_ids: list[str], company_id: str) -> None:
+        from apps.marketplace.models import MarketplaceConnection
         from apps.marketplace.shopee.stock_sync import ShopeeStockSyncService
-        from core.models import MarketplaceConnection
 
         connections = MarketplaceConnection.objects.filter(
             platform="SHOPEE",

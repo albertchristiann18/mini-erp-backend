@@ -7,7 +7,7 @@ from apps.catalog.models import (
     ProductVariant,
     ProductVariantMarketplace,
 )
-from core.factories import CompanyFactory, MarketplaceFactory
+from core.factories import CompanyFactory
 
 
 class CategoryFactory(factory.django.DjangoModelFactory):
@@ -63,7 +63,7 @@ class ProductVariantMarketplaceFactory(factory.django.DjangoModelFactory):
         model = ProductVariantMarketplace
 
     product_variant = factory.SubFactory(ProductVariantFactory)  # type: ignore[no-untyped-call]
-    marketplace = factory.SubFactory(MarketplaceFactory)  # type: ignore[no-untyped-call]
+    marketplace = factory.SubFactory("apps.marketplace.factories.MarketplaceFactory")  # type: ignore[no-untyped-call]
     company = factory.SubFactory(CompanyFactory)  # type: ignore[no-untyped-call]
     selling_price = 10000
     is_active = True

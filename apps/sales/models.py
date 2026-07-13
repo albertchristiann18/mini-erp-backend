@@ -25,7 +25,7 @@ class SalesOrder(DefaultModel):
     )
     order_number = models.CharField(max_length=100, unique=True, editable=False, default="")
     marketplace = models.ForeignKey(
-        "core.Marketplace", on_delete=models.SET_NULL, null=True, blank=True
+        "marketplace.Marketplace", on_delete=models.SET_NULL, null=True, blank=True
     )
     marketplace_order_id = models.CharField(max_length=255, db_index=True, blank=True, default="")
     marketplace_order_number = models.CharField(max_length=255, blank=True, default="")

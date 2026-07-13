@@ -26,7 +26,7 @@ from rest_framework.response import Response
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
-from core import views
+from core import views as core_views
 
 
 @api_view(["GET", "PATCH"])
@@ -98,18 +98,13 @@ urlpatterns = [
     path("", include("apps.purchasing.urls")),
     path("", include("apps.sales.urls")),
     path("", include("apps.finance.urls")),
+    path("", include("apps.marketplace.urls")),
     path("", include("apps.marketplace.shopee.urls")),
     path("", include("apps.marketplace.tiktok.urls")),
 ]
 
 router = DefaultRouter()
-router.register(r"company", views.CompanyViewSet)
-router.register(r"marketplace", views.MarketplaceViewSet)
-router.register(
-    r"marketplace-connections",
-    views.MarketplaceConnectionViewSet,
-    basename="marketplace-connection",
-)
+router.register(r"company", core_views.CompanyViewSet)
 
 urlpatterns += router.urls
 

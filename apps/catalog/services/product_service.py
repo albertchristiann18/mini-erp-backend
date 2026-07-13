@@ -223,8 +223,8 @@ class ProductService:
 
     def _trigger_shopee_product_update(self, product_id: str) -> None:
         from apps.catalog.models import Product
+        from apps.marketplace.models import MarketplaceConnection
         from apps.marketplace.shopee.product_push import ShopeeProductPushService
-        from core.models import MarketplaceConnection
 
         try:
             product = Product.objects.select_related("category").get(id=product_id)
@@ -342,8 +342,8 @@ class ProductService:
 
     def _trigger_shopee_price_update(self, listing_ids: list[str], company_id: str) -> None:
         from apps.catalog.models import ProductVariantMarketplace
+        from apps.marketplace.models import MarketplaceConnection
         from apps.marketplace.shopee.product_push import ShopeeProductPushService
-        from core.models import MarketplaceConnection
 
         connections = MarketplaceConnection.objects.filter(
             platform="SHOPEE",

@@ -20,7 +20,7 @@ class ShopeeProductMatchService:
 
     def match_products_for_shop(self, shop: ShopeeShop) -> dict[str, Any]:
         from apps.catalog.models import ProductVariant, ProductVariantMarketplace
-        from core.models import MarketplaceConnection
+        from apps.marketplace.models import MarketplaceConnection
 
         matched = 0
         skipped = 0

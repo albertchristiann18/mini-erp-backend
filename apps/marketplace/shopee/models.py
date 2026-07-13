@@ -27,7 +27,7 @@ class ShopeeShop(DefaultModel):
 
     # Link to our Marketplace record
     marketplace = models.ForeignKey(
-        "core.Marketplace",
+        "marketplace.Marketplace",
         on_delete=models.SET_NULL,
         null=True,
         blank=True,

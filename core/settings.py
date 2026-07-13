@@ -62,6 +62,7 @@ INSTALLED_APPS = [
     "apps.purchasing",
     "apps.sales",
     "apps.finance",
+    "apps.marketplace",
     "apps.marketplace.shopee",
     "apps.marketplace.tiktok",
     "core",

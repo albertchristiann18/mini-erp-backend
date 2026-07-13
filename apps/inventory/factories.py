@@ -4,9 +4,6 @@ import factory
 
 from apps.catalog.factories import ProductFactory, ProductVariantFactory
 from apps.inventory.models import (
-    BusinessEntity,
-    CompanyMarketplace,
-    ProductBusinessEntity,
     ProductCogs,
     ProductDimensionImage,
     ProductVariantWarehouse,
@@ -62,36 +59,6 @@ class StockMovementFactory(factory.django.DjangoModelFactory):
     balance_after = 10
     reference_number = ""
     note = ""
-
-
-class CompanyMarketplaceFactory(factory.django.DjangoModelFactory):
-    class Meta:
-        model = CompanyMarketplace
-
-    name = factory.Sequence(lambda n: f"Marketplace {n}")  # type: ignore[no-untyped-call]
-    company = factory.SubFactory(CompanyFactory)  # type: ignore[no-untyped-call]
-    is_active = True
-
-
-class BusinessEntityFactory(factory.django.DjangoModelFactory):
-    class Meta:
-        model = BusinessEntity
-
-    name = factory.Sequence(lambda n: f"Business Entity {n}")  # type: ignore[no-untyped-call]
-    company = factory.SubFactory(CompanyFactory)  # type: ignore[no-untyped-call]
-    marketplace = factory.SubFactory(CompanyMarketplaceFactory)  # type: ignore[no-untyped-call]
-    is_active = True
-
-
-class ProductBusinessEntityFactory(factory.django.DjangoModelFactory):
-    class Meta:
-        model = ProductBusinessEntity
-
-    product = factory.SubFactory(ProductFactory)  # type: ignore[no-untyped-call]
-    business_entity = factory.SubFactory(BusinessEntityFactory)  # type: ignore[no-untyped-call]
-    company = factory.LazyAttribute(  # type: ignore[attr-defined,no-untyped-call]
-        lambda o: o.product.company
-    )
 
 
 class ProductDimensionImageFactory(factory.django.DjangoModelFactory):

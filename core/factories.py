@@ -3,7 +3,7 @@ from django.contrib.auth.models import User
 
 from apps.catalog.models import Category
 from apps.inventory.models import Warehouse
-from core.models import Company, Marketplace, MarketplaceConnection, UserProfile
+from core.models import Company, UserProfile
 
 
 class CompanyFactory(factory.django.DjangoModelFactory):
@@ -11,13 +11,6 @@ class CompanyFactory(factory.django.DjangoModelFactory):
         model = Company
 
     name = "Test Company"
-
-
-class MarketplaceFactory(factory.django.DjangoModelFactory):
-    class Meta:
-        model = Marketplace
-
-    name = "Default Marketplace"
 
 
 class WarehouseFactory(factory.django.DjangoModelFactory):
@@ -39,18 +32,6 @@ class CategoryFactory(factory.django.DjangoModelFactory):
     name = "Test Category"
     category_code = "TEST"
     company = factory.SubFactory(CompanyFactory)  # type: ignore[no-untyped-call]
-
-
-class MarketplaceConnectionFactory(factory.django.DjangoModelFactory):
-    """Factory for creating test MarketplaceConnection instances"""
-
-    class Meta:
-        model = MarketplaceConnection
-
-    company = factory.SubFactory(CompanyFactory)  # type: ignore[no-untyped-call]
-    platform = "SHOPEE"
-    display_name = "Test Shopee Connection"
-    is_active = True
 
 
 class UserFactory(factory.django.DjangoModelFactory):

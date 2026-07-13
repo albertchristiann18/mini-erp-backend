@@ -1,13 +1,13 @@
 import factory
 
 from apps.catalog.factories import ProductFactory, ProductVariantFactory
-from apps.inventory.factories import CompanyFactory, WarehouseFactory
 from apps.purchasing.models import (
     ProductSupplier,
     PurchaseOrder,
     PurchaseOrderDetail,
     Supplier,
 )
+from core.factories import CompanyFactory, WarehouseFactory
 
 
 class SupplierFactory(factory.django.DjangoModelFactory):

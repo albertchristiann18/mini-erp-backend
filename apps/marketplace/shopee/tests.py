@@ -20,6 +20,7 @@ from apps.catalog.models import Category, Product, ProductVariant
 from apps.inventory.factories import ProductCogsFactory, ProductVariantWarehouseFactory
 from apps.inventory.models import ProductVariantWarehouse, StockMovement
 from apps.inventory.services.inventory_service import InventoryService
+from apps.marketplace.factories import MarketplaceConnectionFactory, MarketplaceFactory
 from apps.marketplace.shopee.client import ShopeeClient
 from apps.marketplace.shopee.exceptions import ShopeeAPIError, ShopeeAuthError
 from apps.marketplace.shopee.factories import (
@@ -42,8 +43,6 @@ from apps.purchasing.services.purchasing_service import PurchaseOrderService
 from apps.sales.models import SalesOrder
 from core.factories import (
     CompanyFactory,
-    MarketplaceConnectionFactory,
-    MarketplaceFactory,
     WarehouseFactory,
 )
 from core.models import UserProfile

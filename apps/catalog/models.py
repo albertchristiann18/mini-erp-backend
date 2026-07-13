@@ -3,7 +3,8 @@ from typing import Any
 from django.db import models
 from django_ulid.models import ULIDField
 
-from core.models import DefaultModel, Marketplace
+from apps.marketplace.models import Marketplace
+from core.models import DefaultModel
 from core.utils import generate_ulid, get_default_shipping_config
 
 
