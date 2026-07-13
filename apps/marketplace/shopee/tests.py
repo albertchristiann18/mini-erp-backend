@@ -1387,9 +1387,7 @@ class TestShopeeManagementCommand(TestCase):
             "apps.marketplace.shopee.product_push.ShopeeProductPushService.push_product",
             side_effect=Exception("crash"),
         ):
-            from scripts.shopee_push_products import run
-
-            run()
+            ShopeeProductPushService().sync_all_active_shops_push()
         log = ShopeeSyncLog.objects.get(shop=shop, sync_type="product_push")
         self.assertEqual(log.status, "failed")
         self.assertIsNotNone(log.finished_at)
@@ -1418,9 +1416,7 @@ class TestShopeeManagementCommand(TestCase):
             "apps.marketplace.shopee.product_push.ShopeeProductPushService.push_product",
             return_value={"item_id": None, "models_pushed": 0, "errors": ["API error"]},
         ):
-            from scripts.shopee_push_products import run
-
-            run()
+            ShopeeProductPushService().sync_all_active_shops_push()
         log = ShopeeSyncLog.objects.get(shop=shop, sync_type="product_push")
         self.assertEqual(log.status, "failed")
 
@@ -1443,9 +1439,7 @@ class TestShopeeManagementCommand(TestCase):
             "apps.marketplace.shopee.product_push.ShopeeProductPushService.update_product",
             side_effect=Exception("crash"),
         ):
-            from scripts.shopee_update_products import run
-
-            run()
+            ShopeeProductPushService().sync_all_active_shops_update_products()
         log = ShopeeSyncLog.objects.get(shop=shop, sync_type="product_update")
         self.assertEqual(log.status, "failed")
         self.assertIsNotNone(log.finished_at)
@@ -1474,9 +1468,7 @@ class TestShopeeManagementCommand(TestCase):
             "apps.marketplace.shopee.product_push.ShopeeProductPushService.update_product",
             return_value={"updated": False, "errors": ["API error"]},
         ):
-            from scripts.shopee_update_products import run
-
-            run()
+            ShopeeProductPushService().sync_all_active_shops_update_products()
         log = ShopeeSyncLog.objects.get(shop=shop, sync_type="product_update")
         self.assertEqual(log.status, "failed")
 
@@ -1711,9 +1703,7 @@ class TestShopeeProductMatch(TestCase):
             "apps.marketplace.shopee.product_match.ShopeeProductMatchService.match_products_for_shop",
             return_value={"matched": 3, "skipped": 1, "errors": []},
         ):
-            from scripts.shopee_match_products import run
-
-            run()
+            ShopeeProductMatchService().sync_all_active_shops_product_match()
 
         log = ShopeeSyncLog.objects.get(shop=shop, sync_type="product_match")
         self.assertEqual(log.status, "success")
@@ -1800,9 +1790,7 @@ class TestShopeeProductPush(TestCase):
             "apps.marketplace.shopee.product_push.ShopeeProductPushService.push_product",
             return_value={"item_id": 100, "models_pushed": 1, "errors": []},
         ):
-            from scripts.shopee_push_products import run
-
-            run()
+            ShopeeProductPushService().sync_all_active_shops_push()
 
         log = ShopeeSyncLog.objects.filter(shop=shop, sync_type="product_push").first()
         self.assertIsNotNone(log)
@@ -1922,9 +1910,7 @@ class TestShopeeProductUpdate(TestCase):
             "apps.marketplace.shopee.product_push.ShopeeProductPushService.update_product",
             return_value={"updated": True, "errors": []},
         ):
-            from scripts.shopee_update_products import run
-
-            run()
+            ShopeeProductPushService().sync_all_active_shops_update_products()
 
         log = ShopeeSyncLog.objects.filter(shop=shop, sync_type="product_update").first()
         self.assertIsNotNone(log)
@@ -2090,9 +2076,7 @@ class TestShopeePriceSync(TestCase):
             "apps.marketplace.shopee.product_push.ShopeeProductPushService.update_price_for_listing",
             return_value={"updated": True, "errors": []},
         ):
-            from scripts.shopee_update_prices import run
-
-            run()
+            ShopeeProductPushService().sync_all_active_shops_update_prices()
 
         log = ShopeeSyncLog.objects.get(shop=shop, sync_type="product_price")
         self.assertEqual(log.status, "success")

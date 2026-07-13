@@ -1,9 +1,11 @@
 import logging
 from typing import Any
 
+from django.utils import timezone
+
 from apps.marketplace.shopee.client import ShopeeClient
 from apps.marketplace.shopee.exceptions import ShopeeAPIError
-from apps.marketplace.shopee.models import ShopeeShop
+from apps.marketplace.shopee.models import ShopeeShop, ShopeeSyncLog
 
 logger = logging.getLogger(__name__)
 
@@ -129,3 +131,31 @@ class ShopeeProductMatchService:
                     skipped += 1
 
         return {"matched": matched, "skipped": skipped, "errors": errors}
+
+    def sync_all_active_shops_product_match(self) -> dict[str, Any]:
+        shops = ShopeeShop.objects.filter(is_active=True)
+        total_matched = 0
+        total_shops = 0
+        for shop in shops:
+            total_shops += 1
+            log = ShopeeSyncLog.objects.create(
+                shop=shop,
+                sync_type="product_match",
+                status="running",
+            )
+            try:
+                result = self.match_products_for_shop(shop)
+                log.status = "success"
+                log.records_synced = result["matched"]
+                log.finished_at = timezone.now()
+                log.save(update_fields=["status", "records_synced", "finished_at"])
+                total_matched += result["matched"]
+            except Exception as e:
+                log.status = "failed"
+                log.error_message = str(e)
+                log.finished_at = timezone.now()
+                log.save(update_fields=["status", "error_message", "finished_at"])
+                logger.exception(
+                    "sync_all_active_shops_product_match failed for shop %s", shop.shop_id
+                )
+        return {"shops": total_shops, "matched": total_matched}

@@ -1,9 +1,11 @@
 import logging
 from typing import Any
 
+from django.utils import timezone
+
 from apps.marketplace.shopee.client import ShopeeClient
 from apps.marketplace.shopee.exceptions import ShopeeAPIError
-from apps.marketplace.shopee.models import ShopeeShop
+from apps.marketplace.shopee.models import ShopeeShop, ShopeeSyncLog
 
 logger = logging.getLogger(__name__)
 
@@ -291,3 +293,145 @@ class ShopeeProductPushService:
                 shop.shop_id,
             )
             return {"updated": False, "errors": [f"Unexpected error: {e}"]}
+
+    def sync_all_active_shops_push(self) -> dict[str, Any]:
+        from apps.catalog.models import Product, ProductVariantMarketplace
+
+        shops = ShopeeShop.objects.filter(is_active=True).select_related("marketplace")
+        total_shops = 0
+        total_pushed = 0
+        for shop in shops:
+            if not shop.marketplace:
+                continue
+            total_shops += 1
+
+            unlinked_product_ids = (
+                ProductVariantMarketplace.objects.filter(
+                    marketplace=shop.marketplace,
+                    is_active=True,
+                    shopee_item_id__isnull=True,
+                )
+                .values_list("product_variant__product_id", flat=True)
+                .distinct()
+            )
+            products = Product.objects.filter(id__in=unlinked_product_ids).select_related(
+                "category"
+            )
+
+            log = ShopeeSyncLog.objects.create(
+                shop=shop, sync_type="product_push", status="running"
+            )
+            pushed_count = 0
+            all_errors: list[str] = []
+            try:
+                for product in products:
+                    result = self.push_product(product, shop)
+                    if result["item_id"]:
+                        pushed_count += 1
+                    if result["errors"]:
+                        all_errors.extend([f"{product.sku_code}: {e}" for e in result["errors"]])
+
+                log.status = "failed" if pushed_count == 0 and all_errors else "success"
+                log.records_synced = pushed_count
+                log.error_message = "\n".join(all_errors[:50])
+            except Exception as e:
+                log.status = "failed"
+                log.error_message = str(e)
+            finally:
+                log.finished_at = timezone.now()
+                log.save(update_fields=["status", "records_synced", "error_message", "finished_at"])
+
+            total_pushed += pushed_count
+        return {"shops": total_shops, "pushed": total_pushed}
+
+    def sync_all_active_shops_update_products(self) -> dict[str, Any]:
+        from apps.catalog.models import Product, ProductVariantMarketplace
+
+        shops = ShopeeShop.objects.filter(is_active=True).select_related("marketplace")
+        total_shops = 0
+        total_updated = 0
+        for shop in shops:
+            if not shop.marketplace:
+                continue
+            total_shops += 1
+
+            linked_product_ids = (
+                ProductVariantMarketplace.objects.filter(
+                    marketplace=shop.marketplace,
+                    is_active=True,
+                    shopee_item_id__isnull=False,
+                )
+                .values_list("product_variant__product_id", flat=True)
+                .distinct()
+            )
+            products = Product.objects.filter(id__in=linked_product_ids).select_related("category")
+
+            log = ShopeeSyncLog.objects.create(
+                shop=shop, sync_type="product_update", status="running"
+            )
+            updated_count = 0
+            all_errors: list[str] = []
+            try:
+                for product in products:
+                    result = self.update_product(product, shop)
+                    if result["updated"]:
+                        updated_count += 1
+                    if result["errors"]:
+                        all_errors.extend([f"{product.sku_code}: {e}" for e in result["errors"]])
+
+                log.status = "failed" if updated_count == 0 and all_errors else "success"
+                log.records_synced = updated_count
+                log.error_message = "\n".join(all_errors[:50])
+            except Exception as e:
+                log.status = "failed"
+                log.error_message = str(e)
+            finally:
+                log.finished_at = timezone.now()
+                log.save(update_fields=["status", "records_synced", "error_message", "finished_at"])
+
+            total_updated += updated_count
+        return {"shops": total_shops, "updated": total_updated}
+
+    def sync_all_active_shops_update_prices(self) -> dict[str, Any]:
+        from apps.catalog.models import ProductVariantMarketplace
+
+        shops = ShopeeShop.objects.filter(is_active=True).select_related("marketplace")
+        total_shops = 0
+        total_updated = 0
+        for shop in shops:
+            if not shop.marketplace:
+                continue
+            total_shops += 1
+
+            listings = ProductVariantMarketplace.objects.filter(
+                marketplace=shop.marketplace,
+                is_active=True,
+                shopee_item_id__isnull=False,
+                shopee_model_id__isnull=False,
+            )
+
+            log = ShopeeSyncLog.objects.create(
+                shop=shop, sync_type="product_price", status="running"
+            )
+            updated_count = 0
+            all_errors: list[str] = []
+            try:
+                for listing in listings:
+                    result = self.update_price_for_listing(listing, shop)
+                    if result["updated"]:
+                        updated_count += 1
+                    if result["errors"]:
+                        all_errors.extend([f"{listing.id}: {e}" for e in result["errors"]])
+
+                log.status = "failed" if updated_count == 0 and all_errors else "success"
+                log.records_synced = updated_count
+                log.error_message = "\n".join(all_errors[:50])
+            except Exception as e:
+                log.status = "failed"
+                log.error_message = str(e)
+            finally:
+                log.finished_at = timezone.now()
+                log.save(update_fields=["status", "records_synced", "error_message", "finished_at"])
+
+            total_updated += updated_count
+        return {"shops": total_shops, "updated": total_updated}
