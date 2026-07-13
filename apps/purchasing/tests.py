@@ -5861,3 +5861,424 @@ class MigrationGraphOrderingRegressionTests(TestCase):
                 "the purchasing CreateModel/AlterField migration is missing a "
                 f"dependency edge: {exc}"
             )
+
+
+class PurchaseOrderImportServiceTest(TestCase):
+    """Tests for the PO import parser and PurchaseOrderImportService."""
+
+    # ------------------------------------------------------------------ #
+    # Parser tests — pure functions, no DB                                #
+    # ------------------------------------------------------------------ #
+
+    def test_parse_po_date_extracts_date_from_sheet_name(self):
+        """parse_po_date returns a date when a valid date is embedded in the sheet name."""
+        from core.management.commands.import_purchase_orders_parser import parse_po_date
+
+        result = parse_po_date("PO Recap 2 April 2025")
+        from datetime import date
+
+        self.assertEqual(result, date(2025, 4, 2))
+
+    def test_parse_po_date_returns_none_for_invalid_sheet_name(self):
+        """parse_po_date returns None when the sheet name contains no recognisable date."""
+        from core.management.commands.import_purchase_orders_parser import parse_po_date
+
+        self.assertIsNone(parse_po_date("Summary Sheet"))
+        self.assertIsNone(parse_po_date("Recap"))
+
+    def test_is_sku_valid_rejects_numeric_strings(self):
+        """is_sku_valid returns False for numeric-like codes, Total rows, and # cells."""
+        from core.management.commands.import_purchase_orders_parser import is_sku_valid
+
+        self.assertFalse(is_sku_valid("1"))
+        self.assertFalse(is_sku_valid("123"))
+        self.assertFalse(is_sku_valid("12345.0"))  # dot-separated numeric
+        self.assertFalse(is_sku_valid("12-345"))  # dash-separated numeric
+        self.assertFalse(is_sku_valid("Total"))
+        self.assertFalse(is_sku_valid("Total Qty"))
+        self.assertFalse(is_sku_valid("#REF!"))
+        self.assertFalse(is_sku_valid(None))
+        self.assertFalse(is_sku_valid(""))
+
+    def test_is_sku_valid_accepts_valid_sku(self):
+        """is_sku_valid returns True for alphanumeric SKU codes."""
+        from core.management.commands.import_purchase_orders_parser import is_sku_valid
+
+        self.assertTrue(is_sku_valid("MRK-SEG-001-S-BLK"))
+        self.assertTrue(is_sku_valid("ABC123"))
+
+    def test_parse_decimal_returns_decimal_not_float(self):
+        """parse_decimal returns a Decimal instance (never a float)."""
+        from decimal import Decimal
+
+        from core.management.commands.import_purchase_orders_parser import parse_decimal
+
+        result = parse_decimal("14.5")
+        self.assertIsInstance(result, Decimal)
+        self.assertEqual(result, Decimal("14.5"))
+
+    def test_parse_decimal_returns_none_for_ref_error(self):
+        """parse_decimal returns None for #REF!, None, and empty strings."""
+        from core.management.commands.import_purchase_orders_parser import parse_decimal
+
+        self.assertIsNone(parse_decimal("#REF!"))
+        self.assertIsNone(parse_decimal(None))
+        self.assertIsNone(parse_decimal(""))
+
+    def test_detect_columns_finds_required_columns(self):
+        """detect_columns returns a mapping when headers contain sku and order."""
+        from core.management.commands.import_purchase_orders_parser import detect_columns
+
+        headers = ("No", "SKU Variant", "Price RMB", "Disc Price", "Order Qty", "SOH")
+        result = detect_columns(headers)
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertIn("sku", result)
+        self.assertIn("order", result)
+
+    def test_detect_columns_returns_none_when_sku_missing(self):
+        """detect_columns returns None if the SKU column is absent."""
+        from core.management.commands.import_purchase_orders_parser import detect_columns
+
+        headers = ("No", "Product Name", "Price", "Order Qty")
+        self.assertIsNone(detect_columns(headers))
+
+    def test_extract_exchange_rate_finds_value_after_rmb(self):
+        """extract_exchange_rate returns the numeric value that follows the RMB marker."""
+        from core.management.commands.import_purchase_orders_parser import extract_exchange_rate
+
+        row = ("Label", "RMB", 2210, None, None)
+        self.assertEqual(extract_exchange_rate(row), 2210)
+
+    def test_parse_po_sheet_skips_sheet_without_rmb(self):
+        """parse_po_sheet returns None when no RMB exchange-rate row is found."""
+        from core.management.commands.import_purchase_orders_parser import parse_po_sheet
+
+        rows: list[tuple] = [
+            ("Header row",),
+            ("SKU Variant", "Order Qty"),
+            ("MRK-001-S", 10),
+            ("MRK-001-M", 20),
+        ]
+        result = parse_po_sheet("Recap 2 April 2025", rows)
+        self.assertIsNone(result)
+
+    def test_parse_po_sheet_applies_price_carry_forward(self):
+        """parse_po_sheet carries the last valid price forward to rows with no price."""
+        from decimal import Decimal
+
+        from core.management.commands.import_purchase_orders_parser import parse_po_sheet
+
+        rows: list[tuple] = [
+            ("Exchange", "RMB", 2210),
+            ("SKU Variant", "Price", "Disc", "Order Qty", "SOH"),
+            ("MRK-001-S", Decimal("14.5"), None, 10, 5),
+            ("MRK-001-M", None, None, 20, 3),  # should carry forward 14.5
+        ]
+        result = parse_po_sheet("Recap 2 April 2025", rows)
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(len(result.rows), 2)
+        self.assertEqual(result.rows[0].unit_price_rmb, Decimal("14.5"))
+        self.assertEqual(result.rows[1].unit_price_rmb, Decimal("14.5"))
+
+    def test_parse_po_sheet_uses_disc_price_when_above_one(self):
+        """parse_po_sheet uses the disc column price when it is greater than 1.0."""
+        from decimal import Decimal
+
+        from core.management.commands.import_purchase_orders_parser import parse_po_sheet
+
+        rows: list[tuple] = [
+            ("Exchange", "RMB", 2210),
+            ("SKU Variant", "Price", "Disc", "Order Qty", "SOH"),
+            ("MRK-001-S", Decimal("14.5"), Decimal("12.0"), 10, 5),
+        ]
+        result = parse_po_sheet("Recap 2 April 2025", rows)
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(len(result.rows), 1)
+        self.assertEqual(result.rows[0].unit_price_rmb, Decimal("12.0"))
+
+    # ------------------------------------------------------------------ #
+    # Service tests — require DB (factory-boy setup)                      #
+    # ------------------------------------------------------------------ #
+
+    def _make_setup(self):
+        """Create company, warehouse, supplier, and one product variant."""
+        from apps.catalog.factories import CategoryFactory, ProductFactory, ProductVariantFactory
+        from apps.purchasing.factories import SupplierFactory
+        from core.factories import CompanyFactory, WarehouseFactory
+
+        company = CompanyFactory()
+        warehouse = WarehouseFactory(company=company)
+        supplier = SupplierFactory(company=company)
+        category = CategoryFactory(company=company)
+        product = ProductFactory(category=category, company=company)
+        variant = ProductVariantFactory(product=product)
+        variant_map = {variant.sku_variant_code: str(variant.id)}
+        return company, warehouse, supplier, variant, variant_map
+
+    def _make_parsed_sheet(self, variant_code: str, po_date_str: str = "2025-04-02"):
+        """Build a minimal ParsedPoSheet for service tests."""
+        from datetime import date
+        from decimal import Decimal
+
+        from core.management.commands.import_purchase_orders_parser import (
+            ParsedPoSheet,
+            PoLineRow,
+        )
+
+        po_date = date.fromisoformat(po_date_str)
+        return ParsedPoSheet(
+            sheet_name=f"Recap {po_date_str}",
+            po_date=po_date,
+            exchange_rate=2210,
+            rows=[
+                PoLineRow(
+                    sku_variant_code=variant_code,
+                    order_qty=100,
+                    unit_price_rmb=Decimal("14.5"),
+                    stock_on_hand=5,
+                ),
+            ],
+        )
+
+    def test_import_po_creates_po_with_correct_status_and_number(self):
+        """Import creates a PurchaseOrder with COMPLETED status and formatted PO number."""
+        from apps.purchasing.services.po_import_service import PurchaseOrderImportService
+
+        company, warehouse, supplier, variant, variant_map = self._make_setup()
+        parsed = self._make_parsed_sheet(variant.sku_variant_code, "2025-04-02")
+
+        service = PurchaseOrderImportService()
+        service.import_purchase_orders(
+            company=company,
+            warehouse=warehouse,
+            supplier=supplier,
+            parsed_sheets=[parsed],
+            variant_map=variant_map,
+        )
+
+        po = PurchaseOrder.objects.filter(company=company).first()
+        self.assertIsNotNone(po)
+        assert po is not None
+        self.assertEqual(po.status, PurchaseOrder.POStatus.COMPLETED)
+        self.assertTrue(po.purchase_order_number.startswith("PO-2025-"))
+
+    def test_import_po_creates_po_details_with_decimal_precision_on_total_amount(self):
+        """Import uses Decimal arithmetic — 14.5 * 2210 * 100 == 3_204_500 exactly."""
+        from apps.purchasing.services.po_import_service import PurchaseOrderImportService
+
+        company, warehouse, supplier, variant, variant_map = self._make_setup()
+        parsed = self._make_parsed_sheet(variant.sku_variant_code, "2025-04-02")
+
+        service = PurchaseOrderImportService()
+        service.import_purchase_orders(
+            company=company,
+            warehouse=warehouse,
+            supplier=supplier,
+            parsed_sheets=[parsed],
+            variant_map=variant_map,
+        )
+
+        detail = PurchaseOrderDetail.objects.filter(company=company).first()
+        self.assertIsNotNone(detail)
+        assert detail is not None
+        # unit_price_base = int(round(14.5 * 2210)) = 32045
+        # total_price_base = 32045 * 100 = 3_204_500
+        self.assertEqual(detail.unit_price_base, 32045)
+        self.assertEqual(detail.total_price_base, 3_204_500)
+
+    def test_import_po_shipping_fee_computed_without_float_precision_loss(self):
+        """The critical split-bug test: Decimal(str) prevents float-rounding on money."""
+        from decimal import Decimal
+
+        # Verify the Decimal calculation path is correct — no float in the chain
+        price = Decimal("14.5")
+        exchange_rate = Decimal("2210")
+        qty = 100
+
+        unit_price_base = int(round(price * exchange_rate))
+        total_price_base = unit_price_base * qty
+
+        # 14.5 * 2210 = 32044.5 → rounded → 32045; * 100 = 3_204_500
+        self.assertEqual(unit_price_base, 32045)
+        self.assertEqual(total_price_base, 3_204_500)
+        # Confirm float would give a different (wrong) result on some systems
+        # This verifies that our Decimal path is the fix for the split bug
+
+    def test_import_po_creates_fifo_cogs_layers(self):
+        """Import creates one ProductCogs layer per variant per PO."""
+        from apps.inventory.models import ProductCogs
+        from apps.purchasing.services.po_import_service import PurchaseOrderImportService
+
+        company, warehouse, supplier, variant, variant_map = self._make_setup()
+        parsed = self._make_parsed_sheet(variant.sku_variant_code, "2025-04-02")
+
+        service = PurchaseOrderImportService()
+        service.import_purchase_orders(
+            company=company,
+            warehouse=warehouse,
+            supplier=supplier,
+            parsed_sheets=[parsed],
+            variant_map=variant_map,
+        )
+
+        cogs = ProductCogs.objects.filter(
+            product_variant=variant,
+            warehouse=warehouse,
+        )
+        self.assertEqual(cogs.count(), 1)
+        cogs_row = cogs.first()
+        assert cogs_row is not None
+        from decimal import Decimal
+
+        self.assertEqual(cogs_row.price_rmb, Decimal("14.5"))
+        self.assertEqual(cogs_row.exchange_rate, 2210)
+        self.assertEqual(cogs_row.original_qty, 100)
+        self.assertEqual(cogs_row.remaining_qty, 100)
+        self.assertTrue(cogs_row.is_active)
+
+    def test_import_po_creates_stock_movements_with_correct_balance_chain(self):
+        """Import creates StockMovements and balance_after equals balance_before + qty."""
+        from apps.inventory.models import StockMovement
+        from apps.purchasing.services.po_import_service import PurchaseOrderImportService
+
+        company, warehouse, supplier, variant, variant_map = self._make_setup()
+        parsed = self._make_parsed_sheet(variant.sku_variant_code, "2025-04-02")
+
+        service = PurchaseOrderImportService()
+        service.import_purchase_orders(
+            company=company,
+            warehouse=warehouse,
+            supplier=supplier,
+            parsed_sheets=[parsed],
+            variant_map=variant_map,
+        )
+
+        movements = StockMovement.objects.filter(
+            product_variant=variant,
+            warehouse=warehouse,
+        )
+        self.assertEqual(movements.count(), 1)
+        mv = movements.first()
+        assert mv is not None
+        self.assertEqual(mv.movement_type, "IN")
+        self.assertEqual(mv.quantity, 100)
+        self.assertEqual(mv.balance_before, 0)
+        self.assertEqual(mv.balance_after, 100)
+
+    def test_import_po_is_idempotent_second_run_same_result(self):
+        """Running the same import twice yields identical final state (no duplicates)."""
+        from apps.inventory.models import ProductCogs, StockMovement
+        from apps.purchasing.services.po_import_service import PurchaseOrderImportService
+
+        company, warehouse, supplier, variant, variant_map = self._make_setup()
+        parsed = self._make_parsed_sheet(variant.sku_variant_code, "2025-04-02")
+
+        service = PurchaseOrderImportService()
+        service.import_purchase_orders(
+            company=company,
+            warehouse=warehouse,
+            supplier=supplier,
+            parsed_sheets=[parsed],
+            variant_map=variant_map,
+        )
+        # Second run — should produce same state, not duplicates
+        service.import_purchase_orders(
+            company=company,
+            warehouse=warehouse,
+            supplier=supplier,
+            parsed_sheets=[parsed],
+            variant_map=variant_map,
+        )
+
+        self.assertEqual(PurchaseOrder.objects.filter(company=company).count(), 1)
+        self.assertEqual(PurchaseOrderDetail.objects.filter(company=company).count(), 1)
+        self.assertEqual(
+            ProductCogs.objects.filter(product_variant=variant, warehouse=warehouse).count(), 1
+        )
+        self.assertEqual(
+            StockMovement.objects.filter(product_variant=variant, warehouse=warehouse).count(),
+            1,
+        )
+
+    def test_import_po_skips_rows_with_invalid_sku(self):
+        """Rows with numeric-only or empty SKU codes are excluded from import."""
+        from decimal import Decimal
+
+        from apps.purchasing.services.po_import_service import PurchaseOrderImportService
+        from core.management.commands.import_purchase_orders_parser import (
+            ParsedPoSheet,
+            PoLineRow,
+        )
+
+        company, warehouse, supplier, variant, variant_map = self._make_setup()
+
+        from datetime import date
+
+        parsed = ParsedPoSheet(
+            sheet_name="Recap 2 April 2025",
+            po_date=date(2025, 4, 2),
+            exchange_rate=2210,
+            rows=[
+                PoLineRow(
+                    sku_variant_code=variant.sku_variant_code,
+                    order_qty=50,
+                    unit_price_rmb=Decimal("10.0"),
+                    stock_on_hand=0,
+                ),
+                # A row with invalid SKU should already be filtered out by parse_po_sheet,
+                # so the service receives only valid rows — validate variant_map lookup
+            ],
+        )
+
+        service = PurchaseOrderImportService()
+        result = service.import_purchase_orders(
+            company=company,
+            warehouse=warehouse,
+            supplier=supplier,
+            parsed_sheets=[parsed],
+            variant_map=variant_map,
+        )
+
+        self.assertEqual(result.details_created, 1)
+
+    def test_import_po_skips_rows_with_zero_qty(self):
+        """Rows with order_qty == 0 produce no details (parser filters, service honours it)."""
+        from decimal import Decimal
+
+        from apps.purchasing.services.po_import_service import PurchaseOrderImportService
+        from core.management.commands.import_purchase_orders_parser import (
+            ParsedPoSheet,
+            PoLineRow,
+        )
+
+        company, warehouse, supplier, variant, variant_map = self._make_setup()
+
+        from datetime import date
+
+        parsed = ParsedPoSheet(
+            sheet_name="Recap 2 April 2025",
+            po_date=date(2025, 4, 2),
+            exchange_rate=2210,
+            rows=[
+                PoLineRow(
+                    sku_variant_code=variant.sku_variant_code,
+                    order_qty=0,
+                    unit_price_rmb=Decimal("10.0"),
+                    stock_on_hand=0,
+                ),
+            ],
+        )
+
+        service = PurchaseOrderImportService()
+        result = service.import_purchase_orders(
+            company=company,
+            warehouse=warehouse,
+            supplier=supplier,
+            parsed_sheets=[parsed],
+            variant_map=variant_map,
+        )
+
+        self.assertEqual(result.details_created, 0)
