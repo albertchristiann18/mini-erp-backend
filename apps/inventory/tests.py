@@ -17,13 +17,13 @@ _real_auth_has_permission = IsAuthenticatedPermission.has_permission
 
 from apps.catalog.factories import (
     CategoryFactory,
+    ProductDimensionImageFactory,
     ProductFactory,
     ProductPhotoFactory,
     ProductVariantFactory,
 )
 from apps.inventory.factories import (
     ProductCogsFactory,
-    ProductDimensionImageFactory,
     ProductVariantWarehouseFactory,
     StockMovementFactory,
 )

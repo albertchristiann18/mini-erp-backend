@@ -11,15 +11,12 @@ from rest_framework.test import APITestCase
 
 from apps.catalog.factories import (
     CategoryFactory,
+    ProductDimensionImageFactory,
     ProductFactory,
     ProductPhotoFactory,
     ProductVariantFactory,
 )
-from apps.catalog.models import Category, Product, ProductVariant
-from apps.inventory.factories import (
-    ProductDimensionImageFactory,
-)
-from apps.inventory.models import ProductDimensionImage
+from apps.catalog.models import Category, Product, ProductDimensionImage, ProductVariant
 from apps.purchasing.factories import ProductSupplierFactory, SupplierFactory
 from apps.purchasing.models import ProductSupplier
 from core.factories import CompanyFactory, WarehouseFactory
@@ -1597,4 +1594,45 @@ class MigrationGraphOrderingRegressionTests(TestCase):
                 "error — catalog/0003 is missing a dependency edge on one of the "
                 "FK-retargeting 'noop_fk_refs' migrations (inventory/0026, "
                 f"purchasing/0025, sales/0004, shopee/0003): {exc}"
+            )
+
+    def test_catalog_create_productdimensionimage_runs_before_inventory_delete(self):
+        """catalog/0005_state_only_create_productdimensionimage must be ordered before
+        inventory/0031_state_only_delete_productdimensionimage in the forward plan.
+        Without this edge a from-scratch replay could delete the model from inventory
+        state before catalog has adopted it, leaving a dangling lazy FK reference."""
+        loader = MigrationLoader(connection)
+        plan = loader.graph.forwards_plan(
+            ("inventory", "0031_state_only_delete_productdimensionimage")
+        )
+        self.assertIn(
+            ("catalog", "0005_state_only_create_productdimensionimage"),
+            plan,
+            "catalog/0005 must run before inventory/0031 or the DeleteModel runs "
+            "before catalog has registered ProductDimensionImage, breaking lazy FK "
+            "resolution on a from-scratch replay",
+        )
+
+    def test_inventory_delete_productdimensionimage_predecessor_state_renders_without_lazy_reference_errors(
+        self,
+    ):
+        """Build the project state immediately BEFORE inventory/0031 runs and force a
+        full render. This catches the BE2-class bug where a DeleteModel is scheduled
+        before the adopting app's CreateModel, producing a lazy-reference crash at
+        render time. The state at that point must have ProductDimensionImage owned by
+        catalog (via catalog/0005) and still present in inventory (not yet deleted)."""
+        loader = MigrationLoader(connection)
+        state = loader.graph.make_state(
+            nodes=[("inventory", "0031_state_only_delete_productdimensionimage")],
+            at_end=False,
+            real_apps=loader.unmigrated_apps,
+        )
+        try:
+            state.apps
+        except ValueError as exc:
+            self.fail(
+                "Rendering project state immediately before "
+                "inventory/0031_state_only_delete_productdimensionimage crashed with a "
+                "lazy-reference error — inventory/0031 is missing the dependency edge on "
+                f"catalog/0005_state_only_create_productdimensionimage: {exc}"
             )

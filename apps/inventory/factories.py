@@ -2,10 +2,9 @@ from decimal import Decimal
 
 import factory
 
-from apps.catalog.factories import ProductFactory, ProductVariantFactory
+from apps.catalog.factories import ProductVariantFactory
 from apps.inventory.models import (
     ProductCogs,
-    ProductDimensionImage,
     ProductVariantWarehouse,
     StockMovement,
 )
@@ -59,14 +58,3 @@ class StockMovementFactory(factory.django.DjangoModelFactory):
     balance_after = 10
     reference_number = ""
     note = ""
-
-
-class ProductDimensionImageFactory(factory.django.DjangoModelFactory):
-    class Meta:
-        model = ProductDimensionImage
-
-    product = factory.SubFactory(ProductFactory)  # type: ignore[no-untyped-call]
-    company = factory.LazyAttribute(lambda o: o.product.company if o.product else None)  # type: ignore[attr-defined,no-untyped-call]
-    dim_key = "Warna"
-    dim_value = "White"
-    photo = factory.django.FileField(data=b"x", filename="test_dim_image.jpg")  # type: ignore[no-untyped-call]

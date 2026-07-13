@@ -3,6 +3,7 @@ import factory
 from apps.catalog.models import (
     Category,
     Product,
+    ProductDimensionImage,
     ProductPhoto,
     ProductVariant,
     ProductVariantMarketplace,
@@ -67,3 +68,14 @@ class ProductVariantMarketplaceFactory(factory.django.DjangoModelFactory):
     company = factory.SubFactory(CompanyFactory)  # type: ignore[no-untyped-call]
     selling_price = 10000
     is_active = True
+
+
+class ProductDimensionImageFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = ProductDimensionImage
+
+    product = factory.SubFactory(ProductFactory)  # type: ignore[no-untyped-call]
+    company = factory.LazyAttribute(lambda o: o.product.company if o.product else None)  # type: ignore[attr-defined,no-untyped-call]
+    dim_key = "Warna"
+    dim_value = "White"
+    photo = factory.django.FileField(data=b"x", filename="test_dim_image.jpg")  # type: ignore[no-untyped-call]

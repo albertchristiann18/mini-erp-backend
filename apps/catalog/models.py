@@ -155,6 +155,25 @@ class ProductVariant(DefaultModel):
         return f"{self.sku_variant_code}-{self.name}"
 
 
+class ProductDimensionImage(DefaultModel):
+    """Per-dimension-value image for a product (e.g. Warna=White → image)."""
+
+    id = ULIDField(
+        primary_key=True, default=generate_ulid, editable=False, db_column="product_dim_image_id"
+    )
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="dimension_images")
+    dim_key = models.CharField(max_length=100)
+    dim_value = models.CharField(max_length=100)
+    photo = models.FileField(upload_to="variants/dimension_images/")
+
+    class Meta:
+        unique_together = [["product", "dim_key", "dim_value"]]
+        db_table = "inventory_productdimensionimage"
+
+    def __str__(self) -> str:
+        return f"{self.product.sku_code} — {self.dim_key}={self.dim_value}"
+
+
 class ProductVariantMarketplace(DefaultModel):
     """Pricing per variant per marketplace (stock is unified)"""
 

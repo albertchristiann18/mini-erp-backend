@@ -5,6 +5,7 @@ from django.db import transaction
 
 from apps.catalog.models import (
     Product,
+    ProductDimensionImage,
     ProductVariant,
 )
 
@@ -269,8 +270,6 @@ class ProductService:
         dim_value: str,
         photo_file: Any,
     ) -> Any:
-        from apps.inventory.models import ProductDimensionImage
-
         allowed_keys = {k for k in [product.dim1_key, product.dim2_key] if k}
         if allowed_keys and dim_key not in allowed_keys:
             raise ValueError(
@@ -301,8 +300,6 @@ class ProductService:
         dim_key: str,
         dim_value: str,
     ) -> None:
-        from apps.inventory.models import ProductDimensionImage
-
         dim_img = ProductDimensionImage.objects.filter(
             product=product, dim_key=dim_key, dim_value=dim_value
         ).first()
@@ -315,9 +312,6 @@ class ProductService:
     def cleanup_orphan_dimension_images(
         self, product_id: str, old_dim1_key: str, old_dim2_key: str
     ) -> None:
-        from apps.catalog.models import Product
-        from apps.inventory.models import ProductDimensionImage
-
         try:
             product = Product.objects.get(id=product_id)
         except Product.DoesNotExist:
