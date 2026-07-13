@@ -216,8 +216,8 @@ class TikTokRefreshTokenTest(APITestCase):
         self.assertEqual(self.shop.refresh_token, "new_refresh_token")
 
 
-class TestTikTokSyncScripts(TestCase):
-    def test_scripts_tiktok_sync_orders_run_creates_sync_log(self):
+class TestTikTokSyncService(TestCase):
+    def test_sync_orders_creates_sync_log(self):
         company = CompanyFactory()
         warehouse = WarehouseFactory(company=company)
         shop = TikTokShopFactory(company=company, warehouse=warehouse, is_active=True)
@@ -226,15 +226,15 @@ class TestTikTokSyncScripts(TestCase):
             "apps.marketplace.tiktok.order_sync.TikTokOrderSyncer.sync_orders",
             return_value=2,
         ):
-            from scripts.tiktok_sync_orders import run
+            from apps.marketplace.tiktok.order_sync import sync_all_active_shops_orders
 
-            run()
+            sync_all_active_shops_orders()
 
         log = TikTokSyncLog.objects.get(shop=shop, sync_type="orders")
         self.assertEqual(log.status, "success")
         self.assertEqual(log.orders_synced, 2)
 
-    def test_scripts_tiktok_sync_orders_run_filters_by_shop_id(self):
+    def test_sync_orders_filters_by_shop_id(self):
         company = CompanyFactory()
         warehouse = WarehouseFactory(company=company)
         shop1 = TikTokShopFactory(company=company, warehouse=warehouse, is_active=True)
@@ -244,15 +244,15 @@ class TestTikTokSyncScripts(TestCase):
             "apps.marketplace.tiktok.order_sync.TikTokOrderSyncer.sync_orders",
             return_value=1,
         ):
-            from scripts.tiktok_sync_orders import run
+            from apps.marketplace.tiktok.order_sync import sync_all_active_shops_orders
 
-            run(shop_id=shop1.shop_id)
+            sync_all_active_shops_orders(shop_id=shop1.shop_id)
 
         logs = TikTokSyncLog.objects.filter(sync_type="orders")
         self.assertEqual(logs.count(), 1)
         self.assertEqual(logs.first().shop, shop1)
 
-    def test_scripts_tiktok_sync_orders_run_logs_error_on_exception(self):
+    def test_sync_orders_logs_error_on_exception(self):
         company = CompanyFactory()
         warehouse = WarehouseFactory(company=company)
         shop = TikTokShopFactory(company=company, warehouse=warehouse, is_active=True)
@@ -261,15 +261,15 @@ class TestTikTokSyncScripts(TestCase):
             "apps.marketplace.tiktok.order_sync.TikTokOrderSyncer.sync_orders",
             side_effect=Exception("fail"),
         ):
-            from scripts.tiktok_sync_orders import run
+            from apps.marketplace.tiktok.order_sync import sync_all_active_shops_orders
 
-            run()
+            sync_all_active_shops_orders()
 
         log = TikTokSyncLog.objects.get(shop=shop, sync_type="orders")
         self.assertEqual(log.status, "error")
         self.assertEqual(log.message, "fail")
 
-    def test_scripts_tiktok_sync_stock_run_creates_sync_log(self):
+    def test_sync_stock_creates_sync_log(self):
         company = CompanyFactory()
         warehouse = WarehouseFactory(company=company)
         shop = TikTokShopFactory(company=company, warehouse=warehouse, is_active=True)
@@ -278,15 +278,15 @@ class TestTikTokSyncScripts(TestCase):
             "apps.marketplace.tiktok.stock_sync.TikTokStockSyncer.push_stock",
             return_value=4,
         ):
-            from scripts.tiktok_sync_stock import run
+            from apps.marketplace.tiktok.stock_sync import sync_all_active_shops_stock
 
-            run()
+            sync_all_active_shops_stock()
 
         log = TikTokSyncLog.objects.get(shop=shop, sync_type="stock")
         self.assertEqual(log.status, "success")
         self.assertEqual(log.orders_synced, 4)
 
-    def test_scripts_tiktok_sync_stock_run_logs_error_on_exception(self):
+    def test_sync_stock_logs_error_on_exception(self):
         company = CompanyFactory()
         warehouse = WarehouseFactory(company=company)
         shop = TikTokShopFactory(company=company, warehouse=warehouse, is_active=True)
@@ -295,9 +295,9 @@ class TestTikTokSyncScripts(TestCase):
             "apps.marketplace.tiktok.stock_sync.TikTokStockSyncer.push_stock",
             side_effect=Exception("stock fail"),
         ):
-            from scripts.tiktok_sync_stock import run
+            from apps.marketplace.tiktok.stock_sync import sync_all_active_shops_stock
 
-            run()
+            sync_all_active_shops_stock()
 
         log = TikTokSyncLog.objects.get(shop=shop, sync_type="stock")
         self.assertEqual(log.status, "error")

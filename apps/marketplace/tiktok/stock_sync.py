@@ -1,8 +1,10 @@
 import logging
 
+from django.utils import timezone
+
 from apps.inventory.models import ProductVariantWarehouse
 from apps.marketplace.tiktok.client import TikTokAPIError, TikTokClient
-from apps.marketplace.tiktok.models import TikTokShop
+from apps.marketplace.tiktok.models import TikTokShop, TikTokSyncLog
 
 logger = logging.getLogger(__name__)
 
@@ -43,3 +45,27 @@ class TikTokStockSyncer:
                 logger.error(f"Failed to push stock for SKU {sku}: {e}")
 
         return count
+
+
+def sync_all_active_shops_stock() -> dict[str, int]:
+    """Push stock to TikTok for all active shops. Returns summary."""
+    total_count = 0
+    shops_processed = 0
+
+    for shop in TikTokShop.objects.filter(is_active=True):
+        log = TikTokSyncLog.objects.create(shop=shop, sync_type="stock", status="running")
+        try:
+            syncer = TikTokStockSyncer(shop)
+            count = syncer.push_stock()
+            log.status = "success"
+            log.orders_synced = count
+            shops_processed += 1
+            total_count += count
+        except Exception as e:
+            log.status = "error"
+            log.message = str(e)
+        finally:
+            log.finished_at = timezone.now()
+            log.save()
+
+    return {"shops": shops_processed, "synced": total_count}

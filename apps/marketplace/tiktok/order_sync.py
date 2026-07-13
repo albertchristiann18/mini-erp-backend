@@ -6,7 +6,7 @@ from django.utils import timezone
 
 from apps.catalog.models import ProductVariant
 from apps.marketplace.tiktok.client import TikTokAPIError, TikTokClient
-from apps.marketplace.tiktok.models import TikTokShop
+from apps.marketplace.tiktok.models import TikTokShop, TikTokSyncLog
 from apps.sales.models import SalesOrder
 from apps.sales.services.sales_service import SalesOrderService
 
@@ -137,3 +137,34 @@ class TikTokOrderSyncer:
         so = service.create_sales_order(so_data)
         logger.info(f"Created SalesOrder {so.order_number} from TikTok order {order_id}")
         return so
+
+
+def sync_all_active_shops_orders(
+    shop_id: str | None = None,
+    hours: int = 24,
+) -> dict[str, int]:
+    """Sync orders for all active TikTok shops. Returns summary."""
+    shops = list(TikTokShop.objects.filter(is_active=True))
+    if shop_id is not None:
+        shops = [s for s in shops if s.shop_id == shop_id]
+
+    total_count = 0
+    shops_processed = 0
+
+    for shop in shops:
+        log = TikTokSyncLog.objects.create(shop=shop, sync_type="orders", status="running")
+        try:
+            syncer = TikTokOrderSyncer(shop)
+            count = syncer.sync_orders()
+            log.status = "success"
+            log.orders_synced = count
+            shops_processed += 1
+            total_count += count
+        except Exception as e:
+            log.status = "error"
+            log.message = str(e)
+        finally:
+            log.finished_at = timezone.now()
+            log.save()
+
+    return {"shops": shops_processed, "orders": total_count}
