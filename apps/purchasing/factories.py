@@ -1,11 +1,37 @@
 import factory
 
-from apps.catalog.factories import ProductVariantFactory
+from apps.catalog.factories import ProductFactory, ProductVariantFactory
 from apps.inventory.factories import CompanyFactory, WarehouseFactory
 from apps.purchasing.models import (
+    ProductSupplier,
     PurchaseOrder,
     PurchaseOrderDetail,
+    Supplier,
 )
+
+
+class SupplierFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = Supplier
+
+    name = factory.Sequence(lambda n: f"Test Supplier {n}")  # type: ignore[no-untyped-call]
+    contact_name = "Test Contact"
+    phone = "12345678"
+    country = "China"
+    is_active = True
+    company = factory.SubFactory(CompanyFactory)  # type: ignore[no-untyped-call]
+
+
+class ProductSupplierFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = ProductSupplier
+
+    product = factory.SubFactory(ProductFactory)  # type: ignore[no-untyped-call]
+    supplier = factory.SubFactory(SupplierFactory)  # type: ignore[no-untyped-call]
+    company = factory.LazyAttribute(  # type: ignore[attr-defined,no-untyped-call]
+        lambda o: o.product.company
+    )
+    supplier_link = None
 
 
 class PurchaseOrderFactory(factory.django.DjangoModelFactory):

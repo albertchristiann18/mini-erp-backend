@@ -14,14 +14,18 @@ from rest_framework.serializers import Serializer
 from rest_framework.views import APIView
 
 from apps.purchasing.models import (
+    ProductSupplier,
     PurchaseOrder,
     PurchaseOrderDetail,
+    Supplier,
 )
 from apps.purchasing.serializers import (
+    ProductSupplierSerializer,
     PurchaseOrderCreateSerializer,
     PurchaseOrderListSerializer,
     PurchaseOrderReadSerializer,
     PurchaseOrderUpdateSerializer,
+    SupplierSerializer,
 )
 from apps.purchasing.services import purchasing_service
 from apps.purchasing.services.purchasing_service import PurchaseOrderService
@@ -507,3 +511,37 @@ class SourcingPoolViewSet(viewsets.ViewSet):
                 {"id": str(obj.id), "color_name": obj.color_name, "abbreviation": obj.abbreviation},
                 status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
             )
+
+
+class SupplierViewSet(viewsets.ModelViewSet):
+    serializer_class = SupplierSerializer
+    permission_classes = [IsAuthenticated]
+
+    def perform_create(self, serializer: Any) -> None:
+        serializer.save(company=self.request.user.profile.company)
+
+    def get_queryset(self) -> QuerySet["Supplier"]:
+        qs = Supplier.objects.filter(company=self.request.user.profile.company)
+        if self.request.query_params.get("active_only"):
+            qs = qs.filter(is_active=True)
+        search = self.request.query_params.get("search")
+        if search:
+            qs = qs.filter(name__icontains=search)
+        return qs.order_by("name")
+
+
+class ProductSupplierViewSet(viewsets.ModelViewSet):
+    serializer_class = ProductSupplierSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self) -> QuerySet["ProductSupplier"]:
+        qs = ProductSupplier.objects.filter(
+            company=self.request.user.profile.company
+        ).select_related("supplier", "product")
+        product_id = self.request.query_params.get("product_id")
+        supplier_id = self.request.query_params.get("supplier_id")
+        if product_id:
+            qs = qs.filter(product__id=product_id)
+        if supplier_id:
+            qs = qs.filter(supplier__id=supplier_id)
+        return qs

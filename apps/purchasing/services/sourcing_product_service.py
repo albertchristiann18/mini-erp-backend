@@ -192,7 +192,7 @@ class SourcingProductService:
         if po.status not in [PurchaseOrder.POStatus.DRAFT, PurchaseOrder.POStatus.ORDERED]:
             raise ValidationError(f"Cannot add items to a PO with status {po.status}.")
 
-        from apps.inventory.models import Supplier
+        from apps.purchasing.models import Supplier
 
         if not Supplier.objects.filter(id=supplier_id, company=po.company).exists():
             raise Http404("Supplier not found.")

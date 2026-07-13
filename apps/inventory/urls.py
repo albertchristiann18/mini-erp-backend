@@ -12,8 +12,6 @@ router = DefaultRouter()
 router.register(r"warehouse", views.WarehouseViewSet)
 router.register(r"inventory", views.InventoryBulkViewSet, basename="inventory-bulk")
 router.register(r"stock-movements", views.StockMovementViewSet, basename="stock-movement")
-router.register(r"suppliers", views.SupplierViewSet, basename="supplier")
-router.register(r"product-suppliers", views.ProductSupplierViewSet, basename="product-supplier")
 router.register(
     r"company-marketplaces", views.CompanyMarketplaceViewSet, basename="company-marketplace"
 )

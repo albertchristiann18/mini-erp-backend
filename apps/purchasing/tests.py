@@ -24,18 +24,19 @@ from apps.catalog.factories import (
 from apps.catalog.models import Category, Product, ProductVariant
 from apps.inventory.factories import (
     CompanyFactory,
-    ProductSupplierFactory,
     ProductVariantWarehouseFactory,
-    SupplierFactory,
 )
-from apps.inventory.models import ProductCogs, ProductSupplier, ProductVariantWarehouse
+from apps.inventory.models import ProductCogs, ProductVariantWarehouse
 from apps.inventory.services.inventory_service import InventoryService
 from apps.purchasing.factories import (
+    ProductSupplierFactory,
     PurchaseOrderDetailFactory,
     PurchaseOrderFactory,
+    SupplierFactory,
 )
 from apps.purchasing.models import (
     ColorAbbreviation,
+    ProductSupplier,
     PurchaseOrder,
     PurchaseOrderDetail,
     PurchaseOrderStatusHistory,
@@ -3034,7 +3035,7 @@ class TestPurchaseOrderWithSupplier(APITestCase):
     """Tests for PurchaseOrder with Supplier FK"""
 
     def setUp(self):
-        from apps.inventory.factories import SupplierFactory
+        from apps.purchasing.factories import SupplierFactory
         from core.models import UserProfile
 
         self.client = APIClient()
@@ -3092,7 +3093,7 @@ class TestPurchaseOrderWithSupplier(APITestCase):
         self.assertIsNone(detail_response.data["supplier_id"])
 
     def test_update_po_supplier(self):
-        from apps.inventory.factories import SupplierFactory
+        from apps.purchasing.factories import SupplierFactory
 
         po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
         supplier2 = SupplierFactory(company=self.company)
@@ -3107,7 +3108,7 @@ class TestPurchaseOrderWithSupplier(APITestCase):
         self.assertEqual(detail_response.data["supplier_name"], supplier2.name)
 
     def test_supplier_name_from_fk(self):
-        from apps.inventory.factories import SupplierFactory
+        from apps.purchasing.factories import SupplierFactory
 
         supplier = SupplierFactory(company=self.company)
         po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
@@ -4094,7 +4095,7 @@ class QCPPhase7Test(TestCase):
         self.assertIsNone(self.product_variant.price_updated_at)
 
     def test_supplier_link_populated_on_detail_creation(self):
-        from apps.inventory.factories import ProductSupplierFactory, SupplierFactory
+        from apps.purchasing.factories import ProductSupplierFactory, SupplierFactory
 
         supplier = SupplierFactory(company=self.company)
         ProductSupplierFactory(
@@ -4130,7 +4131,7 @@ class QCPPhase7Test(TestCase):
         self.assertEqual(detail.supplier_link, "https://supplier.com/item")
 
     def test_supplier_link_prefers_po_supplier(self):
-        from apps.inventory.factories import ProductSupplierFactory, SupplierFactory
+        from apps.purchasing.factories import ProductSupplierFactory, SupplierFactory
 
         supplier_a = SupplierFactory(company=self.company)
         supplier_b = SupplierFactory(company=self.company)
@@ -5646,3 +5647,218 @@ class TestStatelessSourcingService(TestCase):
         with self.assertRaises(ValidationError) as ctx:
             self.service.import_and_add(po=self.po, supplier_id=str(self.supplier.id), rows=rows)
         self.assertIn("Invalid variant_id", str(ctx.exception))
+
+
+# ---------------------------------------------------------------------------
+# BE3 — relocated Supplier / ProductSupplier tests
+# ---------------------------------------------------------------------------
+
+
+class TestSupplierCRUD(APITestCase):
+    """Tests for Supplier CRUD endpoints — relocated from inventory/tests.py (BE3)."""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.user = User.objects.create_user(
+            username="supplier_test_user_be3", password="password", is_staff=True
+        )
+        from core.models import UserProfile
+
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def test_create_supplier(self):
+        response = self.client.post(
+            "/suppliers/",
+            {"name": "PT Supplier A", "contact_name": "Budi", "country": "Indonesia"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIn("id", response.data)
+
+    def test_list_suppliers(self):
+        from apps.purchasing.factories import SupplierFactory
+
+        SupplierFactory(company=self.company)
+        response = self.client.get("/suppliers/", {"company_id": self.company.id}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        results = response.data.get("results", response.data)
+        self.assertGreaterEqual(len(results), 1)
+
+    def test_update_supplier(self):
+        from apps.purchasing.factories import SupplierFactory
+
+        supplier = SupplierFactory(company=self.company)
+        response = self.client.patch(
+            f"/suppliers/{supplier.id}/",
+            {"name": "PT Supplier B"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        response = self.client.get(f"/suppliers/{supplier.id}/", format="json")
+        self.assertEqual(response.data["name"], "PT Supplier B")
+
+    def test_deactivate_supplier(self):
+        from apps.purchasing.factories import SupplierFactory
+
+        supplier = SupplierFactory(company=self.company, is_active=True)
+        response = self.client.patch(
+            f"/suppliers/{supplier.id}/",
+            {"is_active": False},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        response = self.client.get(
+            "/suppliers/", {"company_id": self.company.id, "active_only": "true"}, format="json"
+        )
+        results = response.data.get("results", response.data)
+        ids = [s["id"] for s in results]
+        self.assertNotIn(str(supplier.id), ids)
+
+    def test_search_supplier(self):
+        from apps.purchasing.factories import SupplierFactory
+
+        SupplierFactory(company=self.company, name="Alpha Supplier")
+        SupplierFactory(company=self.company, name="Beta Trading")
+        response = self.client.get(
+            "/suppliers/", {"search": "Alpha", "company_id": self.company.id}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        results = response.data.get("results", response.data)
+        names = [s["name"] for s in results]
+        self.assertIn("Alpha Supplier", names)
+        self.assertNotIn("Beta Trading", names)
+
+    def test_create_supplier_with_link(self):
+        response = self.client.post(
+            "/suppliers/",
+            {"name": "PT Supplier Link", "supplier_link": "https://shop.example.com/store/abc"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["supplier_link"], "https://shop.example.com/store/abc")
+
+    def test_update_supplier_link(self):
+        from apps.purchasing.factories import SupplierFactory
+
+        supplier = SupplierFactory(company=self.company)
+        response = self.client.patch(
+            f"/suppliers/{supplier.id}/",
+            {"supplier_link": "https://new-link.com"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["supplier_link"], "https://new-link.com")
+
+    def test_supplier_link_optional(self):
+        response = self.client.post(
+            "/suppliers/",
+            {"name": "PT Supplier No Link"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIsNone(response.data["supplier_link"])
+
+
+class ProductSupplierTest(APITestCase):
+    """Tests for ProductSupplier endpoints — relocated from inventory/tests.py (BE3)."""
+
+    def setUp(self):
+        self.company = CompanyFactory()
+        self.category = CategoryFactory(company=self.company)
+        self.product = ProductFactory(
+            company=self.company, category=self.category, description="A" * 25
+        )
+        from apps.purchasing.factories import SupplierFactory
+
+        self.supplier = SupplierFactory(company=self.company)
+        self.user = User.objects.create_user(username="ps_test_be3", password="pw", is_staff=True)
+        from core.models import UserProfile
+
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def test_create_product_supplier(self):
+        resp = self.client.post(
+            "/product-suppliers/",
+            {
+                "product_id": str(self.product.id),
+                "supplier_id": str(self.supplier.id),
+                "supplier_link": "https://supplier.com/product-x",
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["supplier_name"], self.supplier.name)
+        self.assertEqual(resp.data["supplier_link"], "https://supplier.com/product-x")
+
+    def test_list_by_product(self):
+        from apps.purchasing.factories import ProductSupplierFactory
+
+        ProductSupplierFactory(product=self.product, supplier=self.supplier, company=self.company)
+        resp = self.client.get("/product-suppliers/", {"product_id": str(self.product.id)})
+        self.assertEqual(resp.status_code, 200)
+        results = resp.data.get("results", resp.data)
+        self.assertEqual(len(results), 1)
+
+    def test_delete_product_supplier(self):
+        from apps.purchasing.factories import ProductSupplierFactory
+
+        ps = ProductSupplierFactory(
+            product=self.product, supplier=self.supplier, company=self.company
+        )
+        resp = self.client.delete(f"/product-suppliers/{ps.id}/")
+        self.assertEqual(resp.status_code, 204)
+
+
+# ---------------------------------------------------------------------------
+# BE3 — migration-graph ordering regression tests
+# ---------------------------------------------------------------------------
+
+
+class MigrationGraphOrderingRegressionTests(TestCase):
+    """Regression tests proving the BE3 supplier state-move migrations are correctly
+    ordered: the inventory DeleteModel migration must always run after the purchasing
+    CreateModel/AlterField migration — on fresh replay and on rollback — preventing
+    the BE2 ordering-bug class from recurring here."""
+
+    def test_inventory_delete_supplier_runs_after_purchasing_create_supplier(self):
+        """inventory/0029 (DeleteModel Supplier/ProductSupplier) must run after
+        purchasing/0026 (CreateModel Supplier/ProductSupplier + AlterField) in every
+        forwards plan that includes the inventory deletion migration."""
+        from django.db.migrations.loader import MigrationLoader
+
+        loader = MigrationLoader(connection)
+        # Find the new inventory migration that deletes Supplier/ProductSupplier
+        inventory_delete_node = ("inventory", "0029_remove_supplier_productsupplier")
+        purchasing_create_node = ("purchasing", "0026_add_supplier_productsupplier")
+        plan = loader.graph.forwards_plan(inventory_delete_node)
+        self.assertIn(
+            purchasing_create_node,
+            plan,
+            f"{purchasing_create_node} must run before {inventory_delete_node} or a "
+            "from-scratch replay can delete the models before purchasing recreates them",
+        )
+
+    def test_pre_delete_project_state_renders_without_lazy_reference_errors(self):
+        """Build the project state immediately BEFORE the inventory DeleteModel migration
+        runs and force-render it — reproduces the exact crash class from BE2 where a
+        backward executor force-renders state and hits a dangling lazy FK reference."""
+        from django.db.migrations.loader import MigrationLoader
+
+        loader = MigrationLoader(connection)
+        inventory_delete_node = ("inventory", "0029_remove_supplier_productsupplier")
+        state = loader.graph.make_state(
+            nodes=[inventory_delete_node],
+            at_end=False,
+            real_apps=loader.unmigrated_apps,
+        )
+        try:
+            state.apps
+        except ValueError as exc:
+            self.fail(
+                "Rendering project state immediately before "
+                f"{inventory_delete_node} crashed with a lazy-reference error — "
+                "the purchasing CreateModel/AlterField migration is missing a "
+                f"dependency edge: {exc}"
+            )

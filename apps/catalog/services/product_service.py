@@ -100,7 +100,7 @@ class ProductService:
         for j, variant in enumerate(created_variants):
             created_variants_by_product[variant_product_map[j]].append(variant)
 
-        from apps.inventory.models import ProductSupplier
+        from apps.purchasing.models import ProductSupplier
 
         suppliers_to_create = []
         for i, (s_id, s_link) in enumerate(supplier_info):

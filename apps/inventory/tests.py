@@ -25,10 +25,8 @@ from apps.catalog.models import Product
 from apps.inventory.factories import (
     ProductCogsFactory,
     ProductDimensionImageFactory,
-    ProductSupplierFactory,
     ProductVariantWarehouseFactory,
     StockMovementFactory,
-    SupplierFactory,
 )
 from apps.inventory.models import (
     ProductBusinessEntity,
@@ -1809,155 +1807,6 @@ class StockMovementAPITest(APITestCase):
         self.assertGreaterEqual(len(response.data["results"]), 1)
 
 
-class TestSupplierCRUD(APITestCase):
-    """Tests for Supplier CRUD endpoints"""
-
-    def setUp(self):
-        self.company = CompanyFactory()
-        self.user = User.objects.create_user(
-            username="supplier_test_user", password="password", is_staff=True
-        )
-        from core.models import UserProfile
-
-        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
-        self.client.force_authenticate(user=self.user)
-
-    def test_create_supplier(self):
-        response = self.client.post(
-            "/suppliers/",
-            {"name": "PT Supplier A", "contact_name": "Budi", "country": "Indonesia"},
-            format="json",
-        )
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertIn("id", response.data)
-
-    def test_list_suppliers(self):
-        from apps.inventory.factories import SupplierFactory
-
-        SupplierFactory(company=self.company)
-        response = self.client.get("/suppliers/", {"company_id": self.company.id}, format="json")
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        results = response.data.get("results", response.data)
-        self.assertGreaterEqual(len(results), 1)
-
-    def test_update_supplier(self):
-        from apps.inventory.factories import SupplierFactory
-
-        supplier = SupplierFactory(company=self.company)
-        response = self.client.patch(
-            f"/suppliers/{supplier.id}/",
-            {"name": "PT Supplier B"},
-            format="json",
-        )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        response = self.client.get(f"/suppliers/{supplier.id}/", format="json")
-        self.assertEqual(response.data["name"], "PT Supplier B")
-
-    def test_deactivate_supplier(self):
-        from apps.inventory.factories import SupplierFactory
-
-        supplier = SupplierFactory(company=self.company, is_active=True)
-        response = self.client.patch(
-            f"/suppliers/{supplier.id}/",
-            {"is_active": False},
-            format="json",
-        )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        response = self.client.get(
-            "/suppliers/", {"company_id": self.company.id, "active_only": "true"}, format="json"
-        )
-        results = response.data.get("results", response.data)
-        ids = [s["id"] for s in results]
-        self.assertNotIn(str(supplier.id), ids)
-
-    def test_search_supplier(self):
-        from apps.inventory.factories import SupplierFactory
-
-        SupplierFactory(company=self.company, name="Alpha Supplier")
-        SupplierFactory(company=self.company, name="Beta Trading")
-        response = self.client.get(
-            "/suppliers/", {"search": "Alpha", "company_id": self.company.id}, format="json"
-        )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        results = response.data.get("results", response.data)
-        names = [s["name"] for s in results]
-        self.assertIn("Alpha Supplier", names)
-        self.assertNotIn("Beta Trading", names)
-
-    def test_create_supplier_with_link(self):
-        response = self.client.post(
-            "/suppliers/",
-            {"name": "PT Supplier Link", "supplier_link": "https://shop.example.com/store/abc"},
-            format="json",
-        )
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data["supplier_link"], "https://shop.example.com/store/abc")
-
-    def test_update_supplier_link(self):
-        from apps.inventory.factories import SupplierFactory
-
-        supplier = SupplierFactory(company=self.company)
-        response = self.client.patch(
-            f"/suppliers/{supplier.id}/",
-            {"supplier_link": "https://new-link.com"},
-            format="json",
-        )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["supplier_link"], "https://new-link.com")
-
-    def test_supplier_link_optional(self):
-        response = self.client.post(
-            "/suppliers/",
-            {"name": "PT Supplier No Link"},
-            format="json",
-        )
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertIsNone(response.data["supplier_link"])
-
-
-class ProductSupplierTest(APITestCase):
-    def setUp(self):
-        self.company = CompanyFactory()
-        self.category = CategoryFactory(company=self.company)
-        self.product = ProductFactory(
-            company=self.company, category=self.category, description="A" * 25
-        )
-        self.supplier = SupplierFactory(company=self.company)
-        self.user = User.objects.create_user(username="ps_test", password="pw", is_staff=True)
-        from core.models import UserProfile
-
-        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
-        self.client.force_authenticate(user=self.user)
-
-    def test_create_product_supplier(self):
-        resp = self.client.post(
-            "/product-suppliers/",
-            {
-                "product_id": str(self.product.id),
-                "supplier_id": str(self.supplier.id),
-                "supplier_link": "https://supplier.com/product-x",
-            },
-            format="json",
-        )
-        self.assertEqual(resp.status_code, 201)
-        self.assertEqual(resp.data["supplier_name"], self.supplier.name)
-        self.assertEqual(resp.data["supplier_link"], "https://supplier.com/product-x")
-
-    def test_list_by_product(self):
-        ProductSupplierFactory(product=self.product, supplier=self.supplier, company=self.company)
-        resp = self.client.get("/product-suppliers/", {"product_id": str(self.product.id)})
-        self.assertEqual(resp.status_code, 200)
-        results = resp.data.get("results", resp.data)
-        self.assertEqual(len(results), 1)
-
-    def test_delete_product_supplier(self):
-        ps = ProductSupplierFactory(
-            product=self.product, supplier=self.supplier, company=self.company
-        )
-        resp = self.client.delete(f"/product-suppliers/{ps.id}/")
-        self.assertEqual(resp.status_code, 204)
-
-
 class TestBusinessEntityService(TestCase):
     """Tests for BusinessEntityService — service-level business logic."""
 
@@ -2909,8 +2758,11 @@ class QCPPhase7Test(APITestCase):
         )
 
     def test_supplier_link_populated_on_detail_creation(self):
-        from apps.inventory.factories import ProductSupplierFactory, SupplierFactory
-        from apps.purchasing.factories import PurchaseOrderFactory
+        from apps.purchasing.factories import (
+            ProductSupplierFactory,
+            PurchaseOrderFactory,
+            SupplierFactory,
+        )
 
         supplier = SupplierFactory(company=self.company)
         ProductSupplierFactory(
@@ -2947,8 +2799,11 @@ class QCPPhase7Test(APITestCase):
         )
 
     def test_supplier_link_prefers_po_supplier(self):
-        from apps.inventory.factories import ProductSupplierFactory, SupplierFactory
-        from apps.purchasing.factories import PurchaseOrderFactory
+        from apps.purchasing.factories import (
+            ProductSupplierFactory,
+            PurchaseOrderFactory,
+            SupplierFactory,
+        )
 
         supplier_a = SupplierFactory(company=self.company)
         supplier_b = SupplierFactory(company=self.company)

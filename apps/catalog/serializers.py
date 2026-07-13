@@ -193,7 +193,7 @@ class ProductCreateSerializer(serializers.ModelSerializer):
     def validate_supplier_id(self, value: str | None) -> str | None:
         if not value:
             return None
-        from apps.inventory.models import Supplier
+        from apps.purchasing.models import Supplier
 
         if not Supplier.objects.filter(id=value).exists():
             raise serializers.ValidationError("Supplier not found")

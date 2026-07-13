@@ -9,10 +9,8 @@ from apps.inventory.models import (
     ProductBusinessEntity,
     ProductCogs,
     ProductDimensionImage,
-    ProductSupplier,
     ProductVariantWarehouse,
     StockMovement,
-    Supplier,
 )
 from core.factories import CompanyFactory, WarehouseFactory
 
@@ -64,30 +62,6 @@ class StockMovementFactory(factory.django.DjangoModelFactory):
     balance_after = 10
     reference_number = ""
     note = ""
-
-
-class SupplierFactory(factory.django.DjangoModelFactory):
-    class Meta:
-        model = Supplier
-
-    name = factory.Sequence(lambda n: f"Test Supplier {n}")  # type: ignore[no-untyped-call]
-    contact_name = "Test Contact"
-    phone = "12345678"
-    country = "China"
-    is_active = True
-    company = factory.SubFactory(CompanyFactory)  # type: ignore[no-untyped-call]
-
-
-class ProductSupplierFactory(factory.django.DjangoModelFactory):
-    class Meta:
-        model = ProductSupplier
-
-    product = factory.SubFactory(ProductFactory)  # type: ignore[no-untyped-call]
-    supplier = factory.SubFactory(SupplierFactory)  # type: ignore[no-untyped-call]
-    company = factory.LazyAttribute(  # type: ignore[attr-defined,no-untyped-call]
-        lambda o: o.product.company
-    )
-    supplier_link = None
 
 
 class CompanyMarketplaceFactory(factory.django.DjangoModelFactory):

@@ -18,10 +18,10 @@ from apps.catalog.factories import (
 from apps.catalog.models import Category, Product, ProductVariant
 from apps.inventory.factories import (
     ProductDimensionImageFactory,
-    ProductSupplierFactory,
-    SupplierFactory,
 )
-from apps.inventory.models import ProductDimensionImage, ProductSupplier
+from apps.inventory.models import ProductDimensionImage
+from apps.purchasing.factories import ProductSupplierFactory, SupplierFactory
+from apps.purchasing.models import ProductSupplier
 from core.factories import CompanyFactory, WarehouseFactory
 from core.permissions import IsStaffOrReadOnly as StaffPerm
 from core.utils import generate_ulid

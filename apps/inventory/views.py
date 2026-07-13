@@ -15,9 +15,7 @@ from apps.inventory.models import (
     BusinessEntity,
     CompanyMarketplace,
     ProductBusinessEntity,
-    ProductSupplier,
     StockMovement,
-    Supplier,
     Warehouse,
 )
 from apps.inventory.serializers import (
@@ -26,9 +24,7 @@ from apps.inventory.serializers import (
     CompanyMarketplaceSerializer,
     CompanyMarketplaceWriteSerializer,
     ProductBusinessEntitySerializer,
-    ProductSupplierSerializer,
     StockMovementSerializer,
-    SupplierSerializer,
     WarehouseSerializer,
 )
 from apps.inventory.services.business_entity_service import BusinessEntityService
@@ -322,40 +318,6 @@ class WarehouseViewSet(viewsets.ModelViewSet):
         if not self.request.user.is_authenticated:
             return Warehouse.objects.none()
         return Warehouse.objects.filter(is_active=True, company=self.request.user.profile.company)
-
-
-class SupplierViewSet(viewsets.ModelViewSet):
-    serializer_class = SupplierSerializer
-    permission_classes = [IsAuthenticated]
-
-    def perform_create(self, serializer: Any) -> None:
-        serializer.save(company=self.request.user.profile.company)
-
-    def get_queryset(self) -> QuerySet["Supplier"]:
-        qs = Supplier.objects.filter(company=self.request.user.profile.company)
-        if self.request.query_params.get("active_only"):
-            qs = qs.filter(is_active=True)
-        search = self.request.query_params.get("search")
-        if search:
-            qs = qs.filter(name__icontains=search)
-        return qs.order_by("name")
-
-
-class ProductSupplierViewSet(viewsets.ModelViewSet):
-    serializer_class = ProductSupplierSerializer
-    permission_classes = [IsAuthenticated]
-
-    def get_queryset(self) -> QuerySet["ProductSupplier"]:
-        qs = ProductSupplier.objects.filter(
-            company=self.request.user.profile.company
-        ).select_related("supplier", "product")
-        product_id = self.request.query_params.get("product_id")
-        supplier_id = self.request.query_params.get("supplier_id")
-        if product_id:
-            qs = qs.filter(product__id=product_id)
-        if supplier_id:
-            qs = qs.filter(supplier__id=supplier_id)
-        return qs
 
 
 class CompanyMarketplaceViewSet(viewsets.ViewSet):

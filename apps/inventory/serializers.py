@@ -4,11 +4,10 @@ from apps.inventory.models import (
     BusinessEntity,
     CompanyMarketplace,
     ProductBusinessEntity,
-    ProductSupplier,
     StockMovement,
-    Supplier,
     Warehouse,
 )
+from apps.purchasing.models import ProductSupplier, Supplier
 
 
 class WarehouseSerializer(serializers.ModelSerializer):

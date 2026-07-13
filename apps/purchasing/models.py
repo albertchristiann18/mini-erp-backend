@@ -10,6 +10,48 @@ from core.models import DefaultModel
 from core.utils import generate_ulid, round_decimal
 
 
+class Supplier(DefaultModel):
+    id = ULIDField(primary_key=True, default=generate_ulid, editable=False, db_column="supplier_id")
+    name = models.CharField(max_length=255)
+    contact_name = models.CharField(max_length=255, blank=True, null=True)
+    phone = models.CharField(max_length=50, blank=True, null=True)
+    country = models.CharField(max_length=100, blank=True, null=True)
+    notes = models.TextField(blank=True, null=True)
+    supplier_link = models.URLField(max_length=500, blank=True, null=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        db_table = "inventory_supplier"
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class ProductSupplier(DefaultModel):
+    id = ULIDField(
+        primary_key=True, default=generate_ulid, editable=False, db_column="product_supplier_id"
+    )
+    product = models.ForeignKey(
+        "catalog.Product", on_delete=models.CASCADE, related_name="product_suppliers"
+    )
+    supplier = models.ForeignKey(
+        Supplier, on_delete=models.CASCADE, related_name="product_suppliers"
+    )
+    supplier_link = models.URLField(
+        max_length=500,
+        blank=True,
+        null=True,
+        help_text="URL to this product on the supplier's site",
+    )
+
+    class Meta:
+        db_table = "inventory_productsupplier"
+        unique_together = ["product", "supplier"]
+
+    def __str__(self) -> str:
+        return f"{self.product} — {self.supplier}"
+
+
 class PurchaseOrder(DefaultModel):
     """
     Purchase Order for restocking inventory.
@@ -51,7 +93,7 @@ class PurchaseOrder(DefaultModel):
     )  # delivered to which warehouse
     supplier_name = models.CharField(max_length=255, blank=True, null=True)
     supplier = models.ForeignKey(
-        "inventory.Supplier",
+        Supplier,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
