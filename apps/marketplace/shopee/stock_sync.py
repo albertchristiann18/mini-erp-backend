@@ -2,9 +2,11 @@ import logging
 from collections import defaultdict
 from typing import Any
 
+from django.utils import timezone
+
 from apps.marketplace.shopee.client import ShopeeClient
 from apps.marketplace.shopee.exceptions import ShopeeAPIError
-from apps.marketplace.shopee.models import ShopeeShop, ShopeeStockSyncLog
+from apps.marketplace.shopee.models import ShopeeShop, ShopeeStockSyncLog, ShopeeSyncLog
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +182,29 @@ class ShopeeStockSyncService:
             "failed": failed_count,
             "errors": errors,
         }
+
+    def sync_all_active_shops_stock(self) -> dict[str, int]:
+        """Sync stock to Shopee for all active shops. Returns summary of shops and records synced."""
+        total_synced = 0
+        shops_processed = 0
+
+        for shop in ShopeeShop.objects.filter(is_active=True):
+            log = ShopeeSyncLog.objects.create(shop=shop, sync_type="stock", status="running")
+            try:
+                result = self.sync_all_variants(shop)
+                count = result["success"]
+                log.status = "success"
+                log.records_synced = count
+                shops_processed += 1
+                total_synced += count
+            except Exception as e:
+                log.status = "failed"
+                log.error_message = str(e)
+            finally:
+                log.finished_at = timezone.now()
+                log.save()
+
+        return {"shops": shops_processed, "synced": total_synced}
 
     def sync_batch(self, variant_ids: list[str], shop: ShopeeShop) -> dict[str, Any]:
         from apps.catalog.models import ProductVariantMarketplace

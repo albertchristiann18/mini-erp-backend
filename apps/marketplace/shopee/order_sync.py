@@ -11,7 +11,7 @@ from django.utils import timezone
 
 from apps.catalog.models import ProductVariant
 from apps.marketplace.shopee.client import ShopeeAPIError, ShopeeClient
-from apps.marketplace.shopee.models import ShopeeShop
+from apps.marketplace.shopee.models import ShopeeShop, ShopeeSyncLog
 from apps.sales.models import SalesOrder
 from apps.sales.services.sales_service import SalesOrderService
 
@@ -196,3 +196,34 @@ class ShopeeOrderSyncer:
             service.update_sales_order(so, {"status": new_status})
         except Exception as e:
             logger.warning(f"Could not transition order {so.order_number} to {new_status}: {e}")
+
+
+def sync_all_active_shops_orders(
+    shop_id: int | None = None,
+    hours: int = 24,
+) -> dict[str, int]:
+    """Sync recent orders for all active Shopee shops. Returns summary of shops and orders synced."""
+    shops = list(ShopeeShop.objects.filter(is_active=True))
+    if shop_id is not None:
+        shops = [s for s in shops if s.shop_id == shop_id]
+
+    shops_processed: list[ShopeeShop] = []
+    total_count = 0
+
+    for shop in shops:
+        log = ShopeeSyncLog.objects.create(shop=shop, sync_type="orders", status="running")
+        try:
+            syncer = ShopeeOrderSyncer(shop)
+            count = syncer.sync_recent_orders(hours_back=hours)
+            log.status = "success"
+            log.records_synced = count
+            shops_processed.append(shop)
+            total_count += count
+        except Exception as e:
+            log.status = "failed"
+            log.error_message = str(e)
+        finally:
+            log.finished_at = timezone.now()
+            log.save()
+
+    return {"shops": len(shops_processed), "orders": total_count}

@@ -1481,15 +1481,15 @@ class TestShopeeManagementCommand(TestCase):
         self.assertEqual(log.status, "failed")
 
     def test_command_creates_success_log(self):
+        from apps.marketplace.shopee.stock_sync import ShopeeStockSyncService
+
         shop = ShopeeShopFactory(is_active=True)
 
         with patch(
             "apps.marketplace.shopee.stock_sync.ShopeeStockSyncService.sync_all_variants",
             return_value={"success": 5, "failed": 0, "errors": []},
         ):
-            from scripts.shopee_sync_stock import run
-
-            run()
+            ShopeeStockSyncService().sync_all_active_shops_stock()
 
         self.assertTrue(
             ShopeeSyncLog.objects.filter(shop=shop, sync_type="stock", status="success").exists()
@@ -1498,15 +1498,15 @@ class TestShopeeManagementCommand(TestCase):
         self.assertEqual(log.records_synced, 5)
 
     def test_command_logs_failure_on_exception(self):
+        from apps.marketplace.shopee.stock_sync import ShopeeStockSyncService
+
         shop = ShopeeShopFactory(is_active=True)
 
         with patch(
             "apps.marketplace.shopee.stock_sync.ShopeeStockSyncService.sync_all_variants",
             side_effect=Exception("boom"),
         ):
-            from scripts.shopee_sync_stock import run
-
-            run()
+            ShopeeStockSyncService().sync_all_active_shops_stock()
 
         log = ShopeeSyncLog.objects.get(shop=shop)
         self.assertEqual(log.status, "failed")
@@ -2158,8 +2158,10 @@ class TestShopeePriceSync(TestCase):
         self.assertEqual(call_args[1], str(company.id))
 
 
-class TestScriptsShopeeSyncOrders(TestCase):
-    def test_scripts_shopee_sync_orders_run_creates_sync_log(self):
+class TestShopeeSyncOrdersService(TestCase):
+    def test_sync_all_active_shops_orders_creates_sync_log(self):
+        from apps.marketplace.shopee.order_sync import sync_all_active_shops_orders
+
         company = CompanyFactory()
         marketplace = MarketplaceFactory()
         warehouse = WarehouseFactory(company=company)
@@ -2174,15 +2176,15 @@ class TestScriptsShopeeSyncOrders(TestCase):
             "apps.marketplace.shopee.order_sync.ShopeeOrderSyncer.sync_recent_orders",
             return_value=3,
         ):
-            from scripts.shopee_sync_orders import run
-
-            run()
+            sync_all_active_shops_orders()
 
         log = ShopeeSyncLog.objects.get(shop=shop, sync_type="orders")
         self.assertEqual(log.status, "success")
         self.assertEqual(log.records_synced, 3)
 
-    def test_scripts_shopee_sync_orders_run_filters_by_shop_id(self):
+    def test_sync_all_active_shops_orders_filters_by_shop_id(self):
+        from apps.marketplace.shopee.order_sync import sync_all_active_shops_orders
+
         company = CompanyFactory()
         marketplace = MarketplaceFactory()
         warehouse = WarehouseFactory(company=company)
@@ -2203,15 +2205,15 @@ class TestScriptsShopeeSyncOrders(TestCase):
             "apps.marketplace.shopee.order_sync.ShopeeOrderSyncer.sync_recent_orders",
             return_value=1,
         ):
-            from scripts.shopee_sync_orders import run
-
-            run(shop_id=shop1.shop_id)
+            sync_all_active_shops_orders(shop_id=shop1.shop_id)
 
         logs = ShopeeSyncLog.objects.filter(sync_type="orders")
         self.assertEqual(logs.count(), 1)
         self.assertEqual(logs.first().shop, shop1)
 
-    def test_scripts_shopee_sync_orders_run_logs_failure_on_exception(self):
+    def test_sync_all_active_shops_orders_logs_failure_on_exception(self):
+        from apps.marketplace.shopee.order_sync import sync_all_active_shops_orders
+
         company = CompanyFactory()
         marketplace = MarketplaceFactory()
         warehouse = WarehouseFactory(company=company)
@@ -2226,9 +2228,7 @@ class TestScriptsShopeeSyncOrders(TestCase):
             "apps.marketplace.shopee.order_sync.ShopeeOrderSyncer.sync_recent_orders",
             side_effect=Exception("oops"),
         ):
-            from scripts.shopee_sync_orders import run
-
-            run()
+            sync_all_active_shops_orders()
 
         log = ShopeeSyncLog.objects.get(shop=shop, sync_type="orders")
         self.assertEqual(log.status, "failed")
