@@ -17,8 +17,8 @@ django.setup()
 
 from django.utils import timezone
 
-from apps.omnichannel.vendor.tiktok.models import TikTokShop, TikTokSyncLog
-from apps.omnichannel.vendor.tiktok.stock_sync import TikTokStockSyncer
+from apps.marketplace.tiktok.models import TikTokShop, TikTokSyncLog
+from apps.marketplace.tiktok.stock_sync import TikTokStockSyncer
 
 
 def run() -> None:

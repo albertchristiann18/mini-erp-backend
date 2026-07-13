@@ -2,7 +2,7 @@ import logging
 
 from django.db import transaction
 
-from apps.omnichannel.vendor.tiktok.models import TikTokWebhookLog
+from apps.marketplace.tiktok.models import TikTokWebhookLog
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ class WebhookProcessor:
     @transaction.atomic
     def _handle_order_update(self, log: TikTokWebhookLog) -> None:
         """Handle order.status_update webhook."""
-        from apps.omnichannel.vendor.tiktok.order_sync import TikTokOrderSyncer
+        from apps.marketplace.tiktok.order_sync import TikTokOrderSyncer
 
         payload = log.payload
         order_id = payload.get("order_id") or payload.get("data", {}).get("order_id")

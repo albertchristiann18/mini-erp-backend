@@ -1,9 +1,9 @@
 import logging
 from typing import Any
 
-from apps.omnichannel.vendor.shopee.client import ShopeeClient
-from apps.omnichannel.vendor.shopee.exceptions import ShopeeAPIError
-from apps.omnichannel.vendor.shopee.models import ShopeeShop
+from apps.marketplace.shopee.client import ShopeeClient
+from apps.marketplace.shopee.exceptions import ShopeeAPIError
+from apps.marketplace.shopee.models import ShopeeShop
 
 logger = logging.getLogger(__name__)
 

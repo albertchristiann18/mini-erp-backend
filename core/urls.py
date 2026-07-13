@@ -98,8 +98,8 @@ urlpatterns = [
     path("", include("apps.purchasing.urls")),
     path("", include("apps.sales.urls")),
     path("", include("apps.finance.urls")),
-    path("", include("apps.omnichannel.vendor.shopee.urls")),
-    path("", include("apps.omnichannel.vendor.tiktok.urls")),
+    path("", include("apps.marketplace.shopee.urls")),
+    path("", include("apps.marketplace.tiktok.urls")),
 ]
 
 router = DefaultRouter()

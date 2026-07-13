@@ -1,7 +1,7 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
-from apps.omnichannel.vendor.shopee import views
+from apps.marketplace.shopee import views
 
 router = DefaultRouter()
 router.register(r"shopee/shops", views.ShopeeShopViewSet, basename="shopee-shop")

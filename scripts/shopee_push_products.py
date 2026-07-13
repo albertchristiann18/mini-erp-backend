@@ -18,8 +18,8 @@ django.setup()
 
 from django.utils import timezone
 
-from apps.omnichannel.vendor.shopee.models import ShopeeShop, ShopeeSyncLog
-from apps.omnichannel.vendor.shopee.product_push import ShopeeProductPushService
+from apps.marketplace.shopee.models import ShopeeShop, ShopeeSyncLog
+from apps.marketplace.shopee.product_push import ShopeeProductPushService
 
 logger = logging.getLogger(__name__)
 

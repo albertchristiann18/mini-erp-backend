@@ -12,13 +12,13 @@ from rest_framework.decorators import action
 from rest_framework.request import Request
 from rest_framework.response import Response
 
-from apps.omnichannel.vendor.shopee.models import ShopeeShop, ShopeeSyncLog, ShopeeWebhookLog
-from apps.omnichannel.vendor.shopee.serializers import (
+from apps.marketplace.shopee.models import ShopeeShop, ShopeeSyncLog, ShopeeWebhookLog
+from apps.marketplace.shopee.serializers import (
     ShopeeShopSerializer,
     ShopeeSyncLogSerializer,
     ShopeeWebhookLogSerializer,
 )
-from apps.omnichannel.vendor.shopee.webhook_handler import WebhookProcessor
+from apps.marketplace.shopee.webhook_handler import WebhookProcessor
 from core.permissions import IsStaffOrReadOnly
 
 logger = logging.getLogger(__name__)
@@ -82,7 +82,7 @@ class ShopeeShopViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="refresh-token")
     def refresh_token(self, request: Request, pk: str | None = None) -> Response:
         shop = self.get_object()
-        from apps.omnichannel.vendor.shopee.client import ShopeeAPIError, ShopeeClient
+        from apps.marketplace.shopee.client import ShopeeAPIError, ShopeeClient
 
         try:
             client = ShopeeClient(shop)
@@ -94,7 +94,7 @@ class ShopeeShopViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="sync-orders")
     def sync_orders(self, request: Request, pk: str | None = None) -> Response:
         shop = self.get_object()
-        from apps.omnichannel.vendor.shopee.order_sync import ShopeeOrderSyncer
+        from apps.marketplace.shopee.order_sync import ShopeeOrderSyncer
 
         try:
             count = ShopeeOrderSyncer(shop).sync_recent_orders()
@@ -105,7 +105,7 @@ class ShopeeShopViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="sync-stock")
     def sync_stock(self, request: Request, pk: str | None = None) -> Response:
         shop = self.get_object()
-        from apps.omnichannel.vendor.shopee.stock_sync import ShopeeStockSyncService
+        from apps.marketplace.shopee.stock_sync import ShopeeStockSyncService
 
         try:
             service = ShopeeStockSyncService()
@@ -123,7 +123,7 @@ class ShopeeShopViewSet(viewsets.ModelViewSet):
                 {"error": "order_sns must be a non-empty list"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        from apps.omnichannel.vendor.shopee.client import ShopeeAPIError, ShopeeClient
+        from apps.marketplace.shopee.client import ShopeeAPIError, ShopeeClient
 
         try:
             client = ShopeeClient(shop)

@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from apps.omnichannel.vendor.shopee.models import (
+from apps.marketplace.shopee.models import (
     ShopeeShop,
     ShopeeStockSyncLog,
     ShopeeSyncLog,

@@ -9,12 +9,12 @@ from rest_framework.test import APIClient, APITestCase
 
 from apps.catalog.factories import ProductFactory, ProductVariantFactory
 from apps.inventory.factories import ProductCogsFactory, ProductVariantWarehouseFactory
-from apps.omnichannel.vendor.tiktok.factories import (
+from apps.marketplace.tiktok.factories import (
     TikTokShopFactory,
     TikTokWebhookLogFactory,
 )
-from apps.omnichannel.vendor.tiktok.models import TikTokSyncLog, TikTokWebhookLog
-from apps.omnichannel.vendor.tiktok.views import _verify_signature
+from apps.marketplace.tiktok.models import TikTokSyncLog, TikTokWebhookLog
+from apps.marketplace.tiktok.views import _verify_signature
 from apps.sales.models import SalesOrder
 from core.factories import CompanyFactory, WarehouseFactory
 
@@ -82,7 +82,7 @@ class TikTokOrderSyncTest(TestCase):
             warehouse=self.warehouse,
         )
 
-    @patch("apps.omnichannel.vendor.tiktok.order_sync.TikTokClient")
+    @patch("apps.marketplace.tiktok.order_sync.TikTokClient")
     def test_order_upsert_creates_sales_order(self, MockClient):
         sku = self.variant.sku_variant_code
         mock_client = MockClient.return_value
@@ -111,7 +111,7 @@ class TikTokOrderSyncTest(TestCase):
             }
         }
 
-        from apps.omnichannel.vendor.tiktok.order_sync import TikTokOrderSyncer
+        from apps.marketplace.tiktok.order_sync import TikTokOrderSyncer
 
         syncer = TikTokOrderSyncer(self.shop)
         so = syncer.upsert_order(mock_client.get.return_value["order"])
@@ -124,7 +124,7 @@ class TikTokOrderSyncTest(TestCase):
         self.assertEqual(item.quantity, 2)
         self.assertEqual(item.selling_price, 100000)
 
-    @patch("apps.omnichannel.vendor.tiktok.order_sync.TikTokClient")
+    @patch("apps.marketplace.tiktok.order_sync.TikTokClient")
     def test_order_upsert_skips_duplicate(self, MockClient):
         sku = self.variant.sku_variant_code
         order_data = {
@@ -150,7 +150,7 @@ class TikTokOrderSyncTest(TestCase):
             ],
         }
 
-        from apps.omnichannel.vendor.tiktok.order_sync import TikTokOrderSyncer
+        from apps.marketplace.tiktok.order_sync import TikTokOrderSyncer
 
         syncer = TikTokOrderSyncer(self.shop)
         so1 = syncer.upsert_order(order_data)
@@ -223,7 +223,7 @@ class TestTikTokSyncScripts(TestCase):
         shop = TikTokShopFactory(company=company, warehouse=warehouse, is_active=True)
 
         with patch(
-            "apps.omnichannel.vendor.tiktok.order_sync.TikTokOrderSyncer.sync_orders",
+            "apps.marketplace.tiktok.order_sync.TikTokOrderSyncer.sync_orders",
             return_value=2,
         ):
             from scripts.tiktok_sync_orders import run
@@ -241,7 +241,7 @@ class TestTikTokSyncScripts(TestCase):
         TikTokShopFactory(company=company, warehouse=warehouse, is_active=True)
 
         with patch(
-            "apps.omnichannel.vendor.tiktok.order_sync.TikTokOrderSyncer.sync_orders",
+            "apps.marketplace.tiktok.order_sync.TikTokOrderSyncer.sync_orders",
             return_value=1,
         ):
             from scripts.tiktok_sync_orders import run
@@ -258,7 +258,7 @@ class TestTikTokSyncScripts(TestCase):
         shop = TikTokShopFactory(company=company, warehouse=warehouse, is_active=True)
 
         with patch(
-            "apps.omnichannel.vendor.tiktok.order_sync.TikTokOrderSyncer.sync_orders",
+            "apps.marketplace.tiktok.order_sync.TikTokOrderSyncer.sync_orders",
             side_effect=Exception("fail"),
         ):
             from scripts.tiktok_sync_orders import run
@@ -275,7 +275,7 @@ class TestTikTokSyncScripts(TestCase):
         shop = TikTokShopFactory(company=company, warehouse=warehouse, is_active=True)
 
         with patch(
-            "apps.omnichannel.vendor.tiktok.stock_sync.TikTokStockSyncer.push_stock",
+            "apps.marketplace.tiktok.stock_sync.TikTokStockSyncer.push_stock",
             return_value=4,
         ):
             from scripts.tiktok_sync_stock import run
@@ -292,7 +292,7 @@ class TestTikTokSyncScripts(TestCase):
         shop = TikTokShopFactory(company=company, warehouse=warehouse, is_active=True)
 
         with patch(
-            "apps.omnichannel.vendor.tiktok.stock_sync.TikTokStockSyncer.push_stock",
+            "apps.marketplace.tiktok.stock_sync.TikTokStockSyncer.push_stock",
             side_effect=Exception("stock fail"),
         ):
             from scripts.tiktok_sync_stock import run

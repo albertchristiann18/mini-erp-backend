@@ -1,7 +1,7 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
-from apps.omnichannel.vendor.tiktok import views
+from apps.marketplace.tiktok import views
 
 router = DefaultRouter()
 router.register(r"tiktok/shops", views.TikTokShopViewSet, basename="tiktok-shop")

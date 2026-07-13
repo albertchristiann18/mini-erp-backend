@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from apps.omnichannel.vendor.shopee.models import ShopeeShop, ShopeeSyncLog, ShopeeWebhookLog
+from apps.marketplace.shopee.models import ShopeeShop, ShopeeSyncLog, ShopeeWebhookLog
 
 
 class ShopeeShopSerializer(serializers.ModelSerializer):

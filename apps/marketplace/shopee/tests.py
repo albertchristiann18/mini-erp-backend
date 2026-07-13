@@ -20,22 +20,22 @@ from apps.catalog.models import Category, Product, ProductVariant
 from apps.inventory.factories import ProductCogsFactory, ProductVariantWarehouseFactory
 from apps.inventory.models import ProductVariantWarehouse, StockMovement
 from apps.inventory.services.inventory_service import InventoryService
-from apps.omnichannel.vendor.shopee.client import ShopeeClient
-from apps.omnichannel.vendor.shopee.exceptions import ShopeeAPIError, ShopeeAuthError
-from apps.omnichannel.vendor.shopee.factories import (
+from apps.marketplace.shopee.client import ShopeeClient
+from apps.marketplace.shopee.exceptions import ShopeeAPIError, ShopeeAuthError
+from apps.marketplace.shopee.factories import (
     ShopeeShopFactory,
     ShopeeStockSyncLogFactory,
     ShopeeWebhookLogFactory,
 )
-from apps.omnichannel.vendor.shopee.models import (
+from apps.marketplace.shopee.models import (
     ShopeeStockSyncLog,
     ShopeeSyncLog,
     ShopeeWebhookLog,
 )
-from apps.omnichannel.vendor.shopee.product_match import ShopeeProductMatchService
-from apps.omnichannel.vendor.shopee.product_push import ShopeeProductPushService
-from apps.omnichannel.vendor.shopee.stock_sync import ShopeeStockSyncService
-from apps.omnichannel.vendor.shopee.utils import sign_shop_api
+from apps.marketplace.shopee.product_match import ShopeeProductMatchService
+from apps.marketplace.shopee.product_push import ShopeeProductPushService
+from apps.marketplace.shopee.stock_sync import ShopeeStockSyncService
+from apps.marketplace.shopee.utils import sign_shop_api
 from apps.purchasing.factories import PurchaseOrderDetailFactory, PurchaseOrderFactory
 from apps.purchasing.models import PurchaseOrder
 from apps.purchasing.services.purchasing_service import PurchaseOrderService
@@ -114,7 +114,7 @@ class ShopeeOrderSyncTest(TestCase):
             default_warehouse=self.warehouse,
         )
 
-    @patch("apps.omnichannel.vendor.shopee.order_sync.ShopeeClient")
+    @patch("apps.marketplace.shopee.order_sync.ShopeeClient")
     def test_order_upsert_creates_sales_order(self, MockClient):
         sku = self.variant.sku_variant_code
         mock_client = MockClient.return_value
@@ -148,7 +148,7 @@ class ShopeeOrderSyncTest(TestCase):
             ]
         }
 
-        from apps.omnichannel.vendor.shopee.order_sync import ShopeeOrderSyncer
+        from apps.marketplace.shopee.order_sync import ShopeeOrderSyncer
 
         syncer = ShopeeOrderSyncer(self.shop)
         so = syncer.sync_order_by_sn("SH_ORDER_001")
@@ -161,7 +161,7 @@ class ShopeeOrderSyncTest(TestCase):
         self.assertEqual(item.quantity, 2)
         self.assertEqual(item.selling_price, 100000)
 
-    @patch("apps.omnichannel.vendor.shopee.order_sync.ShopeeClient")
+    @patch("apps.marketplace.shopee.order_sync.ShopeeClient")
     def test_order_upsert_skips_duplicate(self, MockClient):
         sku = self.variant.sku_variant_code
         mock_client = MockClient.return_value
@@ -194,7 +194,7 @@ class ShopeeOrderSyncTest(TestCase):
             ]
         }
 
-        from apps.omnichannel.vendor.shopee.order_sync import ShopeeOrderSyncer
+        from apps.marketplace.shopee.order_sync import ShopeeOrderSyncer
 
         syncer = ShopeeOrderSyncer(self.shop)
         so1 = syncer.sync_order_by_sn("SH_ORDER_DUP")
@@ -204,7 +204,7 @@ class ShopeeOrderSyncTest(TestCase):
         self.assertIsNotNone(so2)
         self.assertEqual(SalesOrder.objects.filter(marketplace_order_id="SH_ORDER_DUP").count(), 1)
 
-    @patch("apps.omnichannel.vendor.shopee.order_sync.ShopeeClient")
+    @patch("apps.marketplace.shopee.order_sync.ShopeeClient")
     def test_sync_recent_orders_paginates_and_upserts_orders(self, MockClient):
         sku = self.variant.sku_variant_code
         mock_client = MockClient.return_value
@@ -288,7 +288,7 @@ class ShopeeOrderSyncTest(TestCase):
 
         mock_client.get_order_detail.side_effect = detail_side_effect
 
-        from apps.omnichannel.vendor.shopee.order_sync import ShopeeOrderSyncer
+        from apps.marketplace.shopee.order_sync import ShopeeOrderSyncer
 
         syncer = ShopeeOrderSyncer(self.shop)
         count = syncer.sync_recent_orders()
@@ -303,12 +303,12 @@ class ShopeeOrderSyncTest(TestCase):
             3,
         )
 
-    @patch("apps.omnichannel.vendor.shopee.order_sync.ShopeeClient")
+    @patch("apps.marketplace.shopee.order_sync.ShopeeClient")
     def test_sync_recent_orders_respects_hours_back_window(self, MockClient):
         mock_client = MockClient.return_value
         mock_client.get_order_list.return_value = {"order_list": [], "more": False}
 
-        from apps.omnichannel.vendor.shopee.order_sync import ShopeeOrderSyncer
+        from apps.marketplace.shopee.order_sync import ShopeeOrderSyncer
 
         syncer = ShopeeOrderSyncer(self.shop)
         syncer.sync_recent_orders(hours_back=48)
@@ -318,12 +318,12 @@ class ShopeeOrderSyncTest(TestCase):
         # 48 hours = 172800 seconds
         self.assertAlmostEqual(time_diff, 172800, delta=10)
 
-    @patch("apps.omnichannel.vendor.shopee.order_sync.ShopeeClient")
+    @patch("apps.marketplace.shopee.order_sync.ShopeeClient")
     def test_sync_recent_orders_logs_and_stops_on_get_order_list_failure(self, MockClient):
         mock_client = MockClient.return_value
         mock_client.get_order_list.side_effect = ShopeeAPIError(500, "API_ERROR", "list failed")
 
-        from apps.omnichannel.vendor.shopee.order_sync import ShopeeOrderSyncer
+        from apps.marketplace.shopee.order_sync import ShopeeOrderSyncer
 
         syncer = ShopeeOrderSyncer(self.shop)
         count = syncer.sync_recent_orders()
@@ -332,7 +332,7 @@ class ShopeeOrderSyncTest(TestCase):
         self.shop.refresh_from_db()
         self.assertIsNotNone(self.shop.last_order_sync_at)
 
-    @patch("apps.omnichannel.vendor.shopee.order_sync.ShopeeClient")
+    @patch("apps.marketplace.shopee.order_sync.ShopeeClient")
     def test_sync_recent_orders_continues_after_get_order_detail_failure(self, MockClient):
         mock_client = MockClient.return_value
         mock_client.get_order_list.return_value = {
@@ -341,7 +341,7 @@ class ShopeeOrderSyncTest(TestCase):
         }
         mock_client.get_order_detail.side_effect = ShopeeAPIError(500, "API_ERROR", "detail failed")
 
-        from apps.omnichannel.vendor.shopee.order_sync import ShopeeOrderSyncer
+        from apps.marketplace.shopee.order_sync import ShopeeOrderSyncer
 
         syncer = ShopeeOrderSyncer(self.shop)
         count = syncer.sync_recent_orders()
@@ -397,7 +397,7 @@ class TestShopeeOrderWebhook(TestCase):
             ]
         }
 
-    @patch("apps.omnichannel.vendor.shopee.order_sync.ShopeeClient")
+    @patch("apps.marketplace.shopee.order_sync.ShopeeClient")
     def test_webhook_end_to_end_creates_sales_order(self, MockClient):
         """POST webhook code 3 → order fetched from Shopee API → SalesOrder created in DB."""
         sku = self.variant.sku_variant_code
@@ -420,7 +420,7 @@ class TestShopeeOrderWebhook(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(SalesOrder.objects.filter(marketplace_order_id="SH_WH_001").exists())
 
-    @patch("apps.omnichannel.vendor.shopee.order_sync.ShopeeClient")
+    @patch("apps.marketplace.shopee.order_sync.ShopeeClient")
     def test_order_upsert_source_platform_is_shopee(self, MockClient):
         """SalesOrder created from Shopee sync has source_platform=SHOPEE, not MANUAL."""
         sku = self.variant.sku_variant_code
@@ -428,7 +428,7 @@ class TestShopeeOrderWebhook(TestCase):
             sku, "SH_PLAT_001"
         )
 
-        from apps.omnichannel.vendor.shopee.order_sync import ShopeeOrderSyncer
+        from apps.marketplace.shopee.order_sync import ShopeeOrderSyncer
 
         syncer = ShopeeOrderSyncer(self.shop)
         so = syncer.sync_order_by_sn("SH_PLAT_001")
@@ -443,14 +443,14 @@ class TestShopeeOrderWebhook(TestCase):
         other_variant.refresh_from_db()
         sku = other_variant.sku_variant_code
 
-        from apps.omnichannel.vendor.shopee.order_sync import ShopeeOrderSyncer
+        from apps.marketplace.shopee.order_sync import ShopeeOrderSyncer
 
         syncer = ShopeeOrderSyncer(self.shop)  # self.shop belongs to self.company
         result = syncer._find_variant({"model_sku": sku})
 
         self.assertIsNone(result)
 
-    @patch("apps.omnichannel.vendor.shopee.order_sync.ShopeeClient")
+    @patch("apps.marketplace.shopee.order_sync.ShopeeClient")
     def test_order_upsert_skips_no_default_warehouse(self, MockClient):
         """sync_order_by_sn returns None when shop has no default_warehouse configured."""
         sku = self.variant.sku_variant_code
@@ -463,7 +463,7 @@ class TestShopeeOrderWebhook(TestCase):
             sku, "SH_NOWH_001"
         )
 
-        from apps.omnichannel.vendor.shopee.order_sync import ShopeeOrderSyncer
+        from apps.marketplace.shopee.order_sync import ShopeeOrderSyncer
 
         syncer = ShopeeOrderSyncer(shop_no_wh)
         so = syncer.sync_order_by_sn("SH_NOWH_001")
@@ -488,7 +488,7 @@ class ShopeeShopAPITest(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
     @patch(
-        "apps.omnichannel.vendor.shopee.order_sync.ShopeeOrderSyncer.sync_recent_orders",
+        "apps.marketplace.shopee.order_sync.ShopeeOrderSyncer.sync_recent_orders",
         return_value=7,
     )
     def test_sync_orders_view_action_calls_sync_recent_orders(self, mock_sync):
@@ -498,7 +498,7 @@ class ShopeeShopAPITest(APITestCase):
         mock_sync.assert_called_once()
 
     @patch(
-        "apps.omnichannel.vendor.shopee.order_sync.ShopeeOrderSyncer.sync_recent_orders",
+        "apps.marketplace.shopee.order_sync.ShopeeOrderSyncer.sync_recent_orders",
         side_effect=Exception("boom"),
     )
     def test_sync_orders_view_action_returns_500_on_exception(self, mock_sync):
@@ -1283,7 +1283,7 @@ class TestPODeliveredShopeeSync(TestCase):
         )
 
         with patch(
-            "apps.omnichannel.vendor.shopee.stock_sync.ShopeeStockSyncService.sync_batch",
+            "apps.marketplace.shopee.stock_sync.ShopeeStockSyncService.sync_batch",
             return_value={"synced": 1, "failed": 0, "failed_variant_ids": []},
         ) as mock_sync:
             with self.captureOnCommitCallbacks(execute=True):
@@ -1344,7 +1344,7 @@ class TestPODeliveredShopeeSync(TestCase):
         )
 
         with patch(
-            "apps.omnichannel.vendor.shopee.stock_sync.ShopeeStockSyncService.sync_batch",
+            "apps.marketplace.shopee.stock_sync.ShopeeStockSyncService.sync_batch",
             side_effect=Exception("network error"),
         ):
             with self.captureOnCommitCallbacks(execute=True):
@@ -1385,7 +1385,7 @@ class TestShopeeManagementCommand(TestCase):
             shopee_model_id=None,
         )
         with patch(
-            "apps.omnichannel.vendor.shopee.product_push.ShopeeProductPushService.push_product",
+            "apps.marketplace.shopee.product_push.ShopeeProductPushService.push_product",
             side_effect=Exception("crash"),
         ):
             from scripts.shopee_push_products import run
@@ -1416,7 +1416,7 @@ class TestShopeeManagementCommand(TestCase):
             shopee_model_id=None,
         )
         with patch(
-            "apps.omnichannel.vendor.shopee.product_push.ShopeeProductPushService.push_product",
+            "apps.marketplace.shopee.product_push.ShopeeProductPushService.push_product",
             return_value={"item_id": None, "models_pushed": 0, "errors": ["API error"]},
         ):
             from scripts.shopee_push_products import run
@@ -1441,7 +1441,7 @@ class TestShopeeManagementCommand(TestCase):
             shopee_model_id=0,
         )
         with patch(
-            "apps.omnichannel.vendor.shopee.product_push.ShopeeProductPushService.update_product",
+            "apps.marketplace.shopee.product_push.ShopeeProductPushService.update_product",
             side_effect=Exception("crash"),
         ):
             from scripts.shopee_update_products import run
@@ -1472,7 +1472,7 @@ class TestShopeeManagementCommand(TestCase):
             shopee_model_id=0,
         )
         with patch(
-            "apps.omnichannel.vendor.shopee.product_push.ShopeeProductPushService.update_product",
+            "apps.marketplace.shopee.product_push.ShopeeProductPushService.update_product",
             return_value={"updated": False, "errors": ["API error"]},
         ):
             from scripts.shopee_update_products import run
@@ -1485,7 +1485,7 @@ class TestShopeeManagementCommand(TestCase):
         shop = ShopeeShopFactory(is_active=True)
 
         with patch(
-            "apps.omnichannel.vendor.shopee.stock_sync.ShopeeStockSyncService.sync_all_variants",
+            "apps.marketplace.shopee.stock_sync.ShopeeStockSyncService.sync_all_variants",
             return_value={"success": 5, "failed": 0, "errors": []},
         ):
             from scripts.shopee_sync_stock import run
@@ -1502,7 +1502,7 @@ class TestShopeeManagementCommand(TestCase):
         shop = ShopeeShopFactory(is_active=True)
 
         with patch(
-            "apps.omnichannel.vendor.shopee.stock_sync.ShopeeStockSyncService.sync_all_variants",
+            "apps.marketplace.shopee.stock_sync.ShopeeStockSyncService.sync_all_variants",
             side_effect=Exception("boom"),
         ):
             from scripts.shopee_sync_stock import run
@@ -1524,7 +1524,7 @@ class TestShopeeSyncBatchFix(TestCase):
             "apps.catalog.models.ProductVariantMarketplace.objects.filter",
             side_effect=Exception("db down"),
         ):
-            with self.assertLogs("apps.omnichannel.vendor.shopee.stock_sync", level="ERROR") as cm:
+            with self.assertLogs("apps.marketplace.shopee.stock_sync", level="ERROR") as cm:
                 result = service.sync_batch(["fake-id"], shop)
         self.assertEqual(result["failed"], 1)
         self.assertTrue(any("sync_batch failed" in msg for msg in cm.output))
@@ -1550,7 +1550,7 @@ class TestShopeeSyncBatchFix(TestCase):
             physical_qty=10,
         )
         with patch(
-            "apps.omnichannel.vendor.shopee.client.ShopeeClient.update_stock",
+            "apps.marketplace.shopee.client.ShopeeClient.update_stock",
             side_effect=Exception("ConnectionError: timeout"),
         ):
             result = ShopeeStockSyncService().sync_all_variants(shop)
@@ -1587,15 +1587,15 @@ class TestShopeeProductMatch(TestCase):
 
         with (
             patch(
-                "apps.omnichannel.vendor.shopee.client.ShopeeClient.get_item_list",
+                "apps.marketplace.shopee.client.ShopeeClient.get_item_list",
                 return_value={"item_id_list": [111], "has_next_page": False},
             ),
             patch(
-                "apps.omnichannel.vendor.shopee.client.ShopeeClient.get_item_base_info",
+                "apps.marketplace.shopee.client.ShopeeClient.get_item_base_info",
                 return_value={"item_list": [{"item_id": 111, "item_sku": "SKU001"}]},
             ),
             patch(
-                "apps.omnichannel.vendor.shopee.client.ShopeeClient.get_model_list",
+                "apps.marketplace.shopee.client.ShopeeClient.get_model_list",
                 return_value={"model": [{"model_id": 222, "model_sku": model_sku}]},
             ),
         ):
@@ -1630,15 +1630,15 @@ class TestShopeeProductMatch(TestCase):
 
         with (
             patch(
-                "apps.omnichannel.vendor.shopee.client.ShopeeClient.get_item_list",
+                "apps.marketplace.shopee.client.ShopeeClient.get_item_list",
                 return_value={"item_id_list": [111], "has_next_page": False},
             ),
             patch(
-                "apps.omnichannel.vendor.shopee.client.ShopeeClient.get_item_base_info",
+                "apps.marketplace.shopee.client.ShopeeClient.get_item_base_info",
                 return_value={"item_list": [{"item_id": 111, "item_sku": "SKU001"}]},
             ),
             patch(
-                "apps.omnichannel.vendor.shopee.client.ShopeeClient.get_model_list",
+                "apps.marketplace.shopee.client.ShopeeClient.get_model_list",
                 return_value={"model": [{"model_id": 222, "model_sku": "NONEXISTENT-SKU"}]},
             ),
         ):
@@ -1686,15 +1686,15 @@ class TestShopeeProductMatch(TestCase):
 
         with (
             patch(
-                "apps.omnichannel.vendor.shopee.client.ShopeeClient.get_item_list",
+                "apps.marketplace.shopee.client.ShopeeClient.get_item_list",
                 return_value={"item_id_list": [111], "has_next_page": False},
             ),
             patch(
-                "apps.omnichannel.vendor.shopee.client.ShopeeClient.get_item_base_info",
+                "apps.marketplace.shopee.client.ShopeeClient.get_item_base_info",
                 return_value={"item_list": [{"item_id": 111, "item_sku": model_sku}]},
             ),
             patch(
-                "apps.omnichannel.vendor.shopee.client.ShopeeClient.get_model_list",
+                "apps.marketplace.shopee.client.ShopeeClient.get_model_list",
                 return_value={"model": [{"model_id": 222, "model_sku": model_sku}]},
             ),
         ):
@@ -1709,7 +1709,7 @@ class TestShopeeProductMatch(TestCase):
         shop = ShopeeShopFactory(is_active=True)
 
         with patch(
-            "apps.omnichannel.vendor.shopee.product_match.ShopeeProductMatchService.match_products_for_shop",
+            "apps.marketplace.shopee.product_match.ShopeeProductMatchService.match_products_for_shop",
             return_value={"matched": 3, "skipped": 1, "errors": []},
         ):
             from scripts.shopee_match_products import run
@@ -1750,16 +1750,14 @@ class TestShopeeProductPush(TestCase):
 
         with (
             patch(
-                "apps.omnichannel.vendor.shopee.client.ShopeeClient.get_channel_list",
+                "apps.marketplace.shopee.client.ShopeeClient.get_channel_list",
                 return_value={
                     "logistics_channel_list": [{"logistics_channel_id": 1, "enabled": True}]
                 },
             ),
+            patch("apps.marketplace.shopee.client.ShopeeClient.upload_image", return_value=""),
             patch(
-                "apps.omnichannel.vendor.shopee.client.ShopeeClient.upload_image", return_value=""
-            ),
-            patch(
-                "apps.omnichannel.vendor.shopee.client.ShopeeClient.add_item",
+                "apps.marketplace.shopee.client.ShopeeClient.add_item",
                 return_value={"item_id": 999},
             ),
         ):
@@ -1800,7 +1798,7 @@ class TestShopeeProductPush(TestCase):
         shop = ShopeeShopFactory(is_active=True, marketplace=MarketplaceFactory())
 
         with patch(
-            "apps.omnichannel.vendor.shopee.product_push.ShopeeProductPushService.push_product",
+            "apps.marketplace.shopee.product_push.ShopeeProductPushService.push_product",
             return_value={"item_id": 100, "models_pushed": 1, "errors": []},
         ):
             from scripts.shopee_push_products import run
@@ -1839,11 +1837,11 @@ class TestShopeeProductUpdate(TestCase):
 
         with (
             patch(
-                "apps.omnichannel.vendor.shopee.client.ShopeeClient.upload_image",
+                "apps.marketplace.shopee.client.ShopeeClient.upload_image",
                 return_value="",
             ),
             patch(
-                "apps.omnichannel.vendor.shopee.client.ShopeeClient.update_item",
+                "apps.marketplace.shopee.client.ShopeeClient.update_item",
                 return_value={"item_id": 999},
             ) as mock_update,
         ):
@@ -1922,7 +1920,7 @@ class TestShopeeProductUpdate(TestCase):
         shop = ShopeeShopFactory(is_active=True, marketplace=MarketplaceFactory())
 
         with patch(
-            "apps.omnichannel.vendor.shopee.product_push.ShopeeProductPushService.update_product",
+            "apps.marketplace.shopee.product_push.ShopeeProductPushService.update_product",
             return_value={"updated": True, "errors": []},
         ):
             from scripts.shopee_update_products import run
@@ -1946,7 +1944,7 @@ class TestShopeeManageOrder(TestCase):
         )
 
     @patch(
-        "apps.omnichannel.vendor.shopee.client.ShopeeClient.get_shipping_document_result",
+        "apps.marketplace.shopee.client.ShopeeClient.get_shipping_document_result",
         return_value={"file_url": "https://cdn.shopee.example.com/label.pdf", "result_list": []},
     )
     def test_shipping_document_action_returns_file_url(self, mock_get):
@@ -2042,7 +2040,7 @@ class TestShopeePriceSync(TestCase):
         )
 
         with patch(
-            "apps.omnichannel.vendor.shopee.client.ShopeeClient.update_price",
+            "apps.marketplace.shopee.client.ShopeeClient.update_price",
             return_value={},
         ) as mock_update:
             result = ShopeeProductPushService().update_price_for_listing(listing, shop)
@@ -2090,7 +2088,7 @@ class TestShopeePriceSync(TestCase):
         )
 
         with patch(
-            "apps.omnichannel.vendor.shopee.product_push.ShopeeProductPushService.update_price_for_listing",
+            "apps.marketplace.shopee.product_push.ShopeeProductPushService.update_price_for_listing",
             return_value={"updated": True, "errors": []},
         ):
             from scripts.shopee_update_prices import run
@@ -2174,7 +2172,7 @@ class TestScriptsShopeeSyncOrders(TestCase):
         )
 
         with patch(
-            "apps.omnichannel.vendor.shopee.order_sync.ShopeeOrderSyncer.sync_recent_orders",
+            "apps.marketplace.shopee.order_sync.ShopeeOrderSyncer.sync_recent_orders",
             return_value=3,
         ):
             from scripts.shopee_sync_orders import run
@@ -2203,7 +2201,7 @@ class TestScriptsShopeeSyncOrders(TestCase):
         )
 
         with patch(
-            "apps.omnichannel.vendor.shopee.order_sync.ShopeeOrderSyncer.sync_recent_orders",
+            "apps.marketplace.shopee.order_sync.ShopeeOrderSyncer.sync_recent_orders",
             return_value=1,
         ):
             from scripts.shopee_sync_orders import run
@@ -2226,7 +2224,7 @@ class TestScriptsShopeeSyncOrders(TestCase):
         )
 
         with patch(
-            "apps.omnichannel.vendor.shopee.order_sync.ShopeeOrderSyncer.sync_recent_orders",
+            "apps.marketplace.shopee.order_sync.ShopeeOrderSyncer.sync_recent_orders",
             side_effect=Exception("oops"),
         ):
             from scripts.shopee_sync_orders import run

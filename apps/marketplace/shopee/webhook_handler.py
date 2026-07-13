@@ -2,7 +2,7 @@ import logging
 
 from django.db import transaction
 
-from apps.omnichannel.vendor.shopee.models import ShopeeShop, ShopeeWebhookLog
+from apps.marketplace.shopee.models import ShopeeShop, ShopeeWebhookLog
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ class WebhookProcessor:
     @transaction.atomic
     def _handle_order_status(self, log: ShopeeWebhookLog) -> None:
         """Handle ORDER_STATUS_UPDATE webhook."""
-        from apps.omnichannel.vendor.shopee.order_sync import ShopeeOrderSyncer
+        from apps.marketplace.shopee.order_sync import ShopeeOrderSyncer
 
         payload = log.payload
         order_sn = payload.get("ordersn") or payload.get("data", {}).get("ordersn")
@@ -59,7 +59,7 @@ class WebhookProcessor:
         """Refresh shop info when shop details change."""
         try:
             shop = ShopeeShop.objects.get(shop_id=log.shop_id, is_active=True)
-            from apps.omnichannel.vendor.shopee.client import ShopeeClient
+            from apps.marketplace.shopee.client import ShopeeClient
 
             client = ShopeeClient(shop)
             info = client.get_shop_info()

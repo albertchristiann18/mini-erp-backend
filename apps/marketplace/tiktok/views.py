@@ -12,12 +12,12 @@ from rest_framework.decorators import action
 from rest_framework.request import Request
 from rest_framework.response import Response
 
-from apps.omnichannel.vendor.tiktok.models import TikTokShop, TikTokWebhookLog
-from apps.omnichannel.vendor.tiktok.serializers import (
+from apps.marketplace.tiktok.models import TikTokShop, TikTokWebhookLog
+from apps.marketplace.tiktok.serializers import (
     TikTokShopSerializer,
     TikTokWebhookLogSerializer,
 )
-from apps.omnichannel.vendor.tiktok.webhook_handler import WebhookProcessor
+from apps.marketplace.tiktok.webhook_handler import WebhookProcessor
 from core.permissions import IsStaffOrReadOnly
 
 logger = logging.getLogger(__name__)
@@ -84,7 +84,7 @@ class TikTokShopViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="refresh-token")
     def refresh_token(self, request: Request, pk: str | None = None) -> Response:
         shop = self.get_object()
-        from apps.omnichannel.vendor.tiktok.client import TikTokAPIError, TikTokClient
+        from apps.marketplace.tiktok.client import TikTokAPIError, TikTokClient
 
         try:
             client = TikTokClient(shop)

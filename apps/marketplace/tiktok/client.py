@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 import requests
 from django.utils import timezone
 
-from apps.omnichannel.vendor.tiktok.models import TikTokShop
+from apps.marketplace.tiktok.models import TikTokShop
 
 logger = logging.getLogger(__name__)
 

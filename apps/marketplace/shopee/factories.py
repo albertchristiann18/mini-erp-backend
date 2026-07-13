@@ -2,7 +2,7 @@
 import factory
 
 from apps.catalog.factories import ProductVariantFactory
-from apps.omnichannel.vendor.shopee.models import ShopeeShop, ShopeeStockSyncLog, ShopeeWebhookLog
+from apps.marketplace.shopee.models import ShopeeShop, ShopeeStockSyncLog, ShopeeWebhookLog
 from core.factories import CompanyFactory
 
 

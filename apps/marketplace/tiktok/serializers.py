@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from apps.omnichannel.vendor.tiktok.models import TikTokShop, TikTokSyncLog, TikTokWebhookLog
+from apps.marketplace.tiktok.models import TikTokShop, TikTokSyncLog, TikTokWebhookLog
 
 
 class TikTokShopSerializer(serializers.ModelSerializer):

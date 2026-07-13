@@ -1,7 +1,7 @@
 # mypy: disable-error-code="no-untyped-call"
 import factory
 
-from apps.omnichannel.vendor.tiktok.models import TikTokShop, TikTokSyncLog, TikTokWebhookLog
+from apps.marketplace.tiktok.models import TikTokShop, TikTokSyncLog, TikTokWebhookLog
 from core.factories import CompanyFactory
 
 

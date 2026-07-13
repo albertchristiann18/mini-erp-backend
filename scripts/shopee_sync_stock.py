@@ -17,8 +17,8 @@ django.setup()
 
 from django.utils import timezone
 
-from apps.omnichannel.vendor.shopee.models import ShopeeShop, ShopeeSyncLog
-from apps.omnichannel.vendor.shopee.stock_sync import ShopeeStockSyncService
+from apps.marketplace.shopee.models import ShopeeShop, ShopeeSyncLog
+from apps.marketplace.shopee.stock_sync import ShopeeStockSyncService
 
 
 def run() -> None:

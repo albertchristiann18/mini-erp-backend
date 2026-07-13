@@ -1,8 +1,8 @@
 import logging
 
 from apps.inventory.models import ProductVariantWarehouse
-from apps.omnichannel.vendor.tiktok.client import TikTokAPIError, TikTokClient
-from apps.omnichannel.vendor.tiktok.models import TikTokShop
+from apps.marketplace.tiktok.client import TikTokAPIError, TikTokClient
+from apps.marketplace.tiktok.models import TikTokShop
 
 logger = logging.getLogger(__name__)
 

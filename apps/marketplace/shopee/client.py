@@ -9,11 +9,11 @@ from urllib.parse import urlencode
 import requests
 from django.utils import timezone
 
-from apps.omnichannel.vendor.shopee.exceptions import (
+from apps.marketplace.shopee.exceptions import (
     ShopeeAPIError,
     ShopeeAuthError,
 )
-from apps.omnichannel.vendor.shopee.models import ShopeeShop
+from apps.marketplace.shopee.models import ShopeeShop
 
 logger = logging.getLogger(__name__)
 

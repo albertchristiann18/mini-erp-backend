@@ -166,7 +166,7 @@ class InventoryService:
         return result
 
     def _trigger_shopee_sync(self, variant_id: str, company_id: str) -> None:
-        from apps.omnichannel.vendor.shopee.stock_sync import ShopeeStockSyncService
+        from apps.marketplace.shopee.stock_sync import ShopeeStockSyncService
         from core.models import MarketplaceConnection
 
         connections = MarketplaceConnection.objects.filter(

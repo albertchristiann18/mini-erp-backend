@@ -2,9 +2,9 @@ import logging
 from collections import defaultdict
 from typing import Any
 
-from apps.omnichannel.vendor.shopee.client import ShopeeClient
-from apps.omnichannel.vendor.shopee.exceptions import ShopeeAPIError
-from apps.omnichannel.vendor.shopee.models import ShopeeShop, ShopeeStockSyncLog
+from apps.marketplace.shopee.client import ShopeeClient
+from apps.marketplace.shopee.exceptions import ShopeeAPIError
+from apps.marketplace.shopee.models import ShopeeShop, ShopeeStockSyncLog
 
 logger = logging.getLogger(__name__)
 

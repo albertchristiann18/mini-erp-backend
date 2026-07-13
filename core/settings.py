@@ -62,8 +62,8 @@ INSTALLED_APPS = [
     "apps.purchasing",
     "apps.sales",
     "apps.finance",
-    "apps.omnichannel.vendor.shopee",
-    "apps.omnichannel.vendor.tiktok",
+    "apps.marketplace.shopee",
+    "apps.marketplace.tiktok",
     "core",
     "storages",
 ]

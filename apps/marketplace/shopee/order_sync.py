@@ -10,8 +10,8 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.catalog.models import ProductVariant
-from apps.omnichannel.vendor.shopee.client import ShopeeAPIError, ShopeeClient
-from apps.omnichannel.vendor.shopee.models import ShopeeShop
+from apps.marketplace.shopee.client import ShopeeAPIError, ShopeeClient
+from apps.marketplace.shopee.models import ShopeeShop
 from apps.sales.models import SalesOrder
 from apps.sales.services.sales_service import SalesOrderService
 
