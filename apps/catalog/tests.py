@@ -1636,3 +1636,50 @@ class MigrationGraphOrderingRegressionTests(TestCase):
                 "lazy-reference error — inventory/0031 is missing the dependency edge on "
                 f"catalog/0005_state_only_create_productdimensionimage: {exc}"
             )
+
+    def test_inventory_retarget_productvariant_fks_runs_after_catalog_productvariant_created(
+        self,
+    ):
+        """inventory/0032 (AlterField x3 retargeting FKs to catalog.productvariant then
+        DeleteModel of the proxy) must run AFTER catalog.ProductVariant is created so the
+        to='catalog.productvariant' FK target resolves without error. Verify the full
+        forward plan for inventory/0032 includes catalog/0005, the explicit pinned
+        dependency edge that guarantees the catalog side is fully migrated (ProductVariant
+        present in catalog state) before the inventory FK-retarget/proxy-DeleteModel runs."""
+        loader = MigrationLoader(connection)
+        plan = loader.graph.forwards_plan(
+            ("inventory", "0032_state_only_retarget_productvariant_fks")
+        )
+        self.assertIn(
+            ("catalog", "0005_state_only_create_productdimensionimage"),
+            plan,
+            "catalog/0005_state_only_create_productdimensionimage must run before "
+            "inventory/0032 — this is the explicit pinned dependency edge that ensures "
+            "the catalog side is fully migrated before the FK-retarget/proxy-DeleteModel "
+            "runs",
+        )
+
+    def test_inventory_retarget_productvariant_fks_predecessor_state_renders_without_lazy_reference_errors(
+        self,
+    ):
+        """Build the project state immediately BEFORE inventory/0032 runs and force a
+        full render. Catches any lazy-reference error that would result from the proxy
+        ProductVariant still being registered in inventory state at that point while
+        the three FK fields still point at inventory.productvariant — the render must
+        succeed because 0028 registered the proxy and the FKs are still valid before
+        0032 removes them."""
+        loader = MigrationLoader(connection)
+        state = loader.graph.make_state(
+            nodes=[("inventory", "0032_state_only_retarget_productvariant_fks")],
+            at_end=False,
+            real_apps=loader.unmigrated_apps,
+        )
+        try:
+            state.apps
+        except ValueError as exc:
+            self.fail(
+                "Rendering project state immediately before "
+                "inventory/0032_state_only_retarget_productvariant_fks crashed with a "
+                "lazy-reference error — the migration graph is missing a required "
+                f"dependency edge: {exc}"
+            )
