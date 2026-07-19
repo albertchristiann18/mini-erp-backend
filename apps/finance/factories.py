@@ -13,7 +13,7 @@ from apps.finance.models import (
     PaymentRecord,
 )
 from apps.purchasing.tests.factories import PurchaseOrderFactory
-from apps.sales.factories import SalesOrderFactory
+from apps.sales.tests.factories import SalesOrderFactory
 from core.factories import CompanyFactory
 
 

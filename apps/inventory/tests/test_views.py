@@ -109,8 +109,8 @@ class AvgSalesViewTest(APITestCase):
         self.assertEqual(response.data["results"][0]["total_qty_sold"], 0)
 
     def test_valid_request_with_sales(self):
-        from apps.sales.factories import SalesOrderFactory, SalesOrderItemFactory
         from apps.sales.models import SalesOrder
+        from apps.sales.tests.factories import SalesOrderFactory, SalesOrderItemFactory
 
         variant = ProductVariantFactory(company=self.company)
         so = SalesOrderFactory(
@@ -130,8 +130,8 @@ class AvgSalesViewTest(APITestCase):
         self.assertEqual(response.data["results"][0]["total_qty_sold"], 30)
 
     def test_cancelled_orders_excluded(self):
-        from apps.sales.factories import SalesOrderFactory, SalesOrderItemFactory
         from apps.sales.models import SalesOrder
+        from apps.sales.tests.factories import SalesOrderFactory, SalesOrderItemFactory
 
         variant = ProductVariantFactory(company=self.company)
         so = SalesOrderFactory(
@@ -150,8 +150,8 @@ class AvgSalesViewTest(APITestCase):
         self.assertEqual(response.data["results"][0]["avg_sales_per_day"], 0.0)
 
     def test_7_day_window(self):
-        from apps.sales.factories import SalesOrderFactory, SalesOrderItemFactory
         from apps.sales.models import SalesOrder
+        from apps.sales.tests.factories import SalesOrderFactory, SalesOrderItemFactory
 
         variant = ProductVariantFactory(company=self.company)
         so = SalesOrderFactory(
