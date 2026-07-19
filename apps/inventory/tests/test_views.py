@@ -28,7 +28,7 @@ from apps.inventory.tests.factories import (
     ProductVariantWarehouseFactory,
     StockMovementFactory,
 )
-from apps.purchasing.factories import PurchaseOrderFactory
+from apps.purchasing.tests.factories import PurchaseOrderFactory
 from core.factories import CompanyFactory, WarehouseFactory
 from core.permissions import IsStaffOrReadOnly as StaffPerm
 
@@ -903,7 +903,7 @@ class QCPPhase7Test(APITestCase):
         self.client.force_authenticate(user=self.user)
 
     def test_po_detail_serializer_includes_variant_values(self):
-        from apps.purchasing.factories import PurchaseOrderDetailFactory
+        from apps.purchasing.tests.factories import PurchaseOrderDetailFactory
 
         self.product_variant.variant_values = {"color": "Red", "size": "M"}
         self.product_variant.save()
@@ -920,7 +920,7 @@ class QCPPhase7Test(APITestCase):
         )
 
     def test_supplier_link_populated_on_detail_creation(self):
-        from apps.purchasing.factories import (
+        from apps.purchasing.tests.factories import (
             ProductSupplierFactory,
             SupplierFactory,
         )
@@ -960,7 +960,7 @@ class QCPPhase7Test(APITestCase):
         )
 
     def test_supplier_link_prefers_po_supplier(self):
-        from apps.purchasing.factories import (
+        from apps.purchasing.tests.factories import (
             ProductSupplierFactory,
             SupplierFactory,
         )
@@ -1033,7 +1033,7 @@ class PODetailDimensionPhotoTest(APITestCase):
         self.client.force_authenticate(user=self.user)
 
     def test_po_detail_returns_dimension_image_url_when_variant_has_matching_dim_value(self):
-        from apps.purchasing.factories import PurchaseOrderDetailFactory
+        from apps.purchasing.tests.factories import PurchaseOrderDetailFactory
 
         po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
         PurchaseOrderDetailFactory(
@@ -1051,7 +1051,7 @@ class PODetailDimensionPhotoTest(APITestCase):
     def test_po_detail_falls_back_to_variant_photo_when_no_dimension_image(self):
         from django.core.files.base import ContentFile
 
-        from apps.purchasing.factories import PurchaseOrderDetailFactory
+        from apps.purchasing.tests.factories import PurchaseOrderDetailFactory
 
         self.variant.photo.save("variant.jpg", ContentFile(b"variant_img"), save=True)
 
@@ -1067,7 +1067,7 @@ class PODetailDimensionPhotoTest(APITestCase):
         self.assertIn("variants/photos/", detail_data["product_photo_url"])
 
     def test_po_detail_returns_product_dim1_key_field(self):
-        from apps.purchasing.factories import PurchaseOrderDetailFactory
+        from apps.purchasing.tests.factories import PurchaseOrderDetailFactory
 
         po = PurchaseOrderFactory(warehouse=self.warehouse, company=self.company)
         PurchaseOrderDetailFactory(
@@ -1081,7 +1081,7 @@ class PODetailDimensionPhotoTest(APITestCase):
         self.assertEqual(detail_data["product_dim1_key"], "Warna")
 
     def test_po_detail_product_dim1_key_is_none_for_product_without_dim1_key(self):
-        from apps.purchasing.factories import PurchaseOrderDetailFactory
+        from apps.purchasing.tests.factories import PurchaseOrderDetailFactory
 
         product_no_dim = ProductFactory(category=self.category, company=self.company, dim1_key="")
         variant_no_dim = ProductVariantFactory(

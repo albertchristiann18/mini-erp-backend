@@ -13,8 +13,8 @@ from apps.inventory.tests.factories import (
     ProductCogsFactory,
     ProductVariantWarehouseFactory,
 )
-from apps.purchasing.factories import PurchaseOrderFactory
 from apps.purchasing.models import PurchaseOrder
+from apps.purchasing.tests.factories import PurchaseOrderFactory
 from core.factories import CompanyFactory, WarehouseFactory
 
 

@@ -22,7 +22,7 @@ from apps.finance.services.report_service import ReportService
 from apps.finance.services.stock_report_service import StockReportService
 from apps.inventory.models import StockMovement
 from apps.inventory.tests.factories import ProductCogsFactory
-from apps.purchasing.factories import PurchaseOrderFactory
+from apps.purchasing.tests.factories import PurchaseOrderFactory
 from apps.sales.factories import SalesOrderFactory, SalesOrderItemFactory
 from apps.sales.models import SalesOrder, SalesOrderCogsDetail
 from core.factories import CompanyFactory, WarehouseFactory
@@ -432,7 +432,7 @@ class EdgeCaseFinanceTests(TestCase):
 
     # Fix 4: get_or_create for AP (idempotent)
     def test_create_payable_from_po_idempotent(self):
-        from apps.purchasing.factories import PurchaseOrderFactory as POFactory
+        from apps.purchasing.tests.factories import PurchaseOrderFactory as POFactory
 
         po = POFactory(company=self.company, total_amount=2000000)
         ap1 = self.service.create_payable_from_po(po)

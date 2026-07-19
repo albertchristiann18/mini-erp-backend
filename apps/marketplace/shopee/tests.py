@@ -37,9 +37,9 @@ from apps.marketplace.shopee.product_match import ShopeeProductMatchService
 from apps.marketplace.shopee.product_push import ShopeeProductPushService
 from apps.marketplace.shopee.stock_sync import ShopeeStockSyncService
 from apps.marketplace.shopee.utils import sign_shop_api
-from apps.purchasing.factories import PurchaseOrderDetailFactory, PurchaseOrderFactory
 from apps.purchasing.models import PurchaseOrder
 from apps.purchasing.services.purchasing_service import PurchaseOrderService
+from apps.purchasing.tests.factories import PurchaseOrderDetailFactory, PurchaseOrderFactory
 from apps.sales.models import SalesOrder
 from core.factories import (
     CompanyFactory,

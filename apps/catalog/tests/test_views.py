@@ -13,8 +13,8 @@ from apps.catalog.tests.factories import (
     ProductFactory,
     ProductVariantFactory,
 )
-from apps.purchasing.factories import ProductSupplierFactory, SupplierFactory
 from apps.purchasing.models import ProductSupplier
+from apps.purchasing.tests.factories import ProductSupplierFactory, SupplierFactory
 from core.factories import CompanyFactory, WarehouseFactory
 from core.permissions import IsStaffOrReadOnly as StaffPerm
 

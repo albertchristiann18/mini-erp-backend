@@ -7,13 +7,13 @@ from django.test import TestCase
 
 from apps.catalog.tests.factories import ProductFactory, ProductVariantFactory
 from apps.inventory.tests.factories import ProductCogsFactory, WarehouseFactory
-from apps.purchasing.factories import (
+from apps.purchasing.models import PurchaseOrder
+from apps.purchasing.tests.factories import (
     ProductSupplierFactory,
     PurchaseOrderDetailFactory,
     PurchaseOrderFactory,
     SupplierFactory,
 )
-from apps.purchasing.models import PurchaseOrder
 from core.factories import CompanyFactory, UserProfileFactory
 from core.services.migrate_service import (
     _parse_po_tracker,
