@@ -9,8 +9,8 @@ from dataclasses import dataclass
 
 from django.db import transaction
 
-from core.management.commands.import_cash_transactions_parser import ParsedCashTransaction
 from core.models import Company
+from core.parsers.import_cash_transactions_parser import ParsedCashTransaction
 
 
 @dataclass

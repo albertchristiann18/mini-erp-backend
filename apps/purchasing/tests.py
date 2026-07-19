@@ -4940,6 +4940,25 @@ class TestPhase1SourcingAutoFinalize(TestCase):
             ColorAbbreviation.objects.filter(company=self.company, color_name="Dusty Rose").exists()
         )
 
+    def test_order_qty_as_decimal_string_parsed_to_int(self):
+        """order_qty value like '5.0' (string from cell) parses to int 5 without using float."""
+        headers = ["product_name", "unit_price", "order_qty", "supplier_link"]
+        rows = [["Baju A", "10000", "5.0", "https://shop.com/x"]]
+        file_bytes = self._build_workbook(headers, rows)
+        result = self.service.parse_excel_preview(file_bytes, self.company)
+        self.assertEqual(len(result["valid"]), 1)
+        self.assertEqual(result["valid"][0]["qty_suggested"], 5)
+
+    def test_order_qty_non_numeric_reported_as_error(self):
+        """order_qty with a non-numeric string value is reported as an error row."""
+        headers = ["product_name", "unit_price", "order_qty", "supplier_link"]
+        rows = [["Baju B", "10000", "abc", "https://shop.com/x"]]
+        file_bytes = self._build_workbook(headers, rows)
+        result = self.service.parse_excel_preview(file_bytes, self.company)
+        self.assertEqual(len(result["valid"]), 0)
+        self.assertEqual(len(result["errors"]), 1)
+        self.assertIn("must be a whole number", result["errors"][0]["message"])
+
 
 class TestStatelessSourcingService(TestCase):
     """Tests for stateless sourcing flow (import_and_add + resolve_sourcing_conflicts)."""
@@ -5872,7 +5891,7 @@ class PurchaseOrderImportServiceTest(TestCase):
 
     def test_parse_po_date_extracts_date_from_sheet_name(self):
         """parse_po_date returns a date when a valid date is embedded in the sheet name."""
-        from core.management.commands.import_purchase_orders_parser import parse_po_date
+        from core.parsers.import_purchase_orders_parser import parse_po_date
 
         result = parse_po_date("PO Recap 2 April 2025")
         from datetime import date
@@ -5881,14 +5900,14 @@ class PurchaseOrderImportServiceTest(TestCase):
 
     def test_parse_po_date_returns_none_for_invalid_sheet_name(self):
         """parse_po_date returns None when the sheet name contains no recognisable date."""
-        from core.management.commands.import_purchase_orders_parser import parse_po_date
+        from core.parsers.import_purchase_orders_parser import parse_po_date
 
         self.assertIsNone(parse_po_date("Summary Sheet"))
         self.assertIsNone(parse_po_date("Recap"))
 
     def test_is_sku_valid_rejects_numeric_strings(self):
         """is_sku_valid returns False for numeric-like codes, Total rows, and # cells."""
-        from core.management.commands.import_purchase_orders_parser import is_sku_valid
+        from core.parsers.import_purchase_orders_parser import is_sku_valid
 
         self.assertFalse(is_sku_valid("1"))
         self.assertFalse(is_sku_valid("123"))
@@ -5902,7 +5921,7 @@ class PurchaseOrderImportServiceTest(TestCase):
 
     def test_is_sku_valid_accepts_valid_sku(self):
         """is_sku_valid returns True for alphanumeric SKU codes."""
-        from core.management.commands.import_purchase_orders_parser import is_sku_valid
+        from core.parsers.import_purchase_orders_parser import is_sku_valid
 
         self.assertTrue(is_sku_valid("MRK-SEG-001-S-BLK"))
         self.assertTrue(is_sku_valid("ABC123"))
@@ -5911,7 +5930,7 @@ class PurchaseOrderImportServiceTest(TestCase):
         """parse_decimal returns a Decimal instance (never a float)."""
         from decimal import Decimal
 
-        from core.management.commands.import_purchase_orders_parser import parse_decimal
+        from core.parsers.import_purchase_orders_parser import parse_decimal
 
         result = parse_decimal("14.5")
         self.assertIsInstance(result, Decimal)
@@ -5919,7 +5938,7 @@ class PurchaseOrderImportServiceTest(TestCase):
 
     def test_parse_decimal_returns_none_for_ref_error(self):
         """parse_decimal returns None for #REF!, None, and empty strings."""
-        from core.management.commands.import_purchase_orders_parser import parse_decimal
+        from core.parsers.import_purchase_orders_parser import parse_decimal
 
         self.assertIsNone(parse_decimal("#REF!"))
         self.assertIsNone(parse_decimal(None))
@@ -5927,7 +5946,7 @@ class PurchaseOrderImportServiceTest(TestCase):
 
     def test_detect_columns_finds_required_columns(self):
         """detect_columns returns a mapping when headers contain sku and order."""
-        from core.management.commands.import_purchase_orders_parser import detect_columns
+        from core.parsers.import_purchase_orders_parser import detect_columns
 
         headers = ("No", "SKU Variant", "Price RMB", "Disc Price", "Order Qty", "SOH")
         result = detect_columns(headers)
@@ -5938,21 +5957,21 @@ class PurchaseOrderImportServiceTest(TestCase):
 
     def test_detect_columns_returns_none_when_sku_missing(self):
         """detect_columns returns None if the SKU column is absent."""
-        from core.management.commands.import_purchase_orders_parser import detect_columns
+        from core.parsers.import_purchase_orders_parser import detect_columns
 
         headers = ("No", "Product Name", "Price", "Order Qty")
         self.assertIsNone(detect_columns(headers))
 
     def test_extract_exchange_rate_finds_value_after_rmb(self):
         """extract_exchange_rate returns the numeric value that follows the RMB marker."""
-        from core.management.commands.import_purchase_orders_parser import extract_exchange_rate
+        from core.parsers.import_purchase_orders_parser import extract_exchange_rate
 
         row = ("Label", "RMB", 2210, None, None)
         self.assertEqual(extract_exchange_rate(row), 2210)
 
     def test_parse_po_sheet_skips_sheet_without_rmb(self):
         """parse_po_sheet returns None when no RMB exchange-rate row is found."""
-        from core.management.commands.import_purchase_orders_parser import parse_po_sheet
+        from core.parsers.import_purchase_orders_parser import parse_po_sheet
 
         rows: list[tuple] = [
             ("Header row",),
@@ -5967,7 +5986,7 @@ class PurchaseOrderImportServiceTest(TestCase):
         """parse_po_sheet carries the last valid price forward to rows with no price."""
         from decimal import Decimal
 
-        from core.management.commands.import_purchase_orders_parser import parse_po_sheet
+        from core.parsers.import_purchase_orders_parser import parse_po_sheet
 
         rows: list[tuple] = [
             ("Exchange", "RMB", 2210),
@@ -5986,7 +6005,7 @@ class PurchaseOrderImportServiceTest(TestCase):
         """parse_po_sheet uses the disc column price when it is greater than 1.0."""
         from decimal import Decimal
 
-        from core.management.commands.import_purchase_orders_parser import parse_po_sheet
+        from core.parsers.import_purchase_orders_parser import parse_po_sheet
 
         rows: list[tuple] = [
             ("Exchange", "RMB", 2210),
@@ -6023,7 +6042,7 @@ class PurchaseOrderImportServiceTest(TestCase):
         from datetime import date
         from decimal import Decimal
 
-        from core.management.commands.import_purchase_orders_parser import (
+        from core.parsers.import_purchase_orders_parser import (
             ParsedPoSheet,
             PoLineRow,
         )
@@ -6208,7 +6227,7 @@ class PurchaseOrderImportServiceTest(TestCase):
         from decimal import Decimal
 
         from apps.purchasing.services.po_import_service import PurchaseOrderImportService
-        from core.management.commands.import_purchase_orders_parser import (
+        from core.parsers.import_purchase_orders_parser import (
             ParsedPoSheet,
             PoLineRow,
         )
@@ -6249,7 +6268,7 @@ class PurchaseOrderImportServiceTest(TestCase):
         from decimal import Decimal
 
         from apps.purchasing.services.po_import_service import PurchaseOrderImportService
-        from core.management.commands.import_purchase_orders_parser import (
+        from core.parsers.import_purchase_orders_parser import (
             ParsedPoSheet,
             PoLineRow,
         )

@@ -1961,6 +1961,16 @@ class MarketplaceReconcileTest(APITestCase):
             {"sku": "SKU-002", "qty": 30, "file_product_name": "", "file_variant_name": ""},
         )
 
+    def test_parse_marketplace_xlsx_skips_non_numeric_qty(self):
+        """Rows with a non-numeric stock cell are skipped gracefully."""
+        buf = self._make_xlsx(
+            ["SKU", "Stock"],
+            [["VAR-A", "abc"], ["VAR-B", "10"]],
+        )
+        result = InventoryService.parse_marketplace_xlsx(buf)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["qty"], 10)
+
     # --- Service tests ---
 
     def test_reconcile_same_stock_skipped(self):

@@ -12,8 +12,8 @@ from typing import Any
 import openpyxl
 from django.core.management.base import BaseCommand, CommandError
 
-from core.management.commands.import_sales_parser import parse_sales_sheet
 from core.models import Company
+from core.parsers.import_sales_parser import parse_sales_sheet
 
 SHEETS_TO_IMPORT = [
     "Sales May 2025",

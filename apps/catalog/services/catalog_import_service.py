@@ -9,12 +9,12 @@ from dataclasses import dataclass
 
 from django.db import transaction
 
-from core.management.commands.import_master_data_parser import (
+from core.models import Company
+from core.parsers.import_master_data_parser import (
     MasterSkuRow,
     VariantRow,
     build_variant_options,
 )
-from core.models import Company
 from core.utils import get_default_shipping_config
 
 CATEGORY_META: dict[str, tuple[str, int]] = {

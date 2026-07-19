@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 
 from django.db import connection, transaction
 
-from core.management.commands.import_purchase_orders_parser import ParsedPoSheet
+from core.parsers.import_purchase_orders_parser import ParsedPoSheet
 
 if TYPE_CHECKING:
     from apps.inventory.models import Warehouse

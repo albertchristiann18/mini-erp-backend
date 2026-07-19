@@ -1,5 +1,5 @@
 import logging
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from django.core.exceptions import ValidationError
@@ -929,8 +929,8 @@ class InventoryService:
             if sku is None or str(sku).strip() == "":
                 continue
             try:
-                qty = int(float(str(qty_raw))) if qty_raw is not None else 0
-            except (ValueError, TypeError):
+                qty = int(Decimal(str(qty_raw))) if qty_raw is not None else 0
+            except (ValueError, TypeError, InvalidOperation):
                 continue
             file_product_name = (
                 str(row[product_name_col_idx]).strip()

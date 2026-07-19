@@ -12,10 +12,10 @@ from typing import Any
 import openpyxl
 from django.core.management.base import BaseCommand, CommandError
 
-from core.management.commands.import_cash_transactions_parser import (
+from core.models import Company
+from core.parsers.import_cash_transactions_parser import (
     parse_cash_transactions_sheet,
 )
-from core.models import Company
 
 SHEET_NAME = "Finance"
 

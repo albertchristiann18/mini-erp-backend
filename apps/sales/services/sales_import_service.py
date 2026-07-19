@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 from django.core.exceptions import ValidationError
 from django.db import connection, transaction
 
-from core.management.commands.import_sales_parser import ParsedSalesOrder
+from core.parsers.import_sales_parser import ParsedSalesOrder
 
 if TYPE_CHECKING:
     from apps.inventory.models import Warehouse

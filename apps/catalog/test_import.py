@@ -13,7 +13,7 @@ from apps.catalog.services.catalog_import_service import CatalogImportService
 from apps.inventory.models import ProductVariantWarehouse, Warehouse
 from apps.purchasing.models import ProductSupplier, Supplier
 from core.factories import CompanyFactory
-from core.management.commands.import_master_data_parser import (
+from core.parsers.import_master_data_parser import (
     MasterSkuRow,
     VariantRow,
     build_variant_options,

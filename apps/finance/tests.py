@@ -568,7 +568,7 @@ class CashTransactionParserTest(TestCase):
         return (row_num, col1, transaction_date, description, type1, type_str, value)
 
     def test_happy_path_inflow_row(self):
-        from core.management.commands.import_cash_transactions_parser import (
+        from core.parsers.import_cash_transactions_parser import (
             parse_cash_transactions_sheet,
         )
 
@@ -592,7 +592,7 @@ class CashTransactionParserTest(TestCase):
         self.assertEqual(parsed.note, "Excel Type: In (In)")
 
     def test_happy_path_outflow_row(self):
-        from core.management.commands.import_cash_transactions_parser import (
+        from core.parsers.import_cash_transactions_parser import (
             parse_cash_transactions_sheet,
         )
 
@@ -613,7 +613,7 @@ class CashTransactionParserTest(TestCase):
         self.assertEqual(parsed.amount, 500000)
 
     def test_decimal_precision_no_float(self):
-        from core.management.commands.import_cash_transactions_parser import (
+        from core.parsers.import_cash_transactions_parser import (
             parse_cash_transactions_sheet,
         )
 
@@ -624,7 +624,7 @@ class CashTransactionParserTest(TestCase):
         self.assertEqual(result[0].amount, 12345678)
 
     def test_skip_row_no_row_number(self):
-        from core.management.commands.import_cash_transactions_parser import (
+        from core.parsers.import_cash_transactions_parser import (
             parse_cash_transactions_sheet,
         )
 
@@ -634,7 +634,7 @@ class CashTransactionParserTest(TestCase):
         self.assertEqual(result, [])
 
     def test_skip_row_non_integer_row_number(self):
-        from core.management.commands.import_cash_transactions_parser import (
+        from core.parsers.import_cash_transactions_parser import (
             parse_cash_transactions_sheet,
         )
 
@@ -644,7 +644,7 @@ class CashTransactionParserTest(TestCase):
         self.assertEqual(result, [])
 
     def test_skip_row_no_value(self):
-        from core.management.commands.import_cash_transactions_parser import (
+        from core.parsers.import_cash_transactions_parser import (
             parse_cash_transactions_sheet,
         )
 
@@ -654,7 +654,7 @@ class CashTransactionParserTest(TestCase):
         self.assertEqual(result, [])
 
     def test_skip_row_unparseable_value(self):
-        from core.management.commands.import_cash_transactions_parser import (
+        from core.parsers.import_cash_transactions_parser import (
             parse_cash_transactions_sheet,
         )
 
@@ -664,7 +664,7 @@ class CashTransactionParserTest(TestCase):
         self.assertEqual(result, [])
 
     def test_unknown_category_defaults_to_other_expense(self):
-        from core.management.commands.import_cash_transactions_parser import (
+        from core.parsers.import_cash_transactions_parser import (
             parse_cash_transactions_sheet,
         )
 
@@ -675,7 +675,7 @@ class CashTransactionParserTest(TestCase):
         self.assertEqual(result[0].category, "OTHER_EXPENSE")
 
     def test_description_truncated_to_2000_chars(self):
-        from core.management.commands.import_cash_transactions_parser import (
+        from core.parsers.import_cash_transactions_parser import (
             parse_cash_transactions_sheet,
         )
 
@@ -704,7 +704,7 @@ class CashTransactionImportServiceTest(TestCase):
         category: str = "EQUITY_INJECTION",
         note: str = "Excel Type: In (In)",
     ) -> "object":
-        from core.management.commands.import_cash_transactions_parser import ParsedCashTransaction
+        from core.parsers.import_cash_transactions_parser import ParsedCashTransaction
 
         return ParsedCashTransaction(
             transaction_date=transaction_date or date(2025, 4, 8),

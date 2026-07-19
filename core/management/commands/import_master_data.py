@@ -13,11 +13,11 @@ import openpyxl
 from django.core.management.base import BaseCommand, CommandError
 
 from apps.catalog.services.catalog_import_service import CatalogImportService
-from core.management.commands.import_master_data_parser import (
+from core.models import Company
+from core.parsers.import_master_data_parser import (
     parse_master_sku_sheet,
     parse_variant_sheet,
 )
-from core.models import Company
 
 
 class Command(BaseCommand):

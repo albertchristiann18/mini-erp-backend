@@ -877,7 +877,7 @@ class SalesParserTest(TestCase):
         return list(headers).index(col_name)
 
     def test_detect_columns_returns_all_required(self):
-        from core.management.commands.import_sales_parser import detect_columns
+        from core.parsers.import_sales_parser import detect_columns
 
         headers = self._make_headers()
         result = detect_columns(headers)
@@ -892,7 +892,7 @@ class SalesParserTest(TestCase):
         self.assertIn("customer_col", result)
 
     def test_detect_columns_returns_none_on_missing_required(self):
-        from core.management.commands.import_sales_parser import detect_columns
+        from core.parsers.import_sales_parser import detect_columns
 
         # Remove both SKU columns — should return None
         headers = self._make_headers(omit=["sku master", "sku marketplace"])
@@ -900,7 +900,7 @@ class SalesParserTest(TestCase):
         self.assertIsNone(result)
 
     def test_detect_columns_returns_none_on_missing_mandatory_col(self):
-        from core.management.commands.import_sales_parser import detect_columns
+        from core.parsers.import_sales_parser import detect_columns
 
         # Remove "jumlah" (qty) — should return None
         headers = self._make_headers(omit=["jumlah"])
@@ -910,7 +910,7 @@ class SalesParserTest(TestCase):
     def test_parse_order_date_handles_datetime_object(self):
         from datetime import datetime, timezone
 
-        from core.management.commands.import_sales_parser import parse_order_date
+        from core.parsers.import_sales_parser import parse_order_date
 
         naive_dt = datetime(2026, 1, 15, 10, 30, 0)
         result = parse_order_date(naive_dt)
@@ -924,14 +924,14 @@ class SalesParserTest(TestCase):
     def test_parse_order_date_handles_aware_datetime_unchanged(self):
         from datetime import datetime, timezone
 
-        from core.management.commands.import_sales_parser import parse_order_date
+        from core.parsers.import_sales_parser import parse_order_date
 
         aware_dt = datetime(2026, 3, 10, tzinfo=timezone.utc)
         result = parse_order_date(aware_dt)
         self.assertEqual(result, aware_dt)
 
     def test_parse_order_date_handles_string_formats(self):
-        from core.management.commands.import_sales_parser import parse_order_date
+        from core.parsers.import_sales_parser import parse_order_date
 
         result1 = parse_order_date("2026-05-20 14:30:00")
         self.assertIsNotNone(result1)
@@ -948,17 +948,17 @@ class SalesParserTest(TestCase):
         self.assertEqual(result2.day, 1)
 
     def test_parse_order_date_returns_none_for_none(self):
-        from core.management.commands.import_sales_parser import parse_order_date
+        from core.parsers.import_sales_parser import parse_order_date
 
         self.assertIsNone(parse_order_date(None))
 
     def test_parse_order_date_returns_none_for_invalid_string(self):
-        from core.management.commands.import_sales_parser import parse_order_date
+        from core.parsers.import_sales_parser import parse_order_date
 
         self.assertIsNone(parse_order_date("not-a-date"))
 
     def test_parse_decimal_returns_none_for_blank(self):
-        from core.management.commands.import_sales_parser import parse_decimal
+        from core.parsers.import_sales_parser import parse_decimal
 
         self.assertIsNone(parse_decimal(None))
         self.assertIsNone(parse_decimal(""))
@@ -967,7 +967,7 @@ class SalesParserTest(TestCase):
     def test_parse_decimal_returns_correct_decimal(self):
         from decimal import Decimal
 
-        from core.management.commands.import_sales_parser import parse_decimal
+        from core.parsers.import_sales_parser import parse_decimal
 
         result = parse_decimal("123456.78")
         self.assertIsNotNone(result)
@@ -976,7 +976,7 @@ class SalesParserTest(TestCase):
     def test_parse_decimal_handles_integer_values(self):
         from decimal import Decimal
 
-        from core.management.commands.import_sales_parser import parse_decimal
+        from core.parsers.import_sales_parser import parse_decimal
 
         result = parse_decimal(100000)
         self.assertEqual(result, Decimal("100000"))
@@ -994,7 +994,7 @@ class SalesParserTest(TestCase):
         return tuple(row)
 
     def test_parse_sales_sheet_happy_path_groups_by_order_number(self):
-        from core.management.commands.import_sales_parser import parse_sales_sheet
+        from core.parsers.import_sales_parser import parse_sales_sheet
 
         headers = self._make_headers()
         row1 = self._make_data_row(
@@ -1052,7 +1052,7 @@ class SalesParserTest(TestCase):
         self.assertEqual(len(result[1].items), 1)
 
     def test_parse_sales_sheet_skips_rows_with_no_sku(self):
-        from core.management.commands.import_sales_parser import parse_sales_sheet
+        from core.parsers.import_sales_parser import parse_sales_sheet
 
         headers = self._make_headers()
         row1 = self._make_data_row(
@@ -1078,7 +1078,7 @@ class SalesParserTest(TestCase):
         self.assertEqual(len(result[0].items), 0)
 
     def test_parse_sales_sheet_skips_zero_qty_rows(self):
-        from core.management.commands.import_sales_parser import parse_sales_sheet
+        from core.parsers.import_sales_parser import parse_sales_sheet
 
         headers = self._make_headers()
         row1 = self._make_data_row(
@@ -1103,7 +1103,7 @@ class SalesParserTest(TestCase):
         self.assertEqual(len(result[0].items), 0)
 
     def test_parse_sales_sheet_maps_status_correctly(self):
-        from core.management.commands.import_sales_parser import parse_sales_sheet
+        from core.parsers.import_sales_parser import parse_sales_sheet
 
         headers = self._make_headers()
         status_cases = [
@@ -1138,7 +1138,7 @@ class SalesParserTest(TestCase):
             )
 
     def test_parse_sales_sheet_skips_missing_required_columns(self):
-        from core.management.commands.import_sales_parser import parse_sales_sheet
+        from core.parsers.import_sales_parser import parse_sales_sheet
 
         # Headers without qty column
         headers = self._make_headers(omit=["jumlah"])
@@ -1161,7 +1161,7 @@ class SalesParserTest(TestCase):
         self.assertEqual(result, [])
 
     def test_parse_sales_sheet_net_revenue_from_total_penjualan(self):
-        from core.management.commands.import_sales_parser import parse_sales_sheet
+        from core.parsers.import_sales_parser import parse_sales_sheet
 
         headers = self._make_headers(extra={"total penjualan bersih": "total penjualan bersih"})
         row = self._make_data_row(
@@ -1187,7 +1187,7 @@ class SalesParserTest(TestCase):
         self.assertEqual(result[0].net_revenue, 90000)
 
     def test_parse_sales_sheet_too_few_rows(self):
-        from core.management.commands.import_sales_parser import parse_sales_sheet
+        from core.parsers.import_sales_parser import parse_sales_sheet
 
         result = parse_sales_sheet("Sales Test", [])
         self.assertEqual(result, [])
@@ -1198,13 +1198,13 @@ class SalesParserTest(TestCase):
 
     def test_returned_status_not_stock_affecting(self):
         """RETURNED orders should not trigger FIFO consumption."""
-        from core.management.commands.import_sales_parser import STOCK_AFFECTING_STATUSES
+        from core.parsers.import_sales_parser import STOCK_AFFECTING_STATUSES
 
         self.assertNotIn("RETURNED", STOCK_AFFECTING_STATUSES)
 
     def test_parse_sales_sheet_duplicate_sku_within_order_both_items_included(self):
         """Two rows with same SKU in one order group should both appear as separate items."""
-        from core.management.commands.import_sales_parser import parse_sales_sheet
+        from core.parsers.import_sales_parser import parse_sales_sheet
 
         headers = self._make_headers()
         sku = "SKU-DUPE"
@@ -1288,7 +1288,7 @@ class SalesImportServiceTest(TestCase):
     ):
         from datetime import datetime, timezone
 
-        from core.management.commands.import_sales_parser import ParsedSalesItem, ParsedSalesOrder
+        from core.parsers.import_sales_parser import ParsedSalesItem, ParsedSalesOrder
 
         item = ParsedSalesItem(
             sku_code=self.variant.sku_variant_code,
@@ -1504,7 +1504,7 @@ class SalesImportServiceTest(TestCase):
 
         from apps.sales.models import SalesOrderItem
         from apps.sales.services.sales_import_service import SalesImportService
-        from core.management.commands.import_sales_parser import ParsedSalesItem, ParsedSalesOrder
+        from core.parsers.import_sales_parser import ParsedSalesItem, ParsedSalesOrder
 
         # Simulate a price that comes from Decimal arithmetic
         price_dec = Decimal("123456.78")

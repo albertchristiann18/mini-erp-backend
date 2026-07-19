@@ -13,8 +13,8 @@ import openpyxl
 from django.core.management.base import BaseCommand, CommandError
 
 from apps.purchasing.services.po_import_service import PurchaseOrderImportService
-from core.management.commands.import_purchase_orders_parser import parse_po_sheet
 from core.models import Company
+from core.parsers.import_purchase_orders_parser import parse_po_sheet
 
 SHEETS_TO_IMPORT = [
     "PO Recap 2 April 2025",
