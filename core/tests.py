@@ -6,7 +6,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 
 from apps.catalog.tests.factories import ProductFactory, ProductVariantFactory
-from apps.inventory.factories import ProductCogsFactory, WarehouseFactory
+from apps.inventory.tests.factories import ProductCogsFactory, WarehouseFactory
 from apps.purchasing.factories import (
     ProductSupplierFactory,
     PurchaseOrderDetailFactory,

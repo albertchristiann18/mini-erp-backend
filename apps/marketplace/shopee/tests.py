@@ -17,9 +17,9 @@ from apps.catalog.tests.factories import (
     ProductVariantFactory,
     ProductVariantMarketplaceFactory,
 )
-from apps.inventory.factories import ProductCogsFactory, ProductVariantWarehouseFactory
 from apps.inventory.models import ProductVariantWarehouse, StockMovement
 from apps.inventory.services.inventory_service import InventoryService
+from apps.inventory.tests.factories import ProductCogsFactory, ProductVariantWarehouseFactory
 from apps.marketplace.factories import MarketplaceConnectionFactory, MarketplaceFactory
 from apps.marketplace.shopee.client import ShopeeClient
 from apps.marketplace.shopee.exceptions import ShopeeAPIError, ShopeeAuthError

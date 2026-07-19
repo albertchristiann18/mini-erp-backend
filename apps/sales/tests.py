@@ -8,8 +8,8 @@ from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 
 from apps.catalog.tests.factories import ProductFactory, ProductVariantFactory
-from apps.inventory.factories import ProductCogsFactory, ProductVariantWarehouseFactory
 from apps.inventory.models import StockMovement
+from apps.inventory.tests.factories import ProductCogsFactory, ProductVariantWarehouseFactory
 from apps.sales.factories import SalesOrderFactory, SalesOrderItemFactory, SalesReturnFactory
 from apps.sales.models import SalesOrder, SalesOrderCogsDetail, SalesOrderItem, SalesReturn
 from apps.sales.services.cogs_consumption import CogsConsumptionService
@@ -1256,7 +1256,10 @@ class SalesImportServiceTest(TestCase):
 
     def setUp(self):
         from apps.catalog.tests.factories import ProductFactory, ProductVariantFactory
-        from apps.inventory.factories import ProductCogsFactory, ProductVariantWarehouseFactory
+        from apps.inventory.tests.factories import (
+            ProductCogsFactory,
+            ProductVariantWarehouseFactory,
+        )
         from core.factories import CompanyFactory, WarehouseFactory
 
         self.company = CompanyFactory()
@@ -1561,7 +1564,7 @@ class SalesImportServiceTest(TestCase):
         """Two COGS layers: oldest consumed before newer, costs accumulated correctly."""
         from datetime import datetime, timezone
 
-        from apps.inventory.factories import ProductCogsFactory
+        from apps.inventory.tests.factories import ProductCogsFactory
         from apps.sales.models import SalesOrder
         from apps.sales.services.sales_import_service import SalesImportService
 

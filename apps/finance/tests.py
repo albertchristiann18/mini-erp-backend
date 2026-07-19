@@ -20,8 +20,8 @@ from apps.finance.models import AccountsPayable, AccountsReceivable, CashTransac
 from apps.finance.services.accounts_payable_service import AccountsPayableService
 from apps.finance.services.report_service import ReportService
 from apps.finance.services.stock_report_service import StockReportService
-from apps.inventory.factories import ProductCogsFactory
 from apps.inventory.models import StockMovement
+from apps.inventory.tests.factories import ProductCogsFactory
 from apps.purchasing.factories import PurchaseOrderFactory
 from apps.sales.factories import SalesOrderFactory, SalesOrderItemFactory
 from apps.sales.models import SalesOrder, SalesOrderCogsDetail

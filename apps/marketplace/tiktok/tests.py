@@ -8,7 +8,7 @@ from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 
 from apps.catalog.tests.factories import ProductFactory, ProductVariantFactory
-from apps.inventory.factories import ProductCogsFactory, ProductVariantWarehouseFactory
+from apps.inventory.tests.factories import ProductCogsFactory, ProductVariantWarehouseFactory
 from apps.marketplace.tiktok.factories import (
     TikTokShopFactory,
     TikTokWebhookLogFactory,

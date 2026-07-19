@@ -22,11 +22,11 @@ from apps.catalog.tests.factories import (
     ProductPhotoFactory,
     ProductVariantFactory,
 )
-from apps.inventory.factories import (
-    ProductVariantWarehouseFactory,
-)
 from apps.inventory.models import ProductCogs, ProductVariantWarehouse
 from apps.inventory.services.inventory_service import InventoryService
+from apps.inventory.tests.factories import (
+    ProductVariantWarehouseFactory,
+)
 from apps.purchasing.factories import (
     ProductSupplierFactory,
     PurchaseOrderDetailFactory,
