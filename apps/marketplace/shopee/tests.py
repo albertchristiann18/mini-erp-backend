@@ -11,12 +11,12 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 
-from apps.catalog.factories import (
+from apps.catalog.models import Category, Product, ProductVariant
+from apps.catalog.tests.factories import (
     ProductFactory,
     ProductVariantFactory,
     ProductVariantMarketplaceFactory,
 )
-from apps.catalog.models import Category, Product, ProductVariant
 from apps.inventory.factories import ProductCogsFactory, ProductVariantWarehouseFactory
 from apps.inventory.models import ProductVariantWarehouse, StockMovement
 from apps.inventory.services.inventory_service import InventoryService

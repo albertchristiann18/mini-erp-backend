@@ -2,7 +2,7 @@ from decimal import Decimal
 
 import factory
 
-from apps.catalog.factories import ProductVariantFactory
+from apps.catalog.tests.factories import ProductVariantFactory
 from apps.inventory.models import (
     ProductCogs,
     ProductVariantWarehouse,

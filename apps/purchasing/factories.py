@@ -1,6 +1,6 @@
 import factory
 
-from apps.catalog.factories import ProductFactory, ProductVariantFactory
+from apps.catalog.tests.factories import ProductFactory, ProductVariantFactory
 from apps.purchasing.models import (
     ProductSupplier,
     PurchaseOrder,

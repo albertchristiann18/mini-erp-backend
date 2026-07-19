@@ -7,7 +7,7 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 
-from apps.catalog.factories import ProductFactory, ProductVariantFactory
+from apps.catalog.tests.factories import ProductFactory, ProductVariantFactory
 from apps.inventory.factories import ProductCogsFactory, ProductVariantWarehouseFactory
 from apps.inventory.models import StockMovement
 from apps.sales.factories import SalesOrderFactory, SalesOrderItemFactory, SalesReturnFactory
@@ -1255,7 +1255,7 @@ class SalesImportServiceTest(TestCase):
     """Tests for SalesImportService."""
 
     def setUp(self):
-        from apps.catalog.factories import ProductFactory, ProductVariantFactory
+        from apps.catalog.tests.factories import ProductFactory, ProductVariantFactory
         from apps.inventory.factories import ProductCogsFactory, ProductVariantWarehouseFactory
         from core.factories import CompanyFactory, WarehouseFactory
 

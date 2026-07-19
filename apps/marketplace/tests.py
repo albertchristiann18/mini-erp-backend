@@ -4,7 +4,7 @@ from django.test import TestCase
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from apps.catalog.factories import ProductFactory
+from apps.catalog.tests.factories import ProductFactory
 from apps.marketplace.factories import (
     BusinessEntityFactory,
     CompanyMarketplaceFactory,

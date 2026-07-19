@@ -15,7 +15,7 @@ from rest_framework.test import APIClient, APITestCase
 
 _real_auth_has_permission = IsAuthenticatedPermission.has_permission
 
-from apps.catalog.factories import (
+from apps.catalog.tests.factories import (
     CategoryFactory,
     ProductDimensionImageFactory,
     ProductFactory,

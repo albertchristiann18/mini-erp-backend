@@ -7,7 +7,7 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 
-from apps.catalog.factories import ProductFactory, ProductVariantFactory
+from apps.catalog.tests.factories import ProductFactory, ProductVariantFactory
 from apps.finance.factories import (
     AccountsPayableFactory,
     AccountsReceivableFactory,

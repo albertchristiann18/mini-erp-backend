@@ -29,7 +29,7 @@ class ProductFactory(factory.django.DjangoModelFactory):
         model = Product
 
     name = "Test Product"
-    category = factory.SubFactory("apps.catalog.factories.CategoryFactory")  # type: ignore[no-untyped-call]
+    category = factory.SubFactory("apps.catalog.tests.factories.CategoryFactory")  # type: ignore[no-untyped-call]
     company = factory.SubFactory(CompanyFactory)  # type: ignore[no-untyped-call]
 
 

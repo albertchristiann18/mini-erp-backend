@@ -52,7 +52,7 @@ class ProductBusinessEntityFactory(factory.django.DjangoModelFactory):
     class Meta:
         model = ProductBusinessEntity
 
-    product = factory.SubFactory("apps.catalog.factories.ProductFactory")  # type: ignore[no-untyped-call]
+    product = factory.SubFactory("apps.catalog.tests.factories.ProductFactory")  # type: ignore[no-untyped-call]
     business_entity = factory.SubFactory(BusinessEntityFactory)  # type: ignore[no-untyped-call]
     company = factory.LazyAttribute(  # type: ignore[attr-defined,no-untyped-call]
         lambda o: o.product.company

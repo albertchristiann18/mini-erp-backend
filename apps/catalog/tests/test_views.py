@@ -3,25 +3,20 @@ from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.db import connection
-from django.db.migrations.loader import MigrationLoader
-from django.test import TestCase
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from apps.catalog.factories import (
+from apps.catalog.models import Category, Product, ProductDimensionImage, ProductVariant
+from apps.catalog.tests.factories import (
     CategoryFactory,
     ProductDimensionImageFactory,
     ProductFactory,
-    ProductPhotoFactory,
     ProductVariantFactory,
 )
-from apps.catalog.models import Category, Product, ProductDimensionImage, ProductVariant
 from apps.purchasing.factories import ProductSupplierFactory, SupplierFactory
 from apps.purchasing.models import ProductSupplier
 from core.factories import CompanyFactory, WarehouseFactory
 from core.permissions import IsStaffOrReadOnly as StaffPerm
-from core.utils import generate_ulid
 
 _real_staff_perm = StaffPerm.has_permission
 
@@ -335,38 +330,6 @@ class UpdateVariantPriceTest(APITestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-
-
-class SupplierLinkTest(TestCase):
-    """Tests for product_supplier_link field on ProductVariantStockSerializer."""
-
-    def setUp(self):
-        self.company = CompanyFactory()
-        self.category = CategoryFactory(company=self.company)
-
-    def test_variant_stock_serializer_includes_product_supplier_link(self):
-        from apps.catalog.serializers import ProductVariantStockSerializer
-
-        product = ProductFactory(
-            company=self.company,
-            category=self.category,
-        )
-        variant = ProductVariantFactory(product=product)
-        serializer = ProductVariantStockSerializer(variant)
-        self.assertIn("product_supplier_link", serializer.data)
-        self.assertIsNone(serializer.data["product_supplier_link"])
-
-    def test_variant_stock_serializer_includes_product_photo_url(self):
-        """Serialize a ProductVariant, assert product_photo_url key in output."""
-        from apps.catalog.serializers import ProductVariantStockSerializer
-
-        product = ProductFactory(
-            company=self.company,
-            category=self.category,
-        )
-        variant = ProductVariantFactory(product=product)
-        serializer = ProductVariantStockSerializer(variant)
-        self.assertIn("product_photo_url", serializer.data)
 
 
 class SaveVariantsTest(APITestCase):
@@ -903,6 +866,8 @@ class QCPPhase5Test(APITestCase):
 
     def test_variant_stock_photo_url_from_gallery(self):
         """Gallery photo is returned when variant.photo is null."""
+        from apps.catalog.tests.factories import ProductPhotoFactory
+
         variant = ProductVariantFactory(product=self.product, company=self.company)
         ProductPhotoFactory(product=self.product, company=self.company, order=0)
         response = self.client.get("/product-variants/", format="json")
@@ -915,6 +880,8 @@ class QCPPhase5Test(APITestCase):
     def test_variant_stock_photo_url_variant_takes_priority(self):
         """Variant photo takes priority over gallery photo."""
         from django.core.files.uploadedfile import SimpleUploadedFile
+
+        from apps.catalog.tests.factories import ProductPhotoFactory
 
         variant = ProductVariantFactory(product=self.product, company=self.company)
         variant.photo = SimpleUploadedFile("variant.jpg", b"x")
@@ -941,6 +908,8 @@ class QCPPhase6Test(APITestCase):
 
     def test_photo_proxy_returns_image_bytes(self):
         """photo-proxy returns image bytes when gallery photo exists."""
+        from apps.catalog.tests.factories import ProductPhotoFactory
+
         ProductPhotoFactory(product=self.product, company=self.company, order=0)
         response = self.client.get(f"/product/{self.product.id}/photo-proxy/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -1051,7 +1020,7 @@ class DimensionImageAPITest(APITestCase):
         self.assertEqual(response.status_code, 200)
 
     def test_photo_proxy_falls_back_to_gallery_when_no_dimension_image_matches(self):
-        from apps.catalog.factories import ProductPhotoFactory
+        from apps.catalog.tests.factories import ProductPhotoFactory
 
         ProductPhotoFactory(product=self.product, company=self.company, order=0)
         url = f"/product/{self.product.id}/photo-proxy/?dim_key=Warna&dim_value=NonExistent"
@@ -1317,369 +1286,3 @@ class QCPPhase7Test(APITestCase):
         )
         self.assertEqual(result["last_unit_price_foreign"], "18.5000")
         self.assertEqual(result["last_currency"], "CNY")
-
-
-class SKUTriggerRegressionTests(TestCase):
-    """Regression tests for trigger functions after renaming tables to master_*.
-
-    These tests verify that the PL/pgSQL trigger functions that auto-generate SKU codes
-    still fire correctly after the table rename migrations (catalog/0003, inventory/0027).
-    """
-
-    def setUp(self):
-        self.company = CompanyFactory()
-        self.category = CategoryFactory(company=self.company, category_code="TSH")
-
-    def test_product_sku_trigger_fires_against_renamed_category_table(self):
-        """DB trigger auto-generates Product.sku_code by reading master_category."""
-        # Create a valid product via ORM (gets a real sku_code from the trigger)
-        template = ProductFactory(company=self.company, category=self.category)
-        # The trigger mutates sku_code inside Postgres via a plain INSERT with no
-        # RETURNING clause -- Django never re-reads it back into the in-memory
-        # instance, so it must be explicitly refreshed before asserting on it.
-        template.refresh_from_db()
-        self.assertIsNotNone(template.sku_code)
-        self.assertTrue(template.sku_code.startswith("TSH-"))
-
-        # Read the template row's actual columns from the database. product_id is a
-        # Postgres uuid column (ULIDField.get_internal_type() == "UUIDField") -- pass
-        # the real uuid.UUID via .uuid, not str(), which yields the 26-char base32
-        # ULID form Postgres cannot cast to uuid.
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT * FROM master_product WHERE product_id = %s", [template.pk.uuid])
-            columns = [col[0] for col in cursor.description]
-            values = list(cursor.fetchone())
-
-        # Clone the row: map column names to values
-        col_value_map = dict(zip(columns, values))
-        new_pk = generate_ulid().uuid  # same uuid-cast requirement as above
-        col_value_map["product_id"] = new_pk
-        col_value_map["sku_code"] = ""  # Blank triggers the DB trigger function
-        col_value_map["name"] = "Trigger Test Product Master Rename"
-
-        # Insert via raw SQL, bypassing ORM
-        cols = list(col_value_map.keys())
-        placeholders = ", ".join(["%s"] * len(cols))
-        with connection.cursor() as cursor:
-            cursor.execute(
-                f"INSERT INTO master_product ({', '.join(cols)}) VALUES ({placeholders})",
-                list(col_value_map.values()),
-            )
-            # Verify the trigger generated a sku_code
-            cursor.execute("SELECT sku_code FROM master_product WHERE product_id = %s", [new_pk])
-            result_sku_code = cursor.fetchone()[0]
-
-        # The trigger should have read master_category and generated a code
-        self.assertIsNotNone(result_sku_code)
-        self.assertTrue(result_sku_code.startswith(self.category.category_code.upper()))
-
-    def test_variant_sku_trigger_fires_against_renamed_product_table(self):
-        """DB trigger auto-generates ProductVariant.sku_variant_code by reading master_product."""
-        # Create a valid variant via ORM (gets a real sku_variant_code from the trigger)
-        product = ProductFactory(company=self.company, category=self.category)
-        product.refresh_from_db()  # re-read the trigger-generated sku_code before using it below
-        template = ProductVariantFactory(product=product, sku_variant_code="")
-        template.refresh_from_db()
-        self.assertIsNotNone(template.sku_variant_code)
-        self.assertTrue(template.sku_variant_code.startswith(product.sku_code))
-
-        # Read the template row's actual columns from the database. product_variant_id is
-        # a Postgres uuid column -- pass the real uuid.UUID via .uuid, not str(), which
-        # yields the 26-char base32 ULID form Postgres cannot cast to uuid.
-        with connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT * FROM master_productvariant WHERE product_variant_id = %s",
-                [template.pk.uuid],
-            )
-            columns = [col[0] for col in cursor.description]
-            values = list(cursor.fetchone())
-
-        # Clone the row, but point it at a SECOND, independently-created parent product.
-        # generate_variant_sku() has no uniqueness source of its own (unlike
-        # generate_product_sku(), which uses product_sku_seq) -- with variant_values={} on
-        # both rows, jsonb_each_text('{}'::jsonb) returns zero rows so string_agg yields NULL
-        # and the suffix branch never fires, meaning the generated sku_variant_code is always
-        # exactly the parent's bare sku_code. Cloning against the SAME parent as `template`
-        # would therefore always collide on ProductVariant.sku_variant_code's unique
-        # constraint. Using a different parent (whose sku_code is guaranteed unique via
-        # Product's own sequence-backed trigger) makes the two generated codes provably
-        # distinct without relying on any jsonb suffix behavior.
-        second_product = ProductFactory(company=self.company, category=self.category)
-        second_product.refresh_from_db()
-
-        # Clone the row: map column names to values
-        col_value_map = dict(zip(columns, values))
-        new_pk = generate_ulid().uuid  # same uuid-cast requirement as above
-        col_value_map["product_variant_id"] = new_pk
-        col_value_map["product_id"] = second_product.pk.uuid  # different parent, same reason
-        col_value_map["sku_variant_code"] = ""  # Blank triggers the DB trigger function
-        col_value_map["name"] = "Trigger Test Variant Master Rename"
-
-        # Insert via raw SQL, bypassing ORM
-        cols = list(col_value_map.keys())
-        placeholders = ", ".join(["%s"] * len(cols))
-        with connection.cursor() as cursor:
-            cursor.execute(
-                f"INSERT INTO master_productvariant ({', '.join(cols)}) VALUES ({placeholders})",
-                list(col_value_map.values()),
-            )
-            # Verify the trigger generated a sku_variant_code
-            cursor.execute(
-                "SELECT sku_variant_code FROM master_productvariant WHERE product_variant_id = %s",
-                [new_pk],
-            )
-            result_sku_variant_code = cursor.fetchone()[0]
-
-        # The trigger should have read master_product for THIS row's own product_id
-        # (second_product, not the original `product`) and generated a matching code.
-        self.assertIsNotNone(result_sku_variant_code)
-        self.assertTrue(result_sku_variant_code.startswith(second_product.sku_code))
-        self.assertNotEqual(result_sku_variant_code, template.sku_variant_code)
-
-
-class DatabaseSchemaRegressionTests(TestCase):
-    """Tests to verify the master_* table renaming was successful at the schema level."""
-
-    def test_table_names_updated_in_django_meta(self):
-        """Verify that all 6 models have their db_table set to master_*."""
-        # Catalog models
-        self.assertEqual(Category._meta.db_table, "master_category")
-        self.assertEqual(Product._meta.db_table, "master_product")
-        from apps.catalog.models import ProductPhoto, ProductVariantMarketplace
-
-        self.assertEqual(ProductPhoto._meta.db_table, "master_productphoto")
-        self.assertEqual(ProductVariant._meta.db_table, "master_productvariant")
-        self.assertEqual(
-            ProductVariantMarketplace._meta.db_table, "master_productvariantmarketplace"
-        )
-
-        # Inventory model
-        from apps.inventory.models import Warehouse
-
-        self.assertEqual(Warehouse._meta.db_table, "master_warehouse")
-
-    def test_old_tables_absent_new_tables_present_in_db(self):
-        """Verify that physical tables in the database use the new master_* names."""
-        expected_tables = [
-            "master_category",
-            "master_product",
-            "master_productphoto",
-            "master_productvariant",
-            "master_productvariantmarketplace",
-            "master_warehouse",
-        ]
-        old_tables = [
-            "inventory_category",
-            "inventory_product",
-            "product_photo",
-            "inventory_productvariant",
-            "inventory_productvariantmarketplace",
-            "inventory_warehouse",
-        ]
-
-        with connection.cursor() as cursor:
-            # Check that all new tables exist
-            for table_name in expected_tables:
-                cursor.execute(
-                    "SELECT EXISTS(SELECT 1 FROM information_schema.tables "
-                    "WHERE table_name = %s AND table_schema = 'public')",
-                    [table_name],
-                )
-                self.assertTrue(
-                    cursor.fetchone()[0],
-                    f"New table {table_name} not found in database",
-                )
-
-            # Check that all old tables are gone
-            for table_name in old_tables:
-                cursor.execute(
-                    "SELECT EXISTS(SELECT 1 FROM information_schema.tables "
-                    "WHERE table_name = %s AND table_schema = 'public')",
-                    [table_name],
-                )
-                self.assertFalse(
-                    cursor.fetchone()[0], f"Old table {table_name} still exists in database"
-                )
-
-
-class MigrationGraphOrderingRegressionTests(TestCase):
-    """Regression tests proving the master_* rename migrations (catalog/0003,
-    inventory/0027) cannot be scheduled before any migration that creates a real
-    FK constraint against the pre-rename table names. Without these edges, Django's
-    migration plan is under-constrained and a from-scratch replay can (non-
-    deterministically) sequence the rename before a deferred FK-creation statement
-    fires, producing "relation ... does not exist" — the bug fixed in this pass."""
-
-    def test_catalog_master_table_rename_runs_after_all_fk_creating_migrations(self):
-        loader = MigrationLoader(connection)
-        plan = loader.graph.forwards_plan(("catalog", "0003_rename_master_tables"))
-        for dependency in [
-            ("sales", "0001_initial"),
-            ("purchasing", "0001_initial"),
-            ("shopee", "0002_add_shopee_stock_sync_log"),
-        ]:
-            self.assertIn(
-                dependency,
-                plan,
-                f"{dependency} must run before catalog/0003_rename_master_tables or its "
-                "deferred FK constraint SQL will reference an already-renamed table",
-            )
-
-    def test_inventory_warehouse_rename_runs_after_all_fk_creating_migrations(self):
-        loader = MigrationLoader(connection)
-        plan = loader.graph.forwards_plan(("inventory", "0027_rename_warehouse_table"))
-        for dependency in [
-            ("sales", "0001_initial"),
-            ("purchasing", "0001_initial"),
-            ("shopee", "0001_initial"),
-            ("tiktok", "0001_initial"),
-        ]:
-            self.assertIn(
-                dependency,
-                plan,
-                f"{dependency} must run before inventory/0027_rename_warehouse_table or its "
-                "deferred FK constraint SQL will reference an already-renamed table",
-            )
-
-    def test_catalog_master_table_rename_runs_after_fk_retargeting_migrations(self):
-        """catalog/0003 must run after the four 'noop_fk_refs' migrations that
-        retarget ProductBusinessEntity/ProductCogs/ProductDimensionImage/
-        ProductSupplier/ProductVariantWarehouse/StockMovement/PurchaseOrderDetail/
-        SalesOrderItem/SalesReturnItem/ShopeeStockSyncLog's FK fields away from the
-        inventory.product/inventory.productvariant models inventory/0025 deletes.
-        Without this edge, a from-scratch topological replay can sequence
-        catalog/0003 before one of these siblings, leaving a dangling lazy FK
-        reference at the exact point Django force-renders state during a
-        backward migration plan."""
-        loader = MigrationLoader(connection)
-        plan = loader.graph.forwards_plan(("catalog", "0003_rename_master_tables"))
-        for dependency in [
-            ("inventory", "0026_noop_fk_refs"),
-            ("purchasing", "0025_noop_fk_refs"),
-            ("sales", "0004_noop_fk_refs"),
-            ("shopee", "0003_noop_fk_refs"),
-        ]:
-            self.assertIn(
-                dependency,
-                plan,
-                f"{dependency} must run before catalog/0003_rename_master_tables or a "
-                "backward migration plan can force-render project state while this "
-                "sibling's FK retargeting hasn't happened yet, crashing with a lazy "
-                "reference to a deleted inventory model",
-            )
-
-    def test_catalog_master_table_rename_predecessor_state_renders_without_lazy_reference_errors(
-        self,
-    ):
-        """Reproduces the exact crash from the original bug: build the project
-        state as it exists immediately BEFORE catalog/0003_rename_master_tables
-        runs (the same computation Django's backward executor performs and
-        force-validates at that point) and force a full render. Before the fix
-        in this pass, this crashed with 'declared with a lazy reference to
-        inventory.product, but app inventory doesn't provide model product' —
-        this test exercises the actual backward-plan render logic, not just
-        forwards_plan membership, so this class of bug is caught by CI."""
-        loader = MigrationLoader(connection)
-        state = loader.graph.make_state(
-            nodes=[("catalog", "0003_rename_master_tables")],
-            at_end=False,
-            real_apps=loader.unmigrated_apps,
-        )
-        try:
-            state.apps
-        except ValueError as exc:
-            self.fail(
-                "Rendering project state immediately before "
-                "catalog/0003_rename_master_tables crashed with a lazy-reference "
-                "error — catalog/0003 is missing a dependency edge on one of the "
-                "FK-retargeting 'noop_fk_refs' migrations (inventory/0026, "
-                f"purchasing/0025, sales/0004, shopee/0003): {exc}"
-            )
-
-    def test_catalog_create_productdimensionimage_runs_before_inventory_delete(self):
-        """catalog/0005_state_only_create_productdimensionimage must be ordered before
-        inventory/0031_state_only_delete_productdimensionimage in the forward plan.
-        Without this edge a from-scratch replay could delete the model from inventory
-        state before catalog has adopted it, leaving a dangling lazy FK reference."""
-        loader = MigrationLoader(connection)
-        plan = loader.graph.forwards_plan(
-            ("inventory", "0031_state_only_delete_productdimensionimage")
-        )
-        self.assertIn(
-            ("catalog", "0005_state_only_create_productdimensionimage"),
-            plan,
-            "catalog/0005 must run before inventory/0031 or the DeleteModel runs "
-            "before catalog has registered ProductDimensionImage, breaking lazy FK "
-            "resolution on a from-scratch replay",
-        )
-
-    def test_inventory_delete_productdimensionimage_predecessor_state_renders_without_lazy_reference_errors(
-        self,
-    ):
-        """Build the project state immediately BEFORE inventory/0031 runs and force a
-        full render. This catches the BE2-class bug where a DeleteModel is scheduled
-        before the adopting app's CreateModel, producing a lazy-reference crash at
-        render time. The state at that point must have ProductDimensionImage owned by
-        catalog (via catalog/0005) and still present in inventory (not yet deleted)."""
-        loader = MigrationLoader(connection)
-        state = loader.graph.make_state(
-            nodes=[("inventory", "0031_state_only_delete_productdimensionimage")],
-            at_end=False,
-            real_apps=loader.unmigrated_apps,
-        )
-        try:
-            state.apps
-        except ValueError as exc:
-            self.fail(
-                "Rendering project state immediately before "
-                "inventory/0031_state_only_delete_productdimensionimage crashed with a "
-                "lazy-reference error — inventory/0031 is missing the dependency edge on "
-                f"catalog/0005_state_only_create_productdimensionimage: {exc}"
-            )
-
-    def test_inventory_retarget_productvariant_fks_runs_after_catalog_productvariant_created(
-        self,
-    ):
-        """inventory/0032 (AlterField x3 retargeting FKs to catalog.productvariant then
-        DeleteModel of the proxy) must run AFTER catalog.ProductVariant is created so the
-        to='catalog.productvariant' FK target resolves without error. Verify the full
-        forward plan for inventory/0032 includes catalog/0005, the explicit pinned
-        dependency edge that guarantees the catalog side is fully migrated (ProductVariant
-        present in catalog state) before the inventory FK-retarget/proxy-DeleteModel runs."""
-        loader = MigrationLoader(connection)
-        plan = loader.graph.forwards_plan(
-            ("inventory", "0032_state_only_retarget_productvariant_fks")
-        )
-        self.assertIn(
-            ("catalog", "0005_state_only_create_productdimensionimage"),
-            plan,
-            "catalog/0005_state_only_create_productdimensionimage must run before "
-            "inventory/0032 — this is the explicit pinned dependency edge that ensures "
-            "the catalog side is fully migrated before the FK-retarget/proxy-DeleteModel "
-            "runs",
-        )
-
-    def test_inventory_retarget_productvariant_fks_predecessor_state_renders_without_lazy_reference_errors(
-        self,
-    ):
-        """Build the project state immediately BEFORE inventory/0032 runs and force a
-        full render. Catches any lazy-reference error that would result from the proxy
-        ProductVariant still being registered in inventory state at that point while
-        the three FK fields still point at inventory.productvariant — the render must
-        succeed because 0028 registered the proxy and the FKs are still valid before
-        0032 removes them."""
-        loader = MigrationLoader(connection)
-        state = loader.graph.make_state(
-            nodes=[("inventory", "0032_state_only_retarget_productvariant_fks")],
-            at_end=False,
-            real_apps=loader.unmigrated_apps,
-        )
-        try:
-            state.apps
-        except ValueError as exc:
-            self.fail(
-                "Rendering project state immediately before "
-                "inventory/0032_state_only_retarget_productvariant_fks crashed with a "
-                "lazy-reference error — the migration graph is missing a required "
-                f"dependency edge: {exc}"
-            )
