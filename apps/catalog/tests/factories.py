@@ -64,7 +64,7 @@ class ProductVariantMarketplaceFactory(factory.django.DjangoModelFactory):
         model = ProductVariantMarketplace
 
     product_variant = factory.SubFactory(ProductVariantFactory)  # type: ignore[no-untyped-call]
-    marketplace = factory.SubFactory("apps.marketplace.factories.MarketplaceFactory")  # type: ignore[no-untyped-call]
+    marketplace = factory.SubFactory("apps.marketplace.tests.factories.MarketplaceFactory")  # type: ignore[no-untyped-call]
     company = factory.SubFactory(CompanyFactory)  # type: ignore[no-untyped-call]
     selling_price = 10000
     is_active = True

@@ -14,7 +14,6 @@ from apps.catalog.tests.factories import (
 from apps.inventory.models import ProductVariantWarehouse, StockMovement
 from apps.inventory.services.inventory_service import InventoryService
 from apps.inventory.tests.factories import ProductCogsFactory, ProductVariantWarehouseFactory
-from apps.marketplace.factories import MarketplaceConnectionFactory, MarketplaceFactory
 from apps.marketplace.shopee.client import ShopeeClient
 from apps.marketplace.shopee.exceptions import ShopeeAPIError
 from apps.marketplace.shopee.models import ShopeeSyncLog
@@ -22,6 +21,7 @@ from apps.marketplace.shopee.product_match import ShopeeProductMatchService
 from apps.marketplace.shopee.product_push import ShopeeProductPushService
 from apps.marketplace.shopee.stock_sync import ShopeeStockSyncService
 from apps.marketplace.shopee.tests.factories import ShopeeShopFactory
+from apps.marketplace.tests.factories import MarketplaceConnectionFactory, MarketplaceFactory
 from apps.purchasing.models import PurchaseOrder
 from apps.purchasing.services.purchasing_service import PurchaseOrderService
 from apps.purchasing.tests.factories import PurchaseOrderDetailFactory, PurchaseOrderFactory
