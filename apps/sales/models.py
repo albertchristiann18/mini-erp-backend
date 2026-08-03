@@ -25,7 +25,7 @@ class SalesOrder(DefaultModel):
     )
     order_number = models.CharField(max_length=100, unique=True, editable=False, default="")
     marketplace = models.ForeignKey(
-        "core.Marketplace", on_delete=models.SET_NULL, null=True, blank=True
+        "marketplace.Marketplace", on_delete=models.SET_NULL, null=True, blank=True
     )
     marketplace_order_id = models.CharField(max_length=255, db_index=True, blank=True, default="")
     marketplace_order_number = models.CharField(max_length=255, blank=True, default="")
@@ -69,7 +69,7 @@ class SalesOrderItem(DefaultModel):
         primary_key=True, default=generate_ulid, editable=False, db_column="sales_order_item_id"
     )
     sales_order = models.ForeignKey(SalesOrder, on_delete=models.CASCADE, related_name="items")
-    product_variant = models.ForeignKey("inventory.ProductVariant", on_delete=models.PROTECT)
+    product_variant = models.ForeignKey("catalog.ProductVariant", on_delete=models.PROTECT)
     quantity = models.IntegerField()
     selling_price = models.BigIntegerField()
     discount_amount = models.BigIntegerField(default=0)
@@ -135,7 +135,7 @@ class SalesReturnItem(DefaultModel):
     )
     sales_return = models.ForeignKey(SalesReturn, on_delete=models.CASCADE, related_name="items")
     sales_order_item = models.ForeignKey(SalesOrderItem, on_delete=models.PROTECT)
-    product_variant = models.ForeignKey("inventory.ProductVariant", on_delete=models.PROTECT)
+    product_variant = models.ForeignKey("catalog.ProductVariant", on_delete=models.PROTECT)
     quantity = models.IntegerField()
     reversed_cogs_total = models.BigIntegerField(default=0)
 

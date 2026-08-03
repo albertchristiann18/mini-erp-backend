@@ -1,5 +1,5 @@
 import logging
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from django.core.exceptions import ValidationError
@@ -9,9 +9,9 @@ from django_ulid.models import ULIDField
 
 logger = logging.getLogger(__name__)
 
+from apps.catalog.models import ProductVariant
 from apps.inventory.models import (
     ProductCogs,
-    ProductVariant,
     ProductVariantWarehouse,
     StockMovement,
 )
@@ -116,7 +116,7 @@ class InventoryService:
         from django.db.models import Sum
         from django.utils import timezone
 
-        from apps.inventory.models import ProductVariant
+        from apps.catalog.models import ProductVariant
         from apps.sales.models import SalesOrder, SalesOrderItem
 
         date_from = timezone.now().date() - timedelta(days=days)
@@ -166,8 +166,8 @@ class InventoryService:
         return result
 
     def _trigger_shopee_sync(self, variant_id: str, company_id: str) -> None:
-        from apps.omnichannel.vendor.shopee.stock_sync import ShopeeStockSyncService
-        from core.models import MarketplaceConnection
+        from apps.marketplace.models import MarketplaceConnection
+        from apps.marketplace.shopee.stock_sync import ShopeeStockSyncService
 
         connections = MarketplaceConnection.objects.filter(
             platform="SHOPEE",
@@ -929,8 +929,8 @@ class InventoryService:
             if sku is None or str(sku).strip() == "":
                 continue
             try:
-                qty = int(float(str(qty_raw))) if qty_raw is not None else 0
-            except (ValueError, TypeError):
+                qty = int(Decimal(str(qty_raw))) if qty_raw is not None else 0
+            except (ValueError, TypeError, InvalidOperation):
                 continue
             file_product_name = (
                 str(row[product_name_col_idx]).strip()
@@ -978,7 +978,8 @@ class InventoryService:
           - If different: compute delta = target - current; update physical_qty; create MARKETPLACE_SYNC movement
         dry_run=True: compute all results but do NOT save anything.
         """
-        from apps.inventory.models import ProductVariant, ProductVariantWarehouse, StockMovement
+        from apps.catalog.models import ProductVariant
+        from apps.inventory.models import ProductVariantWarehouse, StockMovement
 
         reconciled = []
         skipped = []

@@ -9,7 +9,8 @@ from django.db.models import Q
 from django.utils import timezone
 from django_ulid.models import ULIDField
 
-from apps.inventory.models import ProductCogs, ProductVariant, ProductVariantWarehouse, Warehouse
+from apps.catalog.models import ProductVariant
+from apps.inventory.models import ProductCogs, ProductVariantWarehouse, Warehouse
 from apps.inventory.services.inventory_service import InventoryService
 from apps.purchasing.models import PurchaseOrder, PurchaseOrderDetail
 from core.models import Company
@@ -27,8 +28,8 @@ class PurchaseOrderService:
     """
 
     def _trigger_shopee_sync_batch(self, variant_ids: list[str], company_id: str) -> None:
-        from apps.omnichannel.vendor.shopee.stock_sync import ShopeeStockSyncService
-        from core.models import MarketplaceConnection
+        from apps.marketplace.models import MarketplaceConnection
+        from apps.marketplace.shopee.stock_sync import ShopeeStockSyncService
 
         connections = MarketplaceConnection.objects.filter(
             platform="SHOPEE",
@@ -57,7 +58,7 @@ class PurchaseOrderService:
         if not po.supplier or not variant_ids:
             return
         try:
-            from apps.inventory.models import ProductSupplier
+            from apps.purchasing.models import ProductSupplier
 
             raw_pairs = list(
                 ProductVariant.objects.filter(id__in=variant_ids).values_list("id", "product_id")
@@ -856,7 +857,7 @@ class PurchaseOrderService:
 
         # Populate supplier_link for new details from ProductSupplier
         if new_details:
-            from apps.inventory.models import ProductSupplier as PS
+            from apps.purchasing.models import ProductSupplier as PS
 
             real_new_details = [d for d in new_details if d.product_variant_id is not None]  # type: ignore[attr-defined]
             variant_ids = [d.product_variant.id for d in real_new_details]  # type: ignore[union-attr]

@@ -2,7 +2,8 @@ from datetime import date
 
 from django.db.models import Q, Sum
 
-from apps.inventory.models import ProductVariant, StockMovement
+from apps.catalog.models import ProductVariant
+from apps.inventory.models import StockMovement
 from apps.sales.models import SalesOrderCogsDetail, SalesOrderItem
 
 

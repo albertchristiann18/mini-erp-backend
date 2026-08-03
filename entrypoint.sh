@@ -39,7 +39,8 @@ else:
 echo "creating dummy data"
 uv run manage.py shell -c "
 from apps.inventory.models import Category, Warehouse
-from core.models import Company, Marketplace
+from apps.marketplace.models import Marketplace
+from core.models import Company
 from django.utils import timezone
 
 # 1. Ensure Company exists

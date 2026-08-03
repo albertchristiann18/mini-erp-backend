@@ -7,7 +7,7 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.http import Http404
 
-from apps.inventory.models import Category, Product, ProductVariant
+from apps.catalog.models import Category, Product, ProductVariant
 from apps.purchasing.models import ColorAbbreviation, PurchaseOrder, PurchaseOrderDetail
 from apps.purchasing.services.sourcing_service import generate_variant_suffix
 
@@ -192,7 +192,7 @@ class SourcingProductService:
         if po.status not in [PurchaseOrder.POStatus.DRAFT, PurchaseOrder.POStatus.ORDERED]:
             raise ValidationError(f"Cannot add items to a PO with status {po.status}.")
 
-        from apps.inventory.models import Supplier
+        from apps.purchasing.models import Supplier
 
         if not Supplier.objects.filter(id=supplier_id, company=po.company).exists():
             raise Http404("Supplier not found.")

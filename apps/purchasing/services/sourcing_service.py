@@ -4,7 +4,7 @@ from decimal import Decimal, InvalidOperation
 
 import openpyxl
 
-from apps.inventory.models import Category, ProductVariant
+from apps.catalog.models import Category, ProductVariant
 from apps.purchasing.models import ColorAbbreviation
 from core.models import Company
 
@@ -354,11 +354,11 @@ class SourcingService:
             qty_suggested: int | None = None
             if order_qty_raw_val:
                 try:
-                    qty_suggested = int(float(order_qty_raw_val))
+                    qty_suggested = int(Decimal(str(order_qty_raw_val)))
                     if qty_suggested < 0:
                         errors.append({"row": row_num, "message": "order_qty must be 0 or greater"})
                         continue
-                except ValueError:
+                except (ValueError, InvalidOperation):
                     errors.append(
                         {
                             "row": row_num,

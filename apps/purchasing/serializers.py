@@ -3,15 +3,62 @@ from typing import Any
 
 from rest_framework import serializers
 
-from apps.inventory.models import ProductVariant, Warehouse
+from apps.catalog.models import ProductVariant
+from apps.inventory.models import Warehouse
 from apps.purchasing.models import (
+    ProductSupplier,
     PurchaseOrder,
     PurchaseOrderDetail,
     PurchaseOrderStatusHistory,
+    Supplier,
 )
 from apps.purchasing.services.purchasing_service import PurchaseOrderService
 from core.models import Company
 from core.utils import compress_pdf_iterative
+
+
+class SupplierSerializer(serializers.ModelSerializer):
+    company_id = serializers.CharField(source="company.id", read_only=True)
+
+    class Meta:
+        model = Supplier
+        fields = [
+            "id",
+            "company_id",
+            "name",
+            "contact_name",
+            "phone",
+            "country",
+            "notes",
+            "supplier_link",
+            "is_active",
+            "cdate",
+            "udate",
+        ]
+        read_only_fields = ["id", "cdate", "udate"]
+
+
+class ProductSupplierSerializer(serializers.ModelSerializer):
+    supplier_name = serializers.CharField(source="supplier.name", read_only=True)
+    product_id = serializers.CharField(write_only=True)
+    supplier_id = serializers.CharField(write_only=True)
+
+    class Meta:
+        model = ProductSupplier
+        fields = [
+            "id",
+            "product_id",
+            "supplier_id",
+            "supplier_name",
+            "supplier_link",
+            "cdate",
+            "udate",
+        ]
+        read_only_fields = ["id", "cdate", "udate"]
+
+    def create(self, validated_data: dict[str, Any]) -> "ProductSupplier":
+        company = self.context["request"].user.profile.company
+        return ProductSupplier.objects.create(company=company, **validated_data)
 
 
 def _calc_shipping_fee(shipping_fee_per_cbm: Decimal, cbm: Decimal) -> int:
@@ -351,8 +398,6 @@ class PurchaseOrderCreateSerializer(serializers.ModelSerializer):
 
         supplier_id = attrs.pop("supplier_id", None)
         if supplier_id:
-            from apps.inventory.models import Supplier
-
             try:
                 supplier = Supplier.objects.get(id=supplier_id)
                 attrs["supplier"] = supplier
@@ -525,8 +570,6 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
 
         supplier_id = attrs.pop("supplier_id", None)
         if supplier_id is not None:
-            from apps.inventory.models import Supplier
-
             try:
                 supplier = Supplier.objects.get(id=supplier_id)
                 attrs["supplier"] = supplier
