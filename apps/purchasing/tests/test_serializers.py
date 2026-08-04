@@ -591,6 +591,74 @@ class PurchaseOrderSerializerValidationTest(TestCase):
 
         self.assertTrue(serializer.is_valid(), serializer.errors)
 
+    def test_received_qty_allowed_when_moving_delivered_to_completed(self):
+        """Test that received_qty can be edited when transitioning DELIVERED to COMPLETED"""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DELIVERED,
+            exchange_rate=2200,
+        )
+        detail = PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            ordered_qty=100,
+            unit_price_foreign=Decimal("10"),
+        )
+        po.refresh_from_db()
+
+        serializer = self._create_serializer(
+            po,
+            {
+                "status": PurchaseOrder.POStatus.COMPLETED,
+                "order_details": [
+                    {
+                        "id": str(detail.id),
+                        "product_variant_id": str(self.product_variant.id),
+                        "received_qty": 50,
+                    }
+                ],
+            },
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+    def test_received_qty_still_rejected_when_status_stays_completed(self):
+        """Test that received_qty is rejected on a same-status COMPLETED PATCH (no transition)"""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.COMPLETED,
+            exchange_rate=2200,
+        )
+        detail = PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            ordered_qty=100,
+            unit_price_foreign=Decimal("10"),
+            received_qty=100,
+        )
+        po.refresh_from_db()
+
+        serializer = self._create_serializer(
+            po,
+            {
+                "status": PurchaseOrder.POStatus.COMPLETED,
+                "order_details": [
+                    {
+                        "id": str(detail.id),
+                        "product_variant_id": str(self.product_variant.id),
+                        "received_qty": 50,
+                    }
+                ],
+            },
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertNotIn("status", serializer.errors)
+        self.assertIn("order_details", serializer.errors)
+        self.assertIn("received_qty", str(serializer.errors["order_details"]))
+
     def test_cannot_add_new_details_when_shipped(self):
         """Test that adding new details fails when status is SHIPPED"""
         po = PurchaseOrderFactory(

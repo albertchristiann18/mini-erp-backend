@@ -651,17 +651,25 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
                         }
                     )
 
-        if new_status not in [
+        received_qty_transition_allowed = new_status in (
             PurchaseOrder.POStatus.SHIPPED,
             PurchaseOrder.POStatus.DELIVERED,
             None,
-        ]:
+        ) or (
+            current_status == PurchaseOrder.POStatus.DELIVERED
+            and new_status == PurchaseOrder.POStatus.COMPLETED
+        )
+
+        if not received_qty_transition_allowed:
             order_details = attrs.get("order_details", [])
             for detail_data in order_details:
                 if detail_data.get("received_qty") is not None:
                     raise serializers.ValidationError(
                         {
-                            "order_details": "received_qty can only be provided when status is SHIPPED or DELIVERED."
+                            "order_details": (
+                                "received_qty can only be provided when status is SHIPPED or "
+                                "DELIVERED, or when moving from DELIVERED to COMPLETED."
+                            )
                         }
                     )
 
