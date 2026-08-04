@@ -217,6 +217,12 @@ class PurchaseOrderService:
         if new_status == PurchaseOrder.POStatus.ORDERED:
             for field, label, section, message in [
                 (
+                    "currency",
+                    "Currency",
+                    "Financial Setup",
+                    "Currency is required when moving to ORDERED.",
+                ),
+                (
                     "exchange_rate",
                     "Exchange Rate",
                     "Financial Setup",

@@ -1242,6 +1242,7 @@ class PurchaseOrderStatusHistoryTest(TestCase):
             warehouse=self.warehouse,
             company=self.company,
             status=PurchaseOrder.POStatus.DRAFT,
+            currency="USD",
             exchange_rate=2200,
             purchase_order_invoice_file="test.pdf",
             invoice_number="INV-001",
@@ -1328,6 +1329,7 @@ class PurchaseOrderRequirementsCheckTest(TestCase):
         missing = self.service.check_purchase_order_requirements(po, PurchaseOrder.POStatus.ORDERED)
 
         field_names = {item["field"] for item in missing}
+        self.assertIn("currency", field_names)
         self.assertIn("exchange_rate", field_names)
         self.assertIn("invoice_number", field_names)
         self.assertIn("purchase_order_invoice_file", field_names)
@@ -1343,6 +1345,7 @@ class PurchaseOrderRequirementsCheckTest(TestCase):
             warehouse=self.warehouse,
             company=self.company,
             status=PurchaseOrder.POStatus.DRAFT,
+            currency="USD",
             exchange_rate=2200,
             purchase_order_invoice_file="invoice.pdf",
             invoice_number="INV-001",
