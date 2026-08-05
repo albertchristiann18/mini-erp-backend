@@ -1423,6 +1423,39 @@ class PurchaseOrderRequirementsCheckTest(TestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("missing_fields", response.data)
 
+    def test_patch_to_completed_over_received_without_remarks_returns_field_dict(self):
+        """Regression for QTYEDIT-4: the service raises a dict-keyed ValidationError; the view
+        must surface it as `{"order_details": [...]}`, not `{"error": "<dict-repr string>"}`.
+        """
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DELIVERED,
+            delivery_date=date.today(),
+        )
+        detail = PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            ordered_qty=20,
+            received_qty=10,
+            updated_qty=10,
+        )
+
+        response = self.client.patch(
+            f"/purchase-order/{po.id}/",
+            {
+                "status": PurchaseOrder.POStatus.COMPLETED,
+                "order_details": [{"id": str(detail.id), "received_qty": 40}],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertNotIn("error", response.data)
+        self.assertIn("order_details", response.data)
+        self.assertIsInstance(response.data["order_details"], list)
+        self.assertIn("Remarks is required", response.data["order_details"][0])
+
 
 class EditableFieldsAndNoteTest(TestCase):
     """Tests for editable_fields, note, locked field enforcement, and transition warnings."""
