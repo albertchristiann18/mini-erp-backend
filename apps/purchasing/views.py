@@ -34,6 +34,13 @@ from core.permissions import IsStaffOrReadOnly
 logger = logging.getLogger(__name__)
 
 
+def _validation_error_response(e: ValidationError) -> Response:
+    """Mirrors DRF's own field-dict error shape so the frontend's error normalizer can parse it."""
+    if hasattr(e, "message_dict"):
+        return Response(e.message_dict, status=status.HTTP_400_BAD_REQUEST)
+    return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
 class PurchaseOrderPagination(PageNumberPagination):
     page_size = 10
     page_size_query_param = "page_size"
@@ -153,7 +160,7 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
             return Response(body, status=status.HTTP_200_OK)
 
         except ValidationError as e:
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            return _validation_error_response(e)
 
     @action(detail=True, methods=["post"])
     def advance_status(self, request: Request, pk: Any = None) -> Response:
@@ -185,7 +192,7 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
             po = service.update_purchase_order(po, {"status": new_status}, changed_by=request.user)
             return Response(PurchaseOrderReadSerializer(po).data, status=status.HTTP_200_OK)
         except ValidationError as e:
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            return _validation_error_response(e)
 
     @action(detail=True, methods=["post"], url_path="check_transition")
     def check_transition(self, request: Request, pk: Any = None) -> Response:
