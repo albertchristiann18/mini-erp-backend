@@ -8,7 +8,7 @@ from apps.inventory.models import (
     ProductVariantWarehouse,
     StockMovement,
 )
-from apps.inventory.services.inventory_service import InventoryService
+from apps.inventory.services.inventory_service import InventoryService, allocate_largest_remainder
 from apps.inventory.tests.factories import (
     ProductCogsFactory,
     ProductVariantWarehouseFactory,
@@ -1182,6 +1182,140 @@ class InventoryServiceCOGSUpdateTest(TestCase):
         )
 
         self.assertEqual(cogs.cogs_amount, expected_cogs)
+
+    def test_cogs_shipping_allocation_sums_exactly_across_three_equal_volume_items(self):
+        """3 equal-volume items: allocated shipping fees sum to the total, not 1 rupiah short."""
+        product1 = self.product_variant.product
+        product1.length = 10
+        product1.width = 10
+        product1.height = 10
+        product1.save()
+
+        product2 = ProductFactory(
+            category=self.category, company=self.company, length=10, width=10, height=10
+        )
+        product_variant2 = ProductVariantFactory(product=product2)
+        ProductVariantWarehouseFactory(
+            product_variant=product_variant2, warehouse=self.warehouse, company=self.company
+        )
+
+        product3 = ProductFactory(
+            category=self.category, company=self.company, length=10, width=10, height=10
+        )
+        product_variant3 = ProductVariantFactory(product=product3)
+        ProductVariantWarehouseFactory(
+            product_variant=product_variant3, warehouse=self.warehouse, company=self.company
+        )
+
+        # Naive per-item rounding (int(round(1_000_000 * 1/3))) gives 333,333 x 3 = 999,999.
+        shipping_fee = 1_000_000
+
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.SHIPPED,
+            exchange_rate=2200,
+            shipping_fee=shipping_fee,
+            shipping_fee_per_cbm=100000,
+            cbm=Decimal("0.03"),
+            delivery_fee=Decimal("0"),
+        )
+
+        data = [
+            {
+                "product_variant_id": str(self.product_variant.id),
+                "ordered_qty": 10,
+                "received_qty": 10,
+                "updated_qty": 0,
+                "unit_price_foreign": Decimal("10"),
+            },
+            {
+                "product_variant_id": str(product_variant2.id),
+                "ordered_qty": 10,
+                "received_qty": 10,
+                "updated_qty": 0,
+                "unit_price_foreign": Decimal("10"),
+            },
+            {
+                "product_variant_id": str(product_variant3.id),
+                "ordered_qty": 10,
+                "received_qty": 10,
+                "updated_qty": 0,
+                "unit_price_foreign": Decimal("10"),
+            },
+        ]
+
+        self.service.update_cogs_on_po(
+            po=po,
+            new_status=PurchaseOrder.POStatus.DELIVERED,
+            data=data,
+        )
+
+        allocated_total = sum(
+            ProductCogs.objects.filter(
+                warehouse=self.warehouse,
+                reference_number=po.purchase_order_number,
+            ).values_list("allocated_shipping_fee", flat=True)
+        )
+
+        self.assertEqual(allocated_total, shipping_fee)
+
+
+class AllocateLargestRemainderTest(TestCase):
+    """Test cases for the shared allocate_largest_remainder fee-allocation helper."""
+
+    def test_splits_total_across_three_equal_weights_without_losing_a_unit(self):
+        """Rp 1,000,000 across 3 equal-weight items sums to exactly 1,000,000, not 999,999."""
+        weights = [Decimal("1"), Decimal("1"), Decimal("1")]
+
+        shares = allocate_largest_remainder(1_000_000, weights)
+
+        self.assertEqual(shares, [333334, 333333, 333333])
+        self.assertEqual(sum(shares), 1_000_000)
+
+    def test_naive_rounding_loses_a_unit_but_helper_preserves_the_total(self):
+        """Naive int(round(...)) per item loses 1 rupiah; helper does not."""
+        weights = [Decimal("1"), Decimal("1"), Decimal("1")]
+        total = 1_000_000
+        weight_sum = sum(weights)
+
+        naive_shares = [int(round(total * weight / weight_sum)) for weight in weights]
+        helper_shares = allocate_largest_remainder(total, weights)
+
+        self.assertEqual(sum(naive_shares), 999_999)
+        self.assertEqual(sum(helper_shares), total)
+
+    def test_splits_total_across_seven_equal_weights_sums_exactly(self):
+        """A total that does not divide evenly across 7 equal weights still sums to the total."""
+        weights = [Decimal("1")] * 7
+
+        shares = allocate_largest_remainder(100, weights)
+
+        self.assertEqual(len(shares), 7)
+        self.assertEqual(sum(shares), 100)
+
+    def test_allocates_proportionally_to_unequal_weights(self):
+        """Shares stay proportional to unequal weights while still summing to the total exactly."""
+        weights = [Decimal("1"), Decimal("2"), Decimal("7")]
+
+        shares = allocate_largest_remainder(100, weights)
+
+        self.assertEqual(shares, [10, 20, 70])
+        self.assertEqual(sum(shares), 100)
+
+    def test_returns_zero_shares_when_weights_sum_to_zero(self):
+        """A zero-weight denominator keeps every share at zero instead of dividing by zero."""
+        weights = [Decimal("0"), Decimal("0")]
+
+        shares = allocate_largest_remainder(500, weights)
+
+        self.assertEqual(shares, [0, 0])
+
+    def test_returns_empty_list_for_no_weights(self):
+        """No weights to allocate across returns no shares."""
+        shares = allocate_largest_remainder(500, [])
+
+        self.assertEqual(shares, [])
 
 
 class EdgeCaseInventoryTests(TestCase):

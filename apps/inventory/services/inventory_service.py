@@ -1,5 +1,5 @@
 import logging
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_FLOOR, Decimal, InvalidOperation
 from typing import Any
 
 from django.core.exceptions import ValidationError
@@ -16,6 +16,28 @@ from apps.inventory.models import (
     StockMovement,
 )
 from apps.purchasing.models import PurchaseOrder
+
+
+def allocate_largest_remainder(total: int, weights: list[Decimal]) -> list[int]:
+    if not weights:
+        return []
+
+    weight_sum = sum(weights)
+    if weight_sum <= 0:
+        return [0] * len(weights)
+
+    exact_shares = [Decimal(total) * weight / weight_sum for weight in weights]
+    base_shares = [int(share.to_integral_value(rounding=ROUND_FLOOR)) for share in exact_shares]
+    remainders = [share - base for share, base in zip(exact_shares, base_shares)]
+
+    residue = total - sum(base_shares)
+    distribution_order = sorted(range(len(weights)), key=lambda i: (-remainders[i], i))
+
+    shares = list(base_shares)
+    for i in distribution_order[:residue]:
+        shares[i] += 1
+
+    return shares
 
 
 class InventoryService:
@@ -708,23 +730,32 @@ class InventoryService:
         commission_fee_total = Decimal(str(getattr(po, "commission_fee", 0) or 0))
         total_delivery_fee_idr = delivery_fee * exchange_rate
 
-        # Step 3: allocate each fee per item
-        for item_id, item_data in item_volumes.items():
-            # Shipping: CBM-proportional
-            if total_volume > 0:
-                cbm_ratio = item_data["total_cbm"] / total_volume
-                item_data["shipping_share"] = int(round(shipping_fee * cbm_ratio))
-            else:
-                item_data["shipping_share"] = 0
+        # Step 3: allocate each fee per item, using largest-remainder so shares sum exactly
+        item_ids = list(item_volumes.keys())
 
-            # Delivery fee and commission: value-proportional
-            if total_item_amount_idr > 0:
-                value_ratio = item_data["item_value_idr"] / total_item_amount_idr
-                item_data["delivery_share"] = int(round(total_delivery_fee_idr * value_ratio))
-                item_data["commission_share"] = int(round(commission_fee_total * value_ratio))
-            else:
-                item_data["delivery_share"] = 0
-                item_data["commission_share"] = 0
+        if total_volume > 0:
+            shipping_shares = allocate_largest_remainder(
+                int(shipping_fee), [item_volumes[item_id]["total_cbm"] for item_id in item_ids]
+            )
+        else:
+            shipping_shares = [0] * len(item_ids)
+
+        if total_item_amount_idr > 0:
+            item_values = [item_volumes[item_id]["item_value_idr"] for item_id in item_ids]
+            delivery_shares = allocate_largest_remainder(
+                int(round(total_delivery_fee_idr)), item_values
+            )
+            commission_shares = allocate_largest_remainder(int(commission_fee_total), item_values)
+        else:
+            delivery_shares = [0] * len(item_ids)
+            commission_shares = [0] * len(item_ids)
+
+        for item_id, shipping_share, delivery_share, commission_share in zip(
+            item_ids, shipping_shares, delivery_shares, commission_shares
+        ):
+            item_volumes[item_id]["shipping_share"] = shipping_share
+            item_volumes[item_id]["delivery_share"] = delivery_share
+            item_volumes[item_id]["commission_share"] = commission_share
 
         create_cogs_records: list[ProductCogs] = []
         update_cogs_records: list[ProductCogs] = []
