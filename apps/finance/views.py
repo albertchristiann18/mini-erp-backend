@@ -20,13 +20,19 @@ from apps.finance.models import (
 from apps.finance.serializers import (
     AccountsPayableSerializer,
     AccountsReceivableSerializer,
+    BalanceSheetSerializer,
+    CashFlowSerializer,
     CashTransactionSerializer,
+    CogsReportSerializer,
+    DashboardKPISerializer,
     ExpenseCategorySerializer,
     ExpenseListSerializer,
     ExpenseSerializer,
     ExpenseSummarySerializer,
+    IncomeStatementSerializer,
     RecordPaymentSerializer,
     SettleReceivableSerializer,
+    StockMovementReportSerializer,
 )
 from apps.finance.services.accounts_payable_service import AccountsPayableService
 from apps.finance.services.expense_service import ExpenseService
@@ -114,7 +120,7 @@ class ReportViewSet(viewsets.ViewSet):
         data = ReportService().income_statement(
             company_id, date.fromisoformat(start_date), date.fromisoformat(end_date)
         )
-        return Response(data)
+        return Response(IncomeStatementSerializer(data).data)
 
     @action(detail=False, methods=["get"], url_path="balance-sheet")
     def balance_sheet(self, request: Request) -> Response:
@@ -127,7 +133,7 @@ class ReportViewSet(viewsets.ViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         data = ReportService().balance_sheet(company_id, date.fromisoformat(as_of_date))
-        return Response(data)
+        return Response(BalanceSheetSerializer(data).data)
 
     @action(detail=False, methods=["get"], url_path="cash-flow")
     def cash_flow(self, request: Request) -> Response:
@@ -143,14 +149,14 @@ class ReportViewSet(viewsets.ViewSet):
         data = ReportService().cash_flow_statement(
             company_id, date.fromisoformat(start_date), date.fromisoformat(end_date)
         )
-        return Response(data)
+        return Response(CashFlowSerializer(data).data)
 
     @action(detail=False, methods=["get"])
     def dashboard(self, request: Request) -> Response:
         """GET /reports/dashboard/"""
         company_id = str(request.user.profile.company.id)
         data = ReportService().dashboard_kpis(company_id)
-        return Response(data)
+        return Response(DashboardKPISerializer(data).data)
 
     @action(detail=False, methods=["get"], url_path="stock-movement")
     def stock_movement(self, request: Request) -> Response:
@@ -170,7 +176,7 @@ class ReportViewSet(viewsets.ViewSet):
             warehouse_id=request.query_params.get("warehouse_id"),
             product_variant_id=request.query_params.get("variant_id"),
         )
-        return Response(data)
+        return Response(StockMovementReportSerializer(data, many=True).data)
 
     @action(detail=False, methods=["get"])
     def cogs(self, request: Request) -> Response:
@@ -189,7 +195,7 @@ class ReportViewSet(viewsets.ViewSet):
             end_date=date.fromisoformat(end_date),
             sales_order_id=request.query_params.get("sales_order_id"),
         )
-        return Response(data)
+        return Response(CogsReportSerializer(data, many=True).data)
 
 
 class ExpenseCategoryViewSet(viewsets.ModelViewSet):
