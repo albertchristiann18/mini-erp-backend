@@ -23,6 +23,20 @@ def round_decimal(value: Any, places: int = 3) -> Decimal:
     return Decimal(str(value)).quantize(Decimal(f"1.{'0' * places}"), rounding=ROUND_HALF_UP)
 
 
+def round_money_to_int(value: Any) -> int:
+    """Round a full-precision money value to the nearest whole rupiah.
+
+    This is the single rounding point for read-only report output. Reports return
+    whole-rupiah integers, but every calculation upstream of this call (aggregation,
+    totals) must stay at full precision — round the final result here, never a
+    value that will be summed or divided again afterwards. Rounding a total is not
+    the same as summing pre-rounded lines.
+    """
+    if value is None:
+        return 0
+    return int(Decimal(str(value)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
 def get_default_shipping_config() -> dict:
     return {
         "insurance": {"is_required": False, "fee_type": "percentage"},

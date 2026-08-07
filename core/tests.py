@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from rest_framework import serializers
 
 from apps.catalog.tests.factories import ProductFactory, ProductVariantFactory
 from apps.inventory.tests.factories import ProductCogsFactory, WarehouseFactory
@@ -15,6 +16,7 @@ from apps.purchasing.tests.factories import (
     SupplierFactory,
 )
 from core.factories import CompanyFactory, UserProfileFactory
+from core.serializers import RoundedMoneyField
 from core.services.migrate_service import (
     _parse_po_tracker,
     step_enrich_po_tracker,
@@ -23,6 +25,7 @@ from core.services.migrate_service import (
     step_split_deliveries,
 )
 from core.services.user_service import create_user as run
+from core.utils import round_money_to_int
 
 User = get_user_model()
 
@@ -518,3 +521,73 @@ class MigrateServiceTest(TestCase):
         out = io.StringIO()
         step_reconciliation(out)
         self.assertIn("All checks passed", out.getvalue())
+
+
+class RoundMoneyToIntTest(TestCase):
+    """Pins the report-side half of the money serialization contract: report
+    output rounds full-precision money to whole-rupiah integers at the
+    serialization boundary. If this rounding is ever removed or reversed
+    (e.g. money starts round-tripping unrounded through a report), these tests
+    fail.
+    """
+
+    def test_rounds_decimal_fraction_half_up(self) -> None:
+        self.assertEqual(round_money_to_int(Decimal("100.50")), 101)
+        self.assertEqual(round_money_to_int(Decimal("100.49")), 100)
+        self.assertEqual(round_money_to_int(Decimal("100.51")), 101)
+
+    def test_returns_int_type_not_decimal_or_float(self) -> None:
+        result = round_money_to_int(Decimal("42.10"))
+        self.assertIsInstance(result, int)
+        self.assertNotIsInstance(result, Decimal)
+
+    def test_none_rounds_to_zero(self) -> None:
+        self.assertEqual(round_money_to_int(None), 0)
+
+    def test_plain_integer_passes_through_unchanged(self) -> None:
+        self.assertEqual(round_money_to_int(302), 302)
+
+    def test_totals_rule_rounds_the_exact_total_not_the_sum_of_rounded_lines(self) -> None:
+        """Three lines of 100.50 sum to an exact total of 301.50, which rounds to
+        302. Rounding each line first (101 + 101 + 101 = 303) is the wrong answer
+        this mechanism must never produce.
+        """
+        lines = [Decimal("100.50"), Decimal("100.50"), Decimal("100.50")]
+        exact_total = sum(lines, Decimal("0"))
+
+        rounded_exact_total = round_money_to_int(exact_total)
+        sum_of_rounded_lines = sum(round_money_to_int(line) for line in lines)
+
+        self.assertEqual(rounded_exact_total, 302)
+        self.assertEqual(sum_of_rounded_lines, 303)
+        self.assertNotEqual(rounded_exact_total, sum_of_rounded_lines)
+
+
+class RoundedMoneyFieldSerializerTest(TestCase):
+    """Proves the shared mechanism works through an actual DRF serializer, not
+    just as a bare function — this is what every report serializer wires in.
+    """
+
+    class _MoneyLineSerializer(serializers.Serializer):
+        label = serializers.CharField()
+        amount = RoundedMoneyField()
+
+    def test_rounds_fractional_decimal_input_to_whole_rupiah_int(self) -> None:
+        serializer = self._MoneyLineSerializer({"label": "line-1", "amount": Decimal("100.50")})
+        self.assertEqual(serializer.data["amount"], 101)
+        self.assertIsInstance(serializer.data["amount"], int)
+
+    def test_totals_rule_through_the_serializer(self) -> None:
+        exact_total = Decimal("100.50") + Decimal("100.50") + Decimal("100.50")
+        serializer = self._MoneyLineSerializer({"label": "total", "amount": exact_total})
+        self.assertEqual(serializer.data["amount"], 302)
+
+    def test_none_serializes_to_none_not_zero(self) -> None:
+        """DRF's Serializer.to_representation short-circuits None before calling
+        the field, matching a missing/optional money value's usual JSON shape."""
+
+        class _OptionalMoneySerializer(serializers.Serializer):
+            amount = RoundedMoneyField(allow_null=True)
+
+        serializer = _OptionalMoneySerializer({"amount": None})
+        self.assertIsNone(serializer.data["amount"])

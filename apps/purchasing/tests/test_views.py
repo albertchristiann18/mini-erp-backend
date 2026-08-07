@@ -2123,6 +2123,53 @@ class ProductSupplierTest(APITestCase):
         self.assertEqual(resp.status_code, 204)
 
 
+class MoneySerializationCrudContractTest(TestCase):
+    """Pins the CRUD side of the money serialization contract: a partial update
+    (PATCH) must leave an untouched money field exactly unchanged — never
+    re-rounded — and it must round-trip through the API as an exact decimal
+    string, not a JSON number. If either half is later reversed (rounding
+    creeps into a CRUD field, or a field starts overriding the default
+    coerce-to-string behavior), this test fails.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.company = CompanyFactory()
+        self.warehouse = WarehouseFactory(company=self.company)
+        self.user = User.objects.create_user(
+            username="money_crud_patch_user", password="password", is_staff=True
+        )
+        UserProfile.objects.create(user=self.user, company=self.company, role="admin")
+        self.client.force_authenticate(user=self.user)
+
+    def test_patch_of_unrelated_field_leaves_decimal_money_field_exact_and_string(self):
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            delivery_fee=Decimal("123.456"),
+            commission_fee_rmb=Decimal("77.250"),
+        )
+
+        response = self.client.patch(
+            f"/purchase-order/{po.id}/", {"note": "updated note"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        detail = self.client.get(f"/purchase-order/{po.id}/", format="json")
+        self.assertEqual(detail.status_code, status.HTTP_200_OK)
+
+        # Exact — not re-rounded — and serialized as a string, not a JSON number.
+        self.assertEqual(detail.data["delivery_fee"], "123.456")
+        self.assertIsInstance(detail.data["delivery_fee"], str)
+        self.assertEqual(detail.data["commission_fee_rmb"], "77.250")
+        self.assertIsInstance(detail.data["commission_fee_rmb"], str)
+
+        po.refresh_from_db()
+        self.assertEqual(po.delivery_fee, Decimal("123.456"))
+        self.assertEqual(po.commission_fee_rmb, Decimal("77.250"))
+        self.assertEqual(po.note, "updated note")
+
+
 # ---------------------------------------------------------------------------
 # BE3 — migration-graph ordering regression tests
 # ---------------------------------------------------------------------------

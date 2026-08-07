@@ -9,6 +9,7 @@ from apps.finance.models import (
     PaymentRecord,
 )
 from core.models import Company
+from core.serializers import RoundedMoneyField
 
 
 class PaymentRecordSerializer(serializers.ModelSerializer):
@@ -109,44 +110,86 @@ class SettleReceivableSerializer(serializers.Serializer):
     marketplace_settlement_id = serializers.CharField(required=False, default="")
 
 
+class ExpenseBreakdownItemSerializer(serializers.Serializer):
+    category_name = serializers.CharField()
+    total_amount = RoundedMoneyField()
+
+
 class IncomeStatementSerializer(serializers.Serializer):
     period = serializers.DictField()
-    gross_revenue = serializers.IntegerField()
-    total_discount = serializers.IntegerField()
-    net_revenue = serializers.IntegerField()
-    marketplace_fees = serializers.IntegerField()
-    shipping_cost_seller = serializers.IntegerField()
-    cogs = serializers.IntegerField()
-    gross_profit = serializers.IntegerField()
-    operating_expenses = serializers.IntegerField()
-    operating_expenses_breakdown = serializers.ListField()
-    net_profit = serializers.IntegerField()
+    gross_revenue = RoundedMoneyField()
+    total_discount = RoundedMoneyField()
+    net_revenue = RoundedMoneyField()
+    marketplace_fees = RoundedMoneyField()
+    shipping_cost_seller = RoundedMoneyField()
+    cogs = RoundedMoneyField()
+    gross_profit = RoundedMoneyField()
+    operating_expenses = RoundedMoneyField()
+    operating_expenses_breakdown = ExpenseBreakdownItemSerializer(many=True)
+    net_profit = RoundedMoneyField()
     net_profit_margin_pct = serializers.FloatField()
+
+
+class BalanceSheetAssetsSerializer(serializers.Serializer):
+    inventory_value = RoundedMoneyField()
+    accounts_receivable = RoundedMoneyField()
+    total_assets = RoundedMoneyField()
+
+
+class BalanceSheetLiabilitiesSerializer(serializers.Serializer):
+    accounts_payable = RoundedMoneyField()
+    total_liabilities = RoundedMoneyField()
+
+
+class BalanceSheetEquitySerializer(serializers.Serializer):
+    retained_earnings = RoundedMoneyField()
 
 
 class BalanceSheetSerializer(serializers.Serializer):
     as_of = serializers.CharField()
-    assets = serializers.DictField()
-    liabilities = serializers.DictField()
-    equity = serializers.DictField()
+    assets = BalanceSheetAssetsSerializer()
+    liabilities = BalanceSheetLiabilitiesSerializer()
+    equity = BalanceSheetEquitySerializer()
+
+
+class CashFlowOperatingSerializer(serializers.Serializer):
+    cash_in_sales = RoundedMoneyField()
+    cash_out_purchases = RoundedMoneyField()
+    cash_out_expenses = RoundedMoneyField()
+    net_operating = RoundedMoneyField()
 
 
 class CashFlowSerializer(serializers.Serializer):
     period = serializers.DictField()
-    operating = serializers.DictField()
-    net_cash_flow = serializers.IntegerField()
+    operating = CashFlowOperatingSerializer()
+    net_cash_flow = RoundedMoneyField()
+
+
+class LowStockVariantSerializer(serializers.Serializer):
+    variant_id = serializers.CharField()
+    sku = serializers.CharField()
+    name = serializers.CharField()
+    available_qty = serializers.IntegerField()
+
+
+class TopSkuSerializer(serializers.Serializer):
+    variant_id = serializers.CharField()
+    sku = serializers.CharField()
+    name = serializers.CharField()
+    qty_sold = serializers.IntegerField()
+    revenue = RoundedMoneyField()
 
 
 class DashboardKPISerializer(serializers.Serializer):
     today_orders = serializers.IntegerField()
-    today_revenue = serializers.IntegerField()
+    today_revenue = RoundedMoneyField()
     mtd_orders = serializers.IntegerField()
-    mtd_revenue = serializers.IntegerField()
-    mtd_profit = serializers.IntegerField()
+    mtd_revenue = RoundedMoneyField()
+    mtd_profit = RoundedMoneyField()
     pending_orders = serializers.IntegerField()
-    outstanding_ap = serializers.IntegerField()
-    low_stock_variants = serializers.ListField()
-    top_skus_mtd = serializers.ListField()
+    outstanding_ap = RoundedMoneyField()
+    low_stock_variants = LowStockVariantSerializer(many=True)
+    top_skus_mtd = TopSkuSerializer(many=True)
 
 
 class StockMovementReportSerializer(serializers.Serializer):
@@ -159,7 +202,14 @@ class StockMovementReportSerializer(serializers.Serializer):
     adjustments = serializers.IntegerField()
     returns = serializers.IntegerField()
     ending_qty = serializers.IntegerField()
-    ending_value = serializers.IntegerField()
+    ending_value = RoundedMoneyField()
+
+
+class CogsFifoLayerSerializer(serializers.Serializer):
+    reference = serializers.CharField()
+    qty_consumed = serializers.IntegerField()
+    cogs_per_unit = RoundedMoneyField()
+    total = RoundedMoneyField()
 
 
 class CogsReportSerializer(serializers.Serializer):
@@ -168,10 +218,10 @@ class CogsReportSerializer(serializers.Serializer):
     variant_sku = serializers.CharField()
     variant_name = serializers.CharField()
     quantity = serializers.IntegerField()
-    selling_price = serializers.IntegerField()
-    actual_cogs_per_unit = serializers.IntegerField()
-    actual_cogs_total = serializers.IntegerField()
-    fifo_layers = serializers.ListField()
+    selling_price = RoundedMoneyField()
+    actual_cogs_per_unit = RoundedMoneyField()
+    actual_cogs_total = RoundedMoneyField()
+    fifo_layers = CogsFifoLayerSerializer(many=True)
 
 
 class ExpenseCategorySerializer(serializers.ModelSerializer):
