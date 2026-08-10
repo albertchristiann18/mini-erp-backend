@@ -3,6 +3,7 @@ from django.db import transaction
 
 from apps.inventory.models import ProductCogs
 from apps.sales.models import SalesOrderCogsDetail, SalesOrderItem
+from core.utils import round_money_to_int
 
 
 class CogsConsumptionService:
@@ -56,11 +57,11 @@ class CogsConsumptionService:
                 sales_order_item=sales_order_item,
                 product_cogs=layer,
                 quantity_consumed=consume_qty,
-                cogs_per_unit=layer.cogs_amount,
-                total_cogs=layer.cogs_amount * consume_qty,
+                cogs_per_unit=round_money_to_int(layer.cogs_amount),
+                total_cogs=round_money_to_int(layer.cogs_amount * consume_qty),
             )
             details.append(cogs_detail)
-            total_cogs_value += layer.cogs_amount * consume_qty
+            total_cogs_value += round_money_to_int(layer.cogs_amount * consume_qty)
             remaining_to_consume -= consume_qty
 
         SalesOrderCogsDetail.objects.bulk_create(details, batch_size=100)

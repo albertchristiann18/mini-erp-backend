@@ -74,15 +74,28 @@ class ProductCogs(DefaultModel):
         max_digits=15, decimal_places=4, help_text="Unit price in RMB (unit_price_foreign)"
     )
     exchange_rate = models.BigIntegerField(help_text="Exchange rate from PO (rounded integer)")
-    cogs_amount = models.BigIntegerField(help_text="Unit price in IDR = price_rmb * exchange_rate")
-    allocated_shipping_fee = models.BigIntegerField(
-        default=0, help_text="Shipping fee allocated per unit (IDR)"
+    cogs_amount = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        help_text="Unit price in IDR = price_rmb * exchange_rate",
     )
-    allocated_delivery_fee = models.BigIntegerField(
-        default=0, help_text="Delivery fee allocated per unit (IDR)"
+    allocated_shipping_fee = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        default=0,
+        help_text="Shipping fee allocated per unit (IDR)",
     )
-    allocated_commission_fee = models.BigIntegerField(
-        default=0, help_text="Commission fee allocated per item total (IDR)"
+    allocated_delivery_fee = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        default=0,
+        help_text="Delivery fee allocated per unit (IDR)",
+    )
+    allocated_commission_fee = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        default=0,
+        help_text="Commission fee allocated per item total (IDR)",
     )
 
     original_qty = models.IntegerField(
