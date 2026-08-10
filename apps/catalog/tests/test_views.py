@@ -522,7 +522,9 @@ class ProductDetailAPITest(APITestCase):
         self.assertIn("current_cogs", variant_data)
         self.assertIn("total_available_qty", variant_data)
         self.assertIn("total_incoming_qty", variant_data)
-        self.assertEqual(variant_data["current_cogs"], 50000)
+        # current_cogs is now a DecimalField — per the money serialization contract
+        # (MONEY-2), CRUD endpoints return exact decimal strings, not ints.
+        self.assertEqual(Decimal(variant_data["current_cogs"]), Decimal("50000"))
         self.assertEqual(variant_data["total_available_qty"], 120)
         self.assertEqual(variant_data["total_incoming_qty"], 30)
 

@@ -127,9 +127,9 @@ class ProductVariant(DefaultModel):
 
     variant_values = models.JSONField(default=dict)
 
-    current_cogs = models.BigIntegerField(default=0)
+    current_cogs = models.DecimalField(max_digits=18, decimal_places=2, default=0)
 
-    base_price = models.BigIntegerField(default=0)
+    base_price = models.DecimalField(max_digits=18, decimal_places=2, default=0)
 
     total_incoming_qty = models.IntegerField(default=0)
     total_outgoing_qty = models.IntegerField(default=0)
@@ -190,8 +190,8 @@ class ProductVariantMarketplace(DefaultModel):
         Marketplace, on_delete=models.CASCADE, related_name="product_listings"
     )
 
-    selling_price = models.BigIntegerField()
-    discounted_price = models.BigIntegerField(null=True, blank=True)
+    selling_price = models.DecimalField(max_digits=18, decimal_places=2)
+    discounted_price = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
 
     shopee_item_id = models.BigIntegerField(null=True, blank=True)
     shopee_model_id = models.BigIntegerField(null=True, blank=True)

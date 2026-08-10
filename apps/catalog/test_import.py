@@ -542,7 +542,7 @@ class TestCatalogImportServiceEdgeCases(TestCase):
         self.assertEqual(result.warehouse_stock_created, 3)
 
     def test_import_decimal_precision_preserved_in_cogs(self):
-        """Decimal cogs value is faithfully converted to integer for current_cogs."""
+        """Decimal cogs value is faithfully persisted as Decimal on current_cogs."""
         master_rows = [MasterSkuRow("DRS-001", "DRS", "Dress Product", "Sup")]
         variant_rows = [
             VariantRow(
@@ -564,9 +564,9 @@ class TestCatalogImportServiceEdgeCases(TestCase):
             variant_rows=variant_rows,
         )
         variant = ProductVariant.objects.get(sku_variant_code="DRS-001-S-RED")
-        self.assertIsInstance(variant.current_cogs, int)
+        self.assertIsInstance(variant.current_cogs, Decimal)
         self.assertEqual(variant.current_cogs, 75000)
-        self.assertIsInstance(variant.base_price, int)
+        self.assertIsInstance(variant.base_price, Decimal)
         self.assertEqual(variant.base_price, 150000)
 
     def test_import_uses_existing_warehouse_if_present(self):

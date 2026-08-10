@@ -6,6 +6,7 @@ from django.utils import timezone
 from apps.marketplace.shopee.client import ShopeeClient
 from apps.marketplace.shopee.exceptions import ShopeeAPIError
 from apps.marketplace.shopee.models import ShopeeShop, ShopeeSyncLog
+from core.utils import round_money_to_int
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,7 @@ class ShopeeProductPushService:
                 payload = {
                     **base_payload,
                     "has_model": False,
-                    "original_price": listing.selling_price,
+                    "original_price": round_money_to_int(listing.selling_price),
                     "normal_stock": max(variant.total_available_qty, 0),
                 }
                 resp = client.add_item(payload)
@@ -171,7 +172,7 @@ class ShopeeProductPushService:
                         {
                             "tier_index": tier_index,
                             "model_sku": listing.product_variant.sku_variant_code,
-                            "original_price": listing.selling_price,
+                            "original_price": round_money_to_int(listing.selling_price),
                             "normal_stock": max(listing.product_variant.total_available_qty, 0),
                         }
                     )
@@ -278,7 +279,7 @@ class ShopeeProductPushService:
         price_list = [
             {
                 "model_id": listing.shopee_model_id,
-                "original_price": listing.selling_price,
+                "original_price": round_money_to_int(listing.selling_price),
             }
         ]
         try:

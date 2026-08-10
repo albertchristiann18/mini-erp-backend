@@ -1,3 +1,4 @@
+from decimal import Decimal
 from typing import cast
 
 from django.db.models import Prefetch, QuerySet
@@ -20,6 +21,7 @@ from apps.inventory.serializers import (
 )
 from apps.inventory.services.inventory_service import InventoryService
 from core.permissions import IsStaffOrReadOnly
+from core.utils import round_money_to_int
 
 
 class InventoryBulkViewSet(viewsets.ViewSet):
@@ -200,8 +202,8 @@ class InventorySummaryView(APIView):
             )
         )
 
-        total_cogs_stock = 0
-        total_selling_price = 0
+        total_cogs_stock: Decimal = Decimal("0")
+        total_selling_price: Decimal = Decimal("0")
         total_variants = 0
 
         product_list = []
@@ -223,8 +225,8 @@ class InventorySummaryView(APIView):
                         "variant_values": v.variant_values,
                         "total_qty": total_qty,
                         "warehouse_stocks": warehouse_stocks,
-                        "current_cogs": v.current_cogs,
-                        "base_price": v.base_price,
+                        "current_cogs": round_money_to_int(v.current_cogs),
+                        "base_price": round_money_to_int(v.base_price),
                     }
                 )
 
@@ -250,8 +252,8 @@ class InventorySummaryView(APIView):
                 "warehouses": [{"id": str(w.id), "name": w.name} for w in warehouses],
                 "products": product_list,
                 "summary": {
-                    "total_cogs_stock": total_cogs_stock,
-                    "total_selling_price": total_selling_price,
+                    "total_cogs_stock": round_money_to_int(total_cogs_stock),
+                    "total_selling_price": round_money_to_int(total_selling_price),
                     "total_products": len(product_list),
                     "total_variants": total_variants,
                 },

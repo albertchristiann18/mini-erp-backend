@@ -27,6 +27,8 @@ from apps.catalog.serializers import (
     ProductPhotoSerializer,
     ProductSerializer,
     ProductVariantStockSerializer,
+    UpdatePriceItemSerializer,
+    UpdateVariantPriceSerializer,
 )
 from apps.catalog.services import product_service
 from core.permissions import IsStaffOrReadOnly
@@ -124,18 +126,18 @@ class ProductViewSet(viewsets.ModelViewSet):
         errors: list[str] = []
 
         for item in price_updates:
-            variant_id = item.get("variant_id")
-            marketplace_id = item.get("marketplace_id")
-            selling_price = item.get("selling_price")
-            discounted_price = item.get("discounted_price")
-
-            if not variant_id or not marketplace_id or selling_price is None:
-                errors.append(f"Missing required fields in: {item}")
+            item_serializer = UpdatePriceItemSerializer(data=item)
+            if not item_serializer.is_valid():
+                errors.append(f"Missing or invalid fields in: {item}")
                 continue
 
-            update_fields: dict = {"selling_price": selling_price}
-            if discounted_price is not None:
-                update_fields["discounted_price"] = discounted_price
+            validated = item_serializer.validated_data
+            variant_id = validated["variant_id"]
+            marketplace_id = validated["marketplace_id"]
+
+            update_fields: dict = {"selling_price": validated["selling_price"]}
+            if "discounted_price" in validated and validated["discounted_price"] is not None:
+                update_fields["discounted_price"] = validated["discounted_price"]
 
             qs = ProductVariantMarketplace.objects.filter(
                 product_variant_id=variant_id,
@@ -180,12 +182,13 @@ class ProductViewSet(viewsets.ModelViewSet):
         except ProductVariant.DoesNotExist:
             return Response({"error": "Variant not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        base_price = request.data.get("base_price")
-        if base_price is None or not isinstance(base_price, int) or base_price < 0:
+        price_serializer = UpdateVariantPriceSerializer(data=request.data)
+        if not price_serializer.is_valid():
             return Response(
-                {"error": "base_price is required and must be a non-negative integer"},
+                {"error": "base_price is required and must be a non-negative number"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        base_price = price_serializer.validated_data["base_price"]
 
         from apps.catalog.services.product_service import ProductService
 
