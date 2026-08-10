@@ -325,6 +325,56 @@ class PurchaseOrderServiceTest(TestCase):
 
         self.assertIn("Remarks is required", str(context.exception))
 
+    def test_incremental_received_qty_update_while_delivered_increases_physical_stock(self):
+        """Test that raising received_qty on an already-DELIVERED PO (no status change)
+        adds only the delta above the prior received_qty to physical stock."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DELIVERED,
+            delivery_date=date.today() - timedelta(days=1),
+            exchange_rate=Decimal("2200"),
+        )
+        detail = PurchaseOrderDetailFactory(
+            purchase_order=po,
+            product_variant=self.product_variant,
+            ordered_qty=100,
+            received_qty=50,
+            updated_qty=50,
+            unit_price_foreign=Decimal("10"),
+            unit_price_base=Decimal("22000"),
+        )
+        ProductVariantWarehouseFactory(
+            product_variant=self.product_variant,
+            warehouse=self.warehouse,
+            incoming_qty=50,
+            physical_qty=50,
+        )
+
+        po.refresh_from_db()
+
+        self.service.update_purchase_order(
+            po,
+            {
+                "order_details": [
+                    {
+                        "id": str(detail.id),
+                        "product_variant_id": str(self.product_variant.id),
+                        "ordered_qty": 100,
+                        "received_qty": 70,
+                        "unit_price_base": Decimal("22000"),
+                        "unit_price_foreign": Decimal("10"),
+                        "received_date": str(date.today()),
+                    }
+                ]
+            },
+        )
+
+        pvw = ProductVariantWarehouse.objects.get(
+            product_variant=self.product_variant, warehouse=self.warehouse
+        )
+        self.assertEqual(pvw.physical_qty, 70)
+
     def test_update_po_detail_not_found_in_non_draft_status(self):
         """Test that updating non-existent detail fails in non-DRAFT status."""
         po = PurchaseOrderFactory(

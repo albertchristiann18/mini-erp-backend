@@ -380,6 +380,74 @@ class PurchaseOrderService:
 
         return warnings
 
+    def _build_delivery_inventory_data(
+        self,
+        items: list[dict],
+        existing_details_map: dict,
+        po: PurchaseOrder,
+        *,
+        baseline_received_qtys: dict[str, int] | None = None,
+    ) -> list[dict]:
+        """Build inventory_data entries for a DELIVERED receipt from raw order-detail items.
+
+        baseline_received_qtys is None for the PO's first transition into DELIVERED
+        (uses received_qty/updated_qty as submitted, gated by delivery_date). When
+        provided, this is an incremental update to an already-DELIVERED PO: only the
+        delta above each detail's baseline received_qty is counted.
+        """
+        inventory_data: list[dict] = []
+        for item in items:
+            detail_id = item.get("id")
+            receive_date_str = item.get("received_date")
+            received_qty = item.get("received_qty", 0)
+            ordered_qty = item.get("ordered_qty", 0)
+            product_variant_id = item.get("product_variant_id")
+            if not product_variant_id:
+                continue
+            if not receive_date_str:
+                continue
+
+            qty_is_zero = received_qty == 0
+            if qty_is_zero:
+                continue
+
+            if baseline_received_qtys is None:
+                updated_qty = item.get("updated_qty", 0) or 0
+                receive_date = datetime.fromisoformat(receive_date_str.replace("Z", "+00:00"))
+                if receive_date and po.delivery_date and receive_date.date() < po.delivery_date:
+                    continue
+            else:
+                original_received_qty = baseline_received_qtys.get(str(detail_id or ""), 0)
+                new_received_qty = item.get("received_qty", 0)
+                if new_received_qty > original_received_qty:
+                    received_qty = new_received_qty - original_received_qty
+                    updated_qty = 0
+                else:
+                    continue
+
+            existing_detail_obj = existing_details_map.get(detail_id) if detail_id else None
+            discounted_total_price_base = Decimal("0")
+            if existing_detail_obj:
+                discounted_total_price_base = (
+                    existing_detail_obj.discounted_total_price_base or Decimal("0")
+                )
+
+            inventory_data.append(
+                {
+                    "product_variant_id": product_variant_id,
+                    "ordered_qty": ordered_qty,
+                    "received_qty": received_qty,
+                    "updated_qty": updated_qty,
+                    "unit_price_base": item.get("unit_price_base"),
+                    "unit_price_foreign": item.get("unit_price_foreign"),
+                    "discounted_unit_price_foreign": item.get("discounted_unit_price_foreign"),
+                    "discounted_total_price_base": discounted_total_price_base,
+                    "exchange_rate": po.exchange_rate,
+                    "note": f"Stock movement for PO {po.purchase_order_number} inbound",
+                }
+            )
+        return inventory_data
+
     @transaction.atomic
     def update_purchase_order(
         self, po: PurchaseOrder, data: dict, changed_by: "User | None" = None
@@ -562,48 +630,9 @@ class PurchaseOrderService:
             self._snapshot_sales_metrics_at_ordered(po)
 
         elif new_status == PurchaseOrder.POStatus.DELIVERED:
-            for item in order_details:
-                detail_id = item.get("id")
-                receive_date_str = item.get("received_date")
-                received_qty = item.get("received_qty", 0)
-                ordered_qty = item.get("ordered_qty", 0)
-                updated_qty = item.get("updated_qty", 0) or 0
-                product_variant_id = item.get("product_variant_id")
-                if not product_variant_id:
-                    continue
-                if not receive_date_str:
-                    continue
-
-                qty_is_zero = received_qty == 0
-
-                receive_date = datetime.fromisoformat(receive_date_str.replace("Z", "+00:00"))
-                if receive_date and po.delivery_date and receive_date.date() < po.delivery_date:
-                    continue
-
-                if qty_is_zero:
-                    continue
-
-                existing_detail_obj = existing_details_map.get(detail_id) if detail_id else None
-                discounted_total_price_base = Decimal("0")
-                if existing_detail_obj:
-                    discounted_total_price_base = (
-                        existing_detail_obj.discounted_total_price_base or Decimal("0")
-                    )
-
-                inventory_data.append(
-                    {
-                        "product_variant_id": product_variant_id,
-                        "ordered_qty": ordered_qty,
-                        "received_qty": received_qty,
-                        "updated_qty": updated_qty,
-                        "unit_price_base": item.get("unit_price_base"),
-                        "unit_price_foreign": item.get("unit_price_foreign"),
-                        "discounted_unit_price_foreign": item.get("discounted_unit_price_foreign"),
-                        "discounted_total_price_base": discounted_total_price_base,
-                        "exchange_rate": po.exchange_rate,
-                        "note": f"Stock movement for PO {po.purchase_order_number} inbound",
-                    }
-                )
+            inventory_data = self._build_delivery_inventory_data(
+                order_details, existing_details_map, po
+            )
 
         elif new_status == PurchaseOrder.POStatus.COMPLETED:
             for detail in po.order_details.all():
@@ -693,52 +722,12 @@ class PurchaseOrderService:
         ):
             existing_details_map = {str(d.id): d for d in po.order_details.all()}
 
-            inventory_data = []
-            for item in incremental_order_details:
-                receive_date_str = item.get("received_date")
-                received_qty = item.get("received_qty", 0)
-                ordered_qty = item.get("ordered_qty", 0)
-                product_variant_id = item.get("product_variant_id")
-                if not product_variant_id:
-                    continue
-                if not receive_date_str:
-                    continue
-
-                qty_is_zero = received_qty == 0
-                if qty_is_zero:
-                    continue
-
-                detail_id = item.get("id")
-                original_received_qty = original_received_qtys.get(detail_id, 0)
-                new_received_qty = item.get("received_qty", 0)
-                if new_received_qty > original_received_qty:
-                    received_qty = new_received_qty - original_received_qty
-                    updated_qty = 0
-                else:
-                    continue
-
-                detail_id = item.get("id")
-                existing_detail_obj = existing_details_map.get(detail_id) if detail_id else None
-                discounted_total_price_base = Decimal("0")
-                if existing_detail_obj:
-                    discounted_total_price_base = (
-                        existing_detail_obj.discounted_total_price_base or Decimal("0")
-                    )
-
-                inventory_data.append(
-                    {
-                        "product_variant_id": product_variant_id,
-                        "ordered_qty": ordered_qty,
-                        "received_qty": received_qty,
-                        "updated_qty": updated_qty,
-                        "unit_price_base": item.get("unit_price_base"),
-                        "unit_price_foreign": item.get("unit_price_foreign"),
-                        "discounted_unit_price_foreign": item.get("discounted_unit_price_foreign"),
-                        "discounted_total_price_base": discounted_total_price_base,
-                        "exchange_rate": po.exchange_rate,
-                        "note": f"Stock movement for PO {po.purchase_order_number} inbound",
-                    }
-                )
+            inventory_data = self._build_delivery_inventory_data(
+                incremental_order_details,
+                existing_details_map,
+                po,
+                baseline_received_qtys=original_received_qtys,
+            )
 
             if inventory_data:
                 inventory_service = InventoryService()
@@ -754,9 +743,9 @@ class PurchaseOrderService:
                 )
 
                 variant_ids_to_sync = [str(item["product_variant_id"]) for item in inventory_data]
-                _ids2 = variant_ids_to_sync
-                _company_id2 = str(po.company.id)
-                transaction.on_commit(lambda: self._trigger_shopee_sync_batch(_ids2, _company_id2))
+                _ids = variant_ids_to_sync
+                _company_id = str(po.company.id)
+                transaction.on_commit(lambda: self._trigger_shopee_sync_batch(_ids, _company_id))
 
         return po
 
