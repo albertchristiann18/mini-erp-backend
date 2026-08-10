@@ -1,3 +1,4 @@
+from decimal import Decimal
 from typing import Any
 from urllib.parse import quote
 
@@ -137,13 +138,28 @@ class ProductSerializer(serializers.ModelSerializer):
         ]
 
 
+class UpdateVariantPriceSerializer(serializers.Serializer):
+    base_price = serializers.DecimalField(max_digits=18, decimal_places=2, min_value=0)
+
+
+class UpdatePriceItemSerializer(serializers.Serializer):
+    variant_id = serializers.CharField()
+    marketplace_id = serializers.CharField()
+    selling_price = serializers.DecimalField(max_digits=18, decimal_places=2)
+    discounted_price = serializers.DecimalField(
+        max_digits=18, decimal_places=2, required=False, allow_null=True
+    )
+
+
 class SaveVariantItemSerializer(serializers.Serializer):
     id = serializers.CharField(required=False, allow_blank=True, allow_null=True, default="")
     variant_values = serializers.DictField(
         child=serializers.CharField(allow_blank=True), default=dict
     )
     sku_variant_code = serializers.CharField(required=False, allow_blank=True, default="")
-    base_price = serializers.IntegerField(min_value=0, default=0)
+    base_price = serializers.DecimalField(
+        max_digits=18, decimal_places=2, min_value=0, default=Decimal("0")
+    )
 
 
 class SaveVariantsSerializer(serializers.Serializer):

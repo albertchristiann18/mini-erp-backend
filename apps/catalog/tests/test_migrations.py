@@ -1,8 +1,11 @@
+from decimal import Decimal
+
 from django.db import connection
 from django.db.migrations.loader import MigrationLoader
 from django.test import TestCase
 
 from apps.catalog.models import Category, Product, ProductVariant
+from apps.catalog.tests.factories import ProductVariantFactory, ProductVariantMarketplaceFactory
 
 
 class DatabaseSchemaRegressionTests(TestCase):
@@ -251,3 +254,39 @@ class MigrationGraphOrderingRegressionTests(TestCase):
                 "lazy-reference error — the migration graph is missing a required "
                 f"dependency edge: {exc}"
             )
+
+
+class MoneyFieldsDecimalConversionRegressionTests(TestCase):
+    """MONEY-3: catalog/0006_alter_productvariant_base_price_and_more widens 4 money
+    fields (ProductVariant.current_cogs/base_price, ProductVariantMarketplace.
+    selling_price/discounted_price) from BigIntegerField to DecimalField(18, 2).
+
+    Postgres's `ALTER COLUMN TYPE numeric` from bigint is an exact, lossless widening
+    conversion — an existing integer value becomes the same value with a zero
+    fractional part. These tests prove that end-to-end against the fully-migrated
+    schema: a plain integer written through the ORM reads back, after a DB round
+    trip, as the identical Decimal value."""
+
+    def test_variant_int_money_values_round_trip_as_identical_decimal(self):
+        variant = ProductVariantFactory(current_cogs=15000, base_price=25000)
+        variant.refresh_from_db()
+
+        self.assertIsInstance(variant.current_cogs, Decimal)
+        self.assertEqual(variant.current_cogs, Decimal("15000.00"))
+        self.assertIsInstance(variant.base_price, Decimal)
+        self.assertEqual(variant.base_price, Decimal("25000.00"))
+
+    def test_variant_marketplace_int_money_values_round_trip_as_identical_decimal(self):
+        listing = ProductVariantMarketplaceFactory(selling_price=45000, discounted_price=40000)
+        listing.refresh_from_db()
+
+        self.assertIsInstance(listing.selling_price, Decimal)
+        self.assertEqual(listing.selling_price, Decimal("45000.00"))
+        self.assertIsInstance(listing.discounted_price, Decimal)
+        self.assertEqual(listing.discounted_price, Decimal("40000.00"))
+
+    def test_variant_marketplace_discounted_price_null_preserved(self):
+        listing = ProductVariantMarketplaceFactory(selling_price=10000, discounted_price=None)
+        listing.refresh_from_db()
+
+        self.assertIsNone(listing.discounted_price)

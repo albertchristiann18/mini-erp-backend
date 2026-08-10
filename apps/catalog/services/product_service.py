@@ -1,4 +1,5 @@
 import logging
+from decimal import Decimal
 from typing import Any
 
 from django.db import transaction
@@ -255,7 +256,9 @@ class ProductService:
                     exc_info=True,
                 )
 
-    def update_variant_base_price(self, variant_id: str, base_price: int) -> dict[str, str | int]:
+    def update_variant_base_price(
+        self, variant_id: str, base_price: Decimal
+    ) -> dict[str, str | Decimal]:
         from apps.catalog.models import ProductVariant
 
         variant = ProductVariant.objects.get(id=variant_id)
