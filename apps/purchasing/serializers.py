@@ -61,17 +61,17 @@ class ProductSupplierSerializer(serializers.ModelSerializer):
         return ProductSupplier.objects.create(company=company, **validated_data)
 
 
-def _calc_shipping_fee(shipping_fee_per_cbm: Decimal, cbm: Decimal) -> int:
+def _calc_shipping_fee(shipping_fee_per_cbm: Decimal, cbm: Decimal) -> Decimal:
     """Tiered freight: <0.1->min 0.1 CBM, 0.1-0.5->ratexcbm+100000, >=0.5->ratexcbm."""
     if cbm <= 0 or shipping_fee_per_cbm <= 0:
-        return 0
+        return Decimal("0")
     if cbm < Decimal("0.1"):
         fee = Decimal("0.1") * shipping_fee_per_cbm
     elif cbm < Decimal("0.5"):
         fee = cbm * shipping_fee_per_cbm + Decimal("100000")
     else:
         fee = cbm * shipping_fee_per_cbm
-    return int(round(fee))
+    return Decimal(round(fee))
 
 
 class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
@@ -249,7 +249,7 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
         unit_price_foreign = Decimal(str(unit_price_foreign))
         exchange_rate = Decimal(str(exchange_rate))
 
-        attrs["unit_price_base"] = int(round(unit_price_foreign * exchange_rate))
+        attrs["unit_price_base"] = Decimal(round(unit_price_foreign * exchange_rate))
 
         discounted_unit_price_foreign = attrs.get("discounted_unit_price_foreign")
         if discounted_unit_price_foreign is None:
@@ -258,14 +258,14 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
             discounted_unit_price_foreign = Decimal(str(discounted_unit_price_foreign))
 
         attrs["discounted_unit_price_foreign"] = discounted_unit_price_foreign
-        attrs["discounted_unit_price_base"] = int(
+        attrs["discounted_unit_price_base"] = Decimal(
             round(discounted_unit_price_foreign * exchange_rate)
         )
 
         attrs["total_price_foreign"] = unit_price_foreign * ordered_qty
         attrs["discounted_total_price_foreign"] = discounted_unit_price_foreign * ordered_qty
-        attrs["total_price_base"] = int(round(unit_price_foreign * exchange_rate * ordered_qty))
-        attrs["discounted_total_price_base"] = int(
+        attrs["total_price_base"] = Decimal(round(unit_price_foreign * exchange_rate * ordered_qty))
+        attrs["discounted_total_price_base"] = Decimal(
             round(discounted_unit_price_foreign * exchange_rate * ordered_qty)
         )
 
@@ -410,12 +410,12 @@ class PurchaseOrderCreateSerializer(serializers.ModelSerializer):
     def _calculate_totals_from_details(self, order_details: list) -> dict:
         total_ordered_qty = 0
         total_received_qty = 0
-        total_item_amount = 0
+        total_item_amount = Decimal("0")
 
         for detail in order_details:
             ordered_qty = detail.get("ordered_qty", 0) or 0
             received_qty = detail.get("received_qty", 0) or 0
-            discounted_total_price_base = detail.get("discounted_total_price_base") or 0
+            discounted_total_price_base = detail.get("discounted_total_price_base") or Decimal("0")
 
             total_ordered_qty += ordered_qty
             total_received_qty += received_qty
@@ -439,8 +439,8 @@ class PurchaseOrderCreateSerializer(serializers.ModelSerializer):
         total_item_rmb = Decimal("0")
         for detail in order_details:
             total_item_rmb += Decimal(str(detail.get("discounted_total_price_foreign") or 0))
-        commission_fee = int(round(commission_fee_pct / 100 * total_item_rmb * exchange_rate))
-        shipping_fee = _calc_shipping_fee(shipping_fee_per_cbm, cbm) if cbm else 0
+        commission_fee = Decimal(round(commission_fee_pct / 100 * total_item_rmb * exchange_rate))
+        shipping_fee = _calc_shipping_fee(shipping_fee_per_cbm, cbm) if cbm else Decimal("0")
         procure_amount = shipping_fee + commission_fee
         total_order_amount = totals["total_item_amount"] + commission_fee
         total_amount = totals["total_item_amount"] + commission_fee + shipping_fee
@@ -451,7 +451,7 @@ class PurchaseOrderCreateSerializer(serializers.ModelSerializer):
             "total_item_amount": totals["total_item_amount"],
             "commission_fee": commission_fee,
             "shipping_fee": shipping_fee,
-            "shipping_fee_per_cbm": int(shipping_fee_per_cbm),
+            "shipping_fee_per_cbm": shipping_fee_per_cbm,
             "procure_amount": procure_amount,
             "total_order_amount": total_order_amount,
             "total_amount": total_amount,
@@ -778,10 +778,10 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
                     total_item_rmb = Decimal("0")
                     for detail in self.instance.order_details.all():
                         total_item_rmb += Decimal(str(detail.discounted_total_price_foreign or 0))
-                    commission_fee = int(
+                    commission_fee = Decimal(
                         round(commission_fee_pct / 100 * total_item_rmb * exchange_rate)
                     )
-                    total_item_amount = self.instance.total_item_amount or 0
+                    total_item_amount = self.instance.total_item_amount or Decimal("0")
                     attrs["shipping_fee"] = new_shipping_fee
                     attrs["procure_amount"] = new_shipping_fee + commission_fee
                     attrs["total_order_amount"] = total_item_amount + commission_fee
@@ -833,7 +833,7 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
     ) -> dict:
         total_ordered_qty = 0
         total_received_qty = 0
-        total_item_amount = 0
+        total_item_amount = Decimal("0")
 
         for detail in order_details:
             detail_id = detail.get("id")
@@ -850,7 +850,9 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
                 getattr(existing_detail, "received_qty", 0) if existing_detail else 0
             )
             discounted_total_price_base = detail.get("discounted_total_price_base") or (
-                getattr(existing_detail, "discounted_total_price_base", 0) if existing_detail else 0
+                getattr(existing_detail, "discounted_total_price_base", Decimal("0"))
+                if existing_detail
+                else Decimal("0")
             )
 
             total_ordered_qty += ordered_qty
@@ -879,10 +881,14 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
             if po:
                 for detail in po.order_details.all():
                     total_item_rmb += Decimal(str(detail.discounted_total_price_foreign or 0))
-        commission_fee = int(round(commission_fee_pct / 100 * total_item_rmb * exchange_rate))
-        shipping_fee = _calc_shipping_fee(shipping_fee_per_cbm, cbm) if cbm else 0
+        commission_fee = Decimal(round(commission_fee_pct / 100 * total_item_rmb * exchange_rate))
+        shipping_fee = _calc_shipping_fee(shipping_fee_per_cbm, cbm) if cbm else Decimal("0")
         procure_amount = shipping_fee + commission_fee
-        total_item_amount = existing_totals.get("total_item_amount", 0) if existing_totals else 0
+        total_item_amount = (
+            existing_totals.get("total_item_amount", Decimal("0"))
+            if existing_totals
+            else Decimal("0")
+        )
         total_order_amount = total_item_amount + commission_fee
         total_amount = total_item_amount + commission_fee + shipping_fee
 
@@ -896,7 +902,7 @@ class PurchaseOrderUpdateSerializer(serializers.ModelSerializer):
             "total_item_amount": total_item_amount,
             "commission_fee": commission_fee,
             "shipping_fee": shipping_fee,
-            "shipping_fee_per_cbm": int(shipping_fee_per_cbm),
+            "shipping_fee_per_cbm": shipping_fee_per_cbm,
             "procure_amount": procure_amount,
             "total_order_amount": total_order_amount,
             "total_amount": total_amount,

@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from django.db import connection, transaction
 
 from core.parsers.import_purchase_orders_parser import ParsedPoSheet
+from core.utils import round_money_to_int
 
 if TYPE_CHECKING:
     from apps.inventory.models import Warehouse
@@ -175,7 +176,7 @@ class PurchaseOrderImportService:
             pos_to_create.append(po)
 
             total_ordered_qty = 0
-            total_price_base_sum = 0
+            total_price_base_sum = Decimal("0")
 
             for row in sheet.rows:
                 variant_id = variant_map.get(row.sku_variant_code)
@@ -185,7 +186,7 @@ class PurchaseOrderImportService:
                     continue
 
                 unit_price_rmb = row.unit_price_rmb
-                unit_price_base = int(round(unit_price_rmb * Decimal(str(exchange_rate))))
+                unit_price_base = Decimal(round(unit_price_rmb * Decimal(str(exchange_rate))))
                 total_price_foreign = unit_price_rmb * Decimal(str(row.order_qty))
                 total_price_base = unit_price_base * row.order_qty
 
@@ -217,7 +218,7 @@ class PurchaseOrderImportService:
                     purchase_date=po_date,
                     price_rmb=unit_price_rmb,
                     exchange_rate=exchange_rate,
-                    cogs_amount=unit_price_base,
+                    cogs_amount=round_money_to_int(unit_price_base),
                     allocated_shipping_fee=0,
                     allocated_delivery_fee=0,
                     allocated_commission_fee=0,

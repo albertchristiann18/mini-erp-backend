@@ -14,6 +14,7 @@ from apps.inventory.models import ProductCogs, ProductVariantWarehouse, Warehous
 from apps.inventory.services.inventory_service import InventoryService
 from apps.purchasing.models import PurchaseOrder, PurchaseOrderDetail
 from core.models import Company
+from core.utils import round_money_to_int
 
 if TYPE_CHECKING:
     from django.contrib.auth.models import User
@@ -583,10 +584,10 @@ class PurchaseOrderService:
                     continue
 
                 existing_detail_obj = existing_details_map.get(detail_id) if detail_id else None
-                discounted_total_price_base = 0
+                discounted_total_price_base = Decimal("0")
                 if existing_detail_obj:
                     discounted_total_price_base = (
-                        existing_detail_obj.discounted_total_price_base or 0
+                        existing_detail_obj.discounted_total_price_base or Decimal("0")
                     )
 
                 inventory_data.append(
@@ -718,10 +719,10 @@ class PurchaseOrderService:
 
                 detail_id = item.get("id")
                 existing_detail_obj = existing_details_map.get(detail_id) if detail_id else None
-                discounted_total_price_base = 0
+                discounted_total_price_base = Decimal("0")
                 if existing_detail_obj:
                     discounted_total_price_base = (
-                        existing_detail_obj.discounted_total_price_base or 0
+                        existing_detail_obj.discounted_total_price_base or Decimal("0")
                     )
 
                 inventory_data.append(
@@ -824,11 +825,11 @@ class PurchaseOrderService:
                         if not disc_foreign:
                             disc_foreign = unit_price_foreign
                         ordered_qty = int(detail_data_copy.get("ordered_qty") or 0)
-                        detail_data_copy["unit_price_base"] = int(
+                        detail_data_copy["unit_price_base"] = Decimal(
                             round(unit_price_foreign * exchange_rate)
                         )
                         detail_data_copy["discounted_unit_price_foreign"] = disc_foreign
-                        detail_data_copy["discounted_unit_price_base"] = int(
+                        detail_data_copy["discounted_unit_price_base"] = Decimal(
                             round(disc_foreign * exchange_rate)
                         )
                         detail_data_copy["total_price_foreign"] = unit_price_foreign * ordered_qty
@@ -954,8 +955,8 @@ class PurchaseOrderService:
             unit_price_foreign = Decimal(str(detail.unit_price_foreign))
             disc_foreign = Decimal(str(detail.discounted_unit_price_foreign or unit_price_foreign))
             ordered_qty = detail.ordered_qty or 0
-            detail.unit_price_base = int(round(unit_price_foreign * exchange_rate))
-            detail.discounted_unit_price_base = int(round(disc_foreign * exchange_rate))
+            detail.unit_price_base = Decimal(round(unit_price_foreign * exchange_rate))
+            detail.discounted_unit_price_base = Decimal(round(disc_foreign * exchange_rate))
             detail.total_price_foreign = unit_price_foreign * ordered_qty
             detail.discounted_total_price_foreign = disc_foreign * ordered_qty
             detail.total_price_base = detail.unit_price_base * ordered_qty
@@ -976,7 +977,7 @@ class PurchaseOrderService:
             )
 
     @staticmethod
-    def _calc_shipping_fee(shipping_fee_per_cbm: Decimal, cbm: Decimal) -> int:
+    def _calc_shipping_fee(shipping_fee_per_cbm: Decimal, cbm: Decimal) -> Decimal:
         """Tiered freight calculation.
 
         < 0.1 CBM  : charge as if 0.1 CBM (minimum charge)
@@ -984,14 +985,14 @@ class PurchaseOrderService:
         ≥ 0.5 CBM  : cbm × rate
         """
         if cbm <= 0 or shipping_fee_per_cbm <= 0:
-            return 0
+            return Decimal("0")
         if cbm < Decimal("0.1"):
             fee = Decimal("0.1") * shipping_fee_per_cbm
         elif cbm < Decimal("0.5"):
             fee = cbm * shipping_fee_per_cbm + Decimal("100000")
         else:
             fee = cbm * shipping_fee_per_cbm
-        return int(round(fee))
+        return Decimal(round(fee))
 
     def _recalculate_forecast_cbm(self, po: PurchaseOrder) -> None:
         total_cbm = Decimal("0")
@@ -1017,7 +1018,7 @@ class PurchaseOrderService:
         """Recalculate PO totals based on order details and fee fields."""
         total_ordered_qty = 0
         total_received_qty = 0
-        total_item_amount = 0
+        total_item_amount = Decimal("0")
         total_item_rmb = Decimal("0")
 
         for detail in po.order_details.all():
@@ -1027,7 +1028,7 @@ class PurchaseOrderService:
                 total_item_amount += (
                     detail.discounted_total_price_base
                     if detail.discounted_total_price_base is not None
-                    else (detail.total_price_base or 0)
+                    else (detail.total_price_base or Decimal("0"))
                 )
                 total_item_rmb += Decimal(
                     str(
@@ -1037,18 +1038,18 @@ class PurchaseOrderService:
                     )
                 )
             else:
-                total_item_amount += detail.total_price_base or 0
+                total_item_amount += detail.total_price_base or Decimal("0")
                 total_item_rmb += Decimal(str(detail.total_price_foreign or 0))
 
         exchange_rate = Decimal(str(po.exchange_rate or 0))
-        delivery_fee_idr = int(round(Decimal(str(po.delivery_fee or 0)) * exchange_rate))
+        delivery_fee_idr = Decimal(round(Decimal(str(po.delivery_fee or 0)) * exchange_rate))
         commission_fee_pct = Decimal(str(po.commission_fee_pct or 0))
         shipping_fee_per_cbm = Decimal(
             str(po.shipping_fee_per_cbm or po.forecast_shipping_fee_per_cbm or 0)
         )
         cbm = Decimal(str(po.cbm or po.forecast_cbm or 0))
 
-        commission_fee = int(
+        commission_fee = Decimal(
             round(commission_fee_pct / Decimal("100") * total_item_rmb * exchange_rate)
         )
         shipping_fee = PurchaseOrderService._calc_shipping_fee(shipping_fee_per_cbm, cbm)
@@ -1090,7 +1091,7 @@ class PurchaseOrderService:
         try:
             ap = po.payable
             if ap.total_amount != po.total_amount:
-                ap.total_amount = po.total_amount
+                ap.total_amount = round_money_to_int(po.total_amount)
                 ap.save(update_fields=["total_amount", "udate"])
         except Exception:
             pass  # AP may not exist yet (DRAFT status)

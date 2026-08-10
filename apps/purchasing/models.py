@@ -80,8 +80,12 @@ class PurchaseOrder(DefaultModel):
     delivery_date = models.DateField(null=True, blank=True)  # latest delivery date
     forecast_delivery_date = models.DateField(null=True, blank=True)
     forecast_cbm = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True)
-    forecast_shipping_fee = models.BigIntegerField(null=True, blank=True)  # IDR
-    forecast_shipping_fee_per_cbm = models.BigIntegerField(null=True, blank=True)  # IDR per m³
+    forecast_shipping_fee = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True
+    )  # IDR
+    forecast_shipping_fee_per_cbm = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True
+    )  # IDR per m³
     commission_fee_rmb = models.DecimalField(
         max_digits=10, decimal_places=3, null=True, blank=True
     )  # RMB
@@ -103,7 +107,9 @@ class PurchaseOrder(DefaultModel):
     forwarder_name = models.CharField(max_length=255, blank=True, null=True)
     shop_services = models.CharField(max_length=255, blank=True, null=True)  # jasa belanja
     commission_fee_pct = models.IntegerField(default=0, blank=True, null=True)
-    commission_fee = models.BigIntegerField(blank=True, null=True)  # IDR
+    commission_fee = models.DecimalField(
+        max_digits=18, decimal_places=2, blank=True, null=True
+    )  # IDR
 
     delivery_fee = models.DecimalField(
         max_digits=10, decimal_places=3, blank=True, null=True
@@ -126,16 +132,30 @@ class PurchaseOrder(DefaultModel):
     cbm = models.DecimalField(max_digits=10, decimal_places=3, blank=True, null=True)  # CBM
     weight = models.DecimalField(max_digits=10, decimal_places=3, blank=True, null=True)  # kg
 
-    shipping_fee_per_cbm = models.BigIntegerField(default=0, blank=True, null=True)  # IDR
-    shipping_fee = models.BigIntegerField(default=0, blank=True, null=True)  # IDR
-    procure_amount = models.BigIntegerField(blank=True, null=True)  # IDR
-    refund_amount = models.BigIntegerField(blank=True, null=True)  # IDR
+    shipping_fee_per_cbm = models.DecimalField(
+        max_digits=18, decimal_places=2, default=0, blank=True, null=True
+    )  # IDR
+    shipping_fee = models.DecimalField(
+        max_digits=18, decimal_places=2, default=0, blank=True, null=True
+    )  # IDR
+    procure_amount = models.DecimalField(
+        max_digits=18, decimal_places=2, blank=True, null=True
+    )  # IDR
+    refund_amount = models.DecimalField(
+        max_digits=18, decimal_places=2, blank=True, null=True
+    )  # IDR
     cogs_ratio_forecast = models.DecimalField(
         max_digits=6, decimal_places=2, blank=True, null=True
     )  # Forecast COGS overhead ratio %, e.g. 15.00 means 15%
-    total_item_amount = models.BigIntegerField(blank=True, null=True)  # IDR
-    total_order_amount = models.BigIntegerField(blank=True, null=True)  # IDR
-    total_amount = models.BigIntegerField(blank=True, null=True)  # IDR
+    total_item_amount = models.DecimalField(
+        max_digits=18, decimal_places=2, blank=True, null=True
+    )  # IDR
+    total_order_amount = models.DecimalField(
+        max_digits=18, decimal_places=2, blank=True, null=True
+    )  # IDR
+    total_amount = models.DecimalField(
+        max_digits=18, decimal_places=2, blank=True, null=True
+    )  # IDR
 
     def __str__(self) -> str:
         return self.purchase_order_number
@@ -296,20 +316,28 @@ class PurchaseOrderDetail(DefaultModel):
     unit_price_foreign = models.DecimalField(
         max_digits=15, decimal_places=3, blank=True, null=True
     )  # RMB / else
-    unit_price_base = models.BigIntegerField(blank=True, null=True)  # IDR
+    unit_price_base = models.DecimalField(
+        max_digits=18, decimal_places=2, blank=True, null=True
+    )  # IDR
     total_price_foreign = models.DecimalField(
         max_digits=15, decimal_places=3, blank=True, null=True
     )  # RMB / else
-    total_price_base = models.BigIntegerField(blank=True, null=True)  # IDR
+    total_price_base = models.DecimalField(
+        max_digits=18, decimal_places=2, blank=True, null=True
+    )  # IDR
 
     discounted_unit_price_foreign = models.DecimalField(
         max_digits=15, decimal_places=3, blank=True, null=True
     )  # RMB / else
-    discounted_unit_price_base = models.BigIntegerField(blank=True, null=True)  # IDR
+    discounted_unit_price_base = models.DecimalField(
+        max_digits=18, decimal_places=2, blank=True, null=True
+    )  # IDR
     discounted_total_price_foreign = models.DecimalField(
         max_digits=15, decimal_places=3, blank=True, null=True
     )  # RMB / else
-    discounted_total_price_base = models.BigIntegerField(blank=True, null=True)  # IDR
+    discounted_total_price_base = models.DecimalField(
+        max_digits=18, decimal_places=2, blank=True, null=True
+    )  # IDR
 
     incoming_qty = models.IntegerField(
         default=0
