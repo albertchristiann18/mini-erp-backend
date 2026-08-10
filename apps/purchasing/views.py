@@ -30,6 +30,7 @@ from apps.purchasing.serializers import (
 from apps.purchasing.services import purchasing_service
 from apps.purchasing.services.purchasing_service import PurchaseOrderService
 from core.permissions import IsStaffOrReadOnly
+from core.utils import round_money_to_int
 
 logger = logging.getLogger(__name__)
 
@@ -260,9 +261,9 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
         return Response(
             {
                 "upcoming_count": agg["upcoming_count"] or 0,
-                "upcoming_total_amount": agg["upcoming_total_amount"] or 0,
-                "upcoming_total_item_amount": agg["upcoming_total_item_amount"] or 0,
-                "upcoming_procure_amount": agg["upcoming_procure_amount"] or 0,
+                "upcoming_total_amount": round_money_to_int(agg["upcoming_total_amount"]),
+                "upcoming_total_item_amount": round_money_to_int(agg["upcoming_total_item_amount"]),
+                "upcoming_procure_amount": round_money_to_int(agg["upcoming_procure_amount"]),
             }
         )
 

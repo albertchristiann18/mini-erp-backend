@@ -43,8 +43,8 @@ def _create_po_detail(
     unit_price_foreign = sourcing_row.unit_price
     discounted_price_foreign = sourcing_row.discounted_price or unit_price_foreign
 
-    unit_price_base = int(round(unit_price_foreign * exchange_rate))
-    discounted_unit_price_base = int(round(discounted_price_foreign * exchange_rate))
+    unit_price_base = Decimal(round(unit_price_foreign * exchange_rate))
+    discounted_unit_price_base = Decimal(round(discounted_price_foreign * exchange_rate))
 
     return PurchaseOrderDetail.objects.create(
         purchase_order=po,
