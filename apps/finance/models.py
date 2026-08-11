@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.db import models
 from django_ulid.models import ULIDField
 
@@ -19,8 +21,8 @@ class AccountsPayable(DefaultModel):
     purchase_order = models.OneToOneField(
         "purchasing.PurchaseOrder", on_delete=models.CASCADE, related_name="payable"
     )
-    total_amount = models.BigIntegerField()
-    paid_amount = models.BigIntegerField(default=0)
+    total_amount = models.DecimalField(max_digits=18, decimal_places=2)
+    paid_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     status = models.CharField(
         max_length=20, choices=PaymentStatus.choices, default=PaymentStatus.UNPAID
     )
@@ -28,7 +30,7 @@ class AccountsPayable(DefaultModel):
     note = models.TextField(blank=True, default="")
 
     @property
-    def remaining_amount(self) -> int:
+    def remaining_amount(self) -> Decimal:
         return self.total_amount - self.paid_amount
 
     def __str__(self) -> str:
@@ -49,7 +51,7 @@ class PaymentRecord(DefaultModel):
     accounts_payable = models.ForeignKey(
         AccountsPayable, on_delete=models.CASCADE, related_name="payments"
     )
-    amount = models.BigIntegerField()
+    amount = models.DecimalField(max_digits=18, decimal_places=2)
     payment_date = models.DateField()
     payment_method = models.CharField(max_length=20, choices=PaymentMethod.choices)
     reference_number = models.CharField(max_length=255, blank=True, default="")
@@ -76,8 +78,8 @@ class AccountsReceivable(DefaultModel):
     sales_order = models.OneToOneField(
         "sales.SalesOrder", on_delete=models.CASCADE, related_name="receivable"
     )
-    expected_amount = models.BigIntegerField()
-    settled_amount = models.BigIntegerField(default=0)
+    expected_amount = models.DecimalField(max_digits=18, decimal_places=2)
+    settled_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     status = models.CharField(
         max_length=20, choices=SettlementStatus.choices, default=SettlementStatus.PENDING
     )
@@ -116,7 +118,7 @@ class Expense(DefaultModel):
     expense_number = models.CharField(max_length=100, unique=True, editable=False, default="")
     category = models.ForeignKey(ExpenseCategory, on_delete=models.PROTECT, related_name="expenses")
     description = models.TextField()
-    amount = models.BigIntegerField()  # IDR
+    amount = models.DecimalField(max_digits=18, decimal_places=2)  # IDR
     expense_date = models.DateField()
     payment_method = models.CharField(
         max_length=20, choices=PaymentMethod.choices, default=PaymentMethod.TRANSFER
@@ -165,7 +167,7 @@ class CashTransaction(DefaultModel):
     )
     transaction_date = models.DateField()
     description = models.TextField()
-    amount = models.BigIntegerField()  # IDR, always positive
+    amount = models.DecimalField(max_digits=18, decimal_places=2)  # IDR, always positive
     transaction_type = models.CharField(max_length=10, choices=TransactionType.choices)
     category = models.CharField(max_length=30, choices=TransactionCategory.choices)
     reference_number = models.CharField(max_length=255, blank=True, default="")

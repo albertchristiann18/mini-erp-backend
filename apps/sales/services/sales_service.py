@@ -14,7 +14,6 @@ from apps.sales.models import (
     SalesReturnItem,
 )
 from apps.sales.services.cogs_consumption import CogsConsumptionService
-from core.utils import round_money_to_int
 
 
 class SalesOrderService:
@@ -419,11 +418,7 @@ class SalesReturnService:
                 (ri.quantity * ri.sales_order_item.selling_price for ri in return_items),
                 Decimal("0"),
             )
-            # AccountsReceivable.expected_amount is still BigIntegerField (finance app,
-            # not yet converted to Decimal) — round_money_to_int is the sanctioned
-            # stopgap at this not-yet-converted boundary, same pattern MONEY-5 used
-            # for the inventory→sales boundary.
-            ar.expected_amount -= round_money_to_int(total_refund)
+            ar.expected_amount -= total_refund
             ar.save(update_fields=["expected_amount", "udate"])
         except Exception:
             pass  # AR may not exist

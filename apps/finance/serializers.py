@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from rest_framework import serializers
 
 from apps.finance.models import (
@@ -36,7 +38,7 @@ class AccountsPayableSerializer(serializers.ModelSerializer):
     id = serializers.CharField(read_only=True)
     po_number = serializers.CharField(source="purchase_order.purchase_order_number", read_only=True)
     purchase_order = serializers.CharField(source="purchase_order.id", read_only=True)
-    remaining_amount = serializers.IntegerField(read_only=True)
+    remaining_amount = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
     payments = PaymentRecordSerializer(many=True, read_only=True)
 
     class Meta:
@@ -67,7 +69,7 @@ class AccountsPayableSerializer(serializers.ModelSerializer):
 
 
 class RecordPaymentSerializer(serializers.Serializer):
-    amount = serializers.IntegerField(min_value=1)
+    amount = serializers.DecimalField(max_digits=18, decimal_places=2, min_value=Decimal("0.01"))
     payment_date = serializers.DateField()
     payment_method = serializers.ChoiceField(choices=PaymentRecord.PaymentMethod.choices)
     reference_number = serializers.CharField(required=False, default="")
@@ -105,7 +107,9 @@ class AccountsReceivableSerializer(serializers.ModelSerializer):
 
 
 class SettleReceivableSerializer(serializers.Serializer):
-    settled_amount = serializers.IntegerField(min_value=0)
+    settled_amount = serializers.DecimalField(
+        max_digits=18, decimal_places=2, min_value=Decimal("0")
+    )
     settlement_date = serializers.DateField()
     marketplace_settlement_id = serializers.CharField(required=False, default="")
 
@@ -296,7 +300,7 @@ class ExpenseListSerializer(serializers.ModelSerializer):
 
 class ExpenseSummarySerializer(serializers.Serializer):
     category__name = serializers.CharField()
-    total_amount = serializers.IntegerField()
+    total_amount = RoundedMoneyField()
     count = serializers.IntegerField()
 
 

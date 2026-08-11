@@ -14,7 +14,6 @@ from apps.inventory.models import ProductCogs, ProductVariantWarehouse, Warehous
 from apps.inventory.services.inventory_service import InventoryService
 from apps.purchasing.models import PurchaseOrder, PurchaseOrderDetail
 from core.models import Company
-from core.utils import round_money_to_int
 
 if TYPE_CHECKING:
     from django.contrib.auth.models import User
@@ -1080,7 +1079,7 @@ class PurchaseOrderService:
         try:
             ap = po.payable
             if ap.total_amount != po.total_amount:
-                ap.total_amount = round_money_to_int(po.total_amount)
+                ap.total_amount = po.total_amount
                 ap.save(update_fields=["total_amount", "udate"])
         except Exception:
             pass  # AP may not exist yet (DRAFT status)

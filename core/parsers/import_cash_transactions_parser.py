@@ -30,7 +30,7 @@ CATEGORY_MAP: dict[str, str] = {
 class ParsedCashTransaction:
     transaction_date: date
     description: str
-    amount: int  # always positive
+    amount: Decimal  # always positive
     transaction_type: str  # "INFLOW" | "OUTFLOW"
     category: str  # one of CashTransaction.TransactionCategory values
     note: str
@@ -108,7 +108,7 @@ def parse_cash_transactions_sheet(rows: list[tuple]) -> list[ParsedCashTransacti
         decimal_value = _parse_decimal(raw_value)
         if decimal_value is None:
             continue
-        amount = int(abs(decimal_value))
+        amount = abs(decimal_value)
         if amount == 0:
             continue
 
