@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+from decimal import Decimal
 
 from django.contrib.auth.models import User
 from rest_framework import status
@@ -37,7 +38,7 @@ class AccountsPayableAPITest(APITestCase):
         ap = AccountsPayableFactory(company=self.company, total_amount=1000000)
         response = self.client.get(f"/accounts-payable/{ap.id}/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["total_amount"], 1000000)
+        self.assertEqual(response.data["total_amount"], "1000000.00")
 
     def test_record_payment_partial(self):
         ap = AccountsPayableFactory(company=self.company, total_amount=1000000)
@@ -198,7 +199,7 @@ class CashTransactionAPITest(APITestCase):
         }
         response = self.client.post("/cash-transactions/", payload, format="json")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data["amount"], 5000000)
+        self.assertEqual(response.data["amount"], "5000000.00")
         self.assertEqual(response.data["transaction_type"], "INFLOW")
 
     def test_list_cash_transactions(self):
@@ -250,7 +251,22 @@ class CashTransactionAPITest(APITestCase):
         }
         response = self.client.post("/cash-transactions/", payload, format="json")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data["amount"], 1000)
+        self.assertEqual(response.data["amount"], "1000.00")
+
+    def test_partial_update_of_note_leaves_fractional_amount_unchanged(self):
+        cash_transaction = CashTransactionFactory(
+            company=self.company,
+            amount=Decimal("123456.78"),
+        )
+        response = self.client.patch(
+            f"/cash-transactions/{cash_transaction.id}/",
+            {"note": "Reconciled against bank statement"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["amount"], "123456.78")
+        cash_transaction.refresh_from_db()
+        self.assertEqual(cash_transaction.amount, Decimal("123456.78"))
 
     def test_cash_transaction_summary_uses_authenticated_company(self):
         """Verify the summary action returns data for the logged-in company without requiring company_id."""

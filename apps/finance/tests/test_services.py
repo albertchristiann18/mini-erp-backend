@@ -99,10 +99,10 @@ class AccountsPayableServiceTest(TestCase):
         self.assertEqual(ar.expected_amount, 750000)
         self.assertEqual(ar.status, AccountsReceivable.SettlementStatus.PENDING)
 
-    def test_create_receivable_from_so_rounds_fractional_net_revenue(self):
+    def test_create_receivable_from_so_preserves_fractional_net_revenue_exactly(self):
         so = SalesOrderFactory(company=self.company, net_revenue=Decimal("750000.60"))
         ar = self.service.create_receivable_from_so(so)
-        self.assertEqual(ar.expected_amount, 750001)
+        self.assertEqual(ar.expected_amount, Decimal("750000.60"))
 
     def test_settle_receivable(self):
         ar = AccountsReceivableFactory(company=self.company, expected_amount=500000)
@@ -445,6 +445,17 @@ class CashTransactionParserTest(TestCase):
         result = parse_cash_transactions_sheet([header, row])
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].amount, 12345678)
+
+    def test_fractional_value_passes_through_without_truncation(self):
+        from core.parsers.import_cash_transactions_parser import (
+            parse_cash_transactions_sheet,
+        )
+
+        header = ("No", None, "Date", "Desc", "Type1", "Type", "Value")
+        row = self._make_row(value="12345.67")
+        result = parse_cash_transactions_sheet([header, row])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].amount, Decimal("12345.67"))
 
     def test_skip_row_no_row_number(self):
         from core.parsers.import_cash_transactions_parser import (
