@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.test import TestCase
@@ -97,6 +98,11 @@ class AccountsPayableServiceTest(TestCase):
         ar = self.service.create_receivable_from_so(so)
         self.assertEqual(ar.expected_amount, 750000)
         self.assertEqual(ar.status, AccountsReceivable.SettlementStatus.PENDING)
+
+    def test_create_receivable_from_so_rounds_fractional_net_revenue(self):
+        so = SalesOrderFactory(company=self.company, net_revenue=Decimal("750000.60"))
+        ar = self.service.create_receivable_from_so(so)
+        self.assertEqual(ar.expected_amount, 750001)
 
     def test_settle_receivable(self):
         ar = AccountsReceivableFactory(company=self.company, expected_amount=500000)

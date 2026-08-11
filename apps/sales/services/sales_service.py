@@ -1,3 +1,4 @@
+from decimal import Decimal
 from typing import Dict, List
 
 from django.core.exceptions import ValidationError
@@ -13,6 +14,7 @@ from apps.sales.models import (
     SalesReturnItem,
 )
 from apps.sales.services.cogs_consumption import CogsConsumptionService
+from core.utils import round_money_to_int
 
 
 class SalesOrderService:
@@ -261,10 +263,10 @@ class SalesOrderService:
         """Recalculate SO totals from items."""
         items = so.items.all()
 
-        subtotal = 0
-        total_discount = 0
-        total_marketplace_fee = 0
-        total_cogs = 0
+        subtotal = Decimal("0")
+        total_discount = Decimal("0")
+        total_marketplace_fee = Decimal("0")
+        total_cogs = Decimal("0")
 
         for item in items:
             subtotal += item.selling_price * item.quantity
@@ -414,9 +416,14 @@ class SalesReturnService:
             ar = so.receivable
             # Calculate total refund from this return's items
             total_refund = sum(
-                ri.quantity * ri.sales_order_item.selling_price for ri in return_items
+                (ri.quantity * ri.sales_order_item.selling_price for ri in return_items),
+                Decimal("0"),
             )
-            ar.expected_amount -= total_refund
+            # AccountsReceivable.expected_amount is still BigIntegerField (finance app,
+            # not yet converted to Decimal) — round_money_to_int is the sanctioned
+            # stopgap at this not-yet-converted boundary, same pattern MONEY-5 used
+            # for the inventory→sales boundary.
+            ar.expected_amount -= round_money_to_int(total_refund)
             ar.save(update_fields=["expected_amount", "udate"])
         except Exception:
             pass  # AR may not exist

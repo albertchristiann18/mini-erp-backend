@@ -2,8 +2,10 @@ import factory
 from django.utils import timezone
 
 from apps.catalog.tests.factories import ProductVariantFactory
+from apps.inventory.tests.factories import ProductCogsFactory
 from apps.sales.models import (
     SalesOrder,
+    SalesOrderCogsDetail,
     SalesOrderItem,
     SalesReturn,
     SalesReturnItem,
@@ -32,6 +34,18 @@ class SalesOrderItemFactory(factory.django.DjangoModelFactory):
     quantity = 1
     selling_price = 100000
     line_total = factory.LazyAttribute(lambda o: o.selling_price * o.quantity)  # type: ignore[no-untyped-call]
+
+
+class SalesOrderCogsDetailFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = SalesOrderCogsDetail
+
+    company = factory.LazyAttribute(lambda o: o.sales_order_item.company)  # type: ignore[no-untyped-call]
+    sales_order_item = factory.SubFactory(SalesOrderItemFactory)  # type: ignore[no-untyped-call]
+    product_cogs = factory.SubFactory(ProductCogsFactory)  # type: ignore[no-untyped-call]
+    quantity_consumed = 1
+    cogs_per_unit = 50000
+    total_cogs = factory.LazyAttribute(lambda o: o.cogs_per_unit * o.quantity_consumed)  # type: ignore[no-untyped-call]
 
 
 class SalesReturnFactory(factory.django.DjangoModelFactory):

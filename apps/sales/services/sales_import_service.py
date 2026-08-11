@@ -3,7 +3,9 @@ Service layer for importing historical Sales Orders from parsed Excel workbook s
 
 All DB writes are wrapped in a single @transaction.atomic call.
 No ORM calls inside Python loops — all bulk operations use bulk_create / bulk_update.
-Uses Decimal throughout for parsing; stores as int for BigIntegerField columns.
+Money fields on SalesOrder / SalesOrderItem are DecimalField(18, 2). Parsed values arrive
+here as plain int (ParsedSalesItem / ParsedSalesOrder in core/parsers/import_sales_parser.py
+parse and round upstream) and pass through unchanged into the Decimal columns.
 
 The SO number trigger (trg_generate_so_number) is suppressed via:
     SET LOCAL session_replication_role = 'replica'
@@ -11,6 +13,7 @@ which reverts automatically when the transaction ends.
 """
 
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from django.core.exceptions import ValidationError
@@ -229,7 +232,7 @@ class SalesImportService:
         fifo_shortage_warnings = 0
 
         # Per-SO COGS accumulator: order_number → total cogs
-        so_total_cogs: dict[str, int] = {so.order_number: 0 for so in created_sos}
+        so_total_cogs: dict[str, Decimal] = {so.order_number: Decimal("0") for so in created_sos}
 
         # Refresh created_items with select_related so .product_variant.pk doesn't hit DB per item
         created_items_with_pv = list(
@@ -248,15 +251,17 @@ class SalesImportService:
             is_stock_affecting = so_is_stock_affecting.get(order_number, False)
 
             if is_stock_affecting:
-                item_cogs_total = 0
+                item_cogs_total = Decimal("0")
                 try:
                     details = cogs_service.consume_fifo(item, warehouse.id)
-                    item_cogs_total = sum(d.total_cogs for d in details)
+                    item_cogs_total = sum((d.total_cogs for d in details), Decimal("0"))
                 except ValidationError:
                     fifo_shortage_warnings += 1
                     # item keeps actual_cogs_per_unit=0, actual_cogs_total=0 (defaults)
 
-                so_total_cogs[order_number] = so_total_cogs.get(order_number, 0) + item_cogs_total
+                so_total_cogs[order_number] = (
+                    so_total_cogs.get(order_number, Decimal("0")) + item_cogs_total
+                )
 
                 qty = item.quantity
                 bal_before = balance_tracker.get(variant_id, 0)

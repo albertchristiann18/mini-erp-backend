@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.utils import timezone
@@ -244,6 +246,20 @@ class CogsConsumptionServiceTest(TestCase):
         self.assertEqual(detail.quantity_consumed, 10)
         self.assertEqual(detail.cogs_per_unit, 50000)
         self.assertEqual(detail.total_cogs, 500000)
+
+    def test_consume_fifo_fractional_cogs_per_unit_quantizes_without_truncating(self):
+        """Once cogs_amount carries cents, the weighted-average actual_cogs_per_unit
+        must not silently truncate to a whole rupiah — it quantizes to 2 decimal
+        places (floor-rounded, the decimal-safe equivalent of the old `//`)."""
+        self._create_cogs_layer(1, Decimal("100.00"), "2026-01-01")
+        self._create_cogs_layer(2, Decimal("100.02"), "2026-02-01")
+        item = self._create_so_item(3)
+
+        self.service.consume_fifo(item, self.warehouse.id)
+
+        item.refresh_from_db()
+        self.assertEqual(item.actual_cogs_total, Decimal("300.04"))
+        self.assertEqual(item.actual_cogs_per_unit, Decimal("100.01"))
 
 
 class SalesReturnServiceTest(TestCase):
