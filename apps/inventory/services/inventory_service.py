@@ -814,9 +814,9 @@ class InventoryService:
                         if received_qty > 0
                         else Decimal("0")
                     )
-                    cogs_amount = int(
+                    cogs_amount = (
                         unit_price_idr + shipping_per_unit + delivery_per_unit + commission_per_unit
-                    )
+                    ).to_integral_value(rounding=ROUND_FLOOR)
 
                     assert reference_number is not None
                     create_cogs_records.append(
@@ -867,9 +867,9 @@ class InventoryService:
                         if received_qty > 0
                         else Decimal("0")
                     )
-                    existing_cogs.cogs_amount = int(
+                    existing_cogs.cogs_amount = (
                         unit_price_idr + shipping_per_unit + delivery_per_unit + commission_per_unit
-                    )
+                    ).to_integral_value(rounding=ROUND_FLOOR)
                     update_cogs_records.append(existing_cogs)
 
         if create_cogs_records:
