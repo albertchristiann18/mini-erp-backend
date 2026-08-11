@@ -2169,6 +2169,34 @@ class MoneySerializationCrudContractTest(TestCase):
         self.assertEqual(po.commission_fee_rmb, Decimal("77.250"))
         self.assertEqual(po.note, "updated note")
 
+    def test_patch_of_unrelated_field_leaves_exchange_rate_exact_and_string(self):
+        """MONEY-8: PurchaseOrder.exchange_rate was already Decimal(10, 3) before this
+        ticket — untouched here — but this pins that a fractional rate still round-trips
+        exact through PATCH, confirming the ProductCogs.exchange_rate field-type fix in
+        this ticket has no effect on (and doesn't regress) the already-correct PO side."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.DRAFT,
+            exchange_rate=Decimal("2200.678"),
+        )
+
+        response = self.client.patch(
+            f"/purchase-order/{po.id}/", {"note": "updated note"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        detail = self.client.get(f"/purchase-order/{po.id}/", format="json")
+        self.assertEqual(detail.status_code, status.HTTP_200_OK)
+
+        # Exact — not re-rounded — and serialized as a string, not a JSON number.
+        self.assertEqual(detail.data["exchange_rate"], "2200.678")
+        self.assertIsInstance(detail.data["exchange_rate"], str)
+
+        po.refresh_from_db()
+        self.assertEqual(po.exchange_rate, Decimal("2200.678"))
+        self.assertEqual(po.note, "updated note")
+
 
 # ---------------------------------------------------------------------------
 # BE3 — migration-graph ordering regression tests

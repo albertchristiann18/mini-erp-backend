@@ -1,5 +1,5 @@
 import logging
-from decimal import ROUND_FLOOR, Decimal, InvalidOperation
+from decimal import ROUND_FLOOR, ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
 from django.core.exceptions import ValidationError
@@ -777,7 +777,10 @@ class InventoryService:
                         or item.get("unit_price_foreign")
                         or 0
                     )
-                    item_exchange_rate = item.get("exchange_rate") or int(exchange_rate)
+                    item_exchange_rate_input = item.get("exchange_rate") or exchange_rate
+                    item_exchange_rate = Decimal(str(item_exchange_rate_input)).quantize(
+                        Decimal("0.001"), rounding=ROUND_HALF_UP
+                    )
                     invoice_date = getattr(po, "invoice_date", None) or timezone.now().date()
 
                     allocated_shipping = 0
