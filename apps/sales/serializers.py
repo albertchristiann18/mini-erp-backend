@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from rest_framework import serializers
 
 from apps.sales.models import (
@@ -280,6 +282,8 @@ class SalesReturnItemCreateSerializer(serializers.Serializer):
 class SalesReturnCreateSerializer(serializers.Serializer):
     sales_order_id = serializers.CharField()
     reason = serializers.CharField(required=False, default="")
-    refund_amount = serializers.IntegerField(required=False, default=0)
+    refund_amount = serializers.DecimalField(
+        max_digits=18, decimal_places=2, required=False, default=Decimal("0")
+    )
     note = serializers.CharField(required=False, default="")
     items = SalesReturnItemCreateSerializer(many=True)

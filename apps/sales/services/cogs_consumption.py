@@ -1,9 +1,10 @@
+from decimal import ROUND_FLOOR, Decimal
+
 from django.core.exceptions import ValidationError
 from django.db import transaction
 
 from apps.inventory.models import ProductCogs
 from apps.sales.models import SalesOrderCogsDetail, SalesOrderItem
-from core.utils import round_money_to_int
 
 
 class CogsConsumptionService:
@@ -42,7 +43,7 @@ class CogsConsumptionService:
 
         details = []
         remaining_to_consume = qty_needed
-        total_cogs_value = 0
+        total_cogs_value = Decimal("0")
 
         for layer in cogs_layers:
             if remaining_to_consume <= 0:
@@ -52,23 +53,26 @@ class CogsConsumptionService:
             layer.remaining_qty -= consume_qty
             layer.save(update_fields=["remaining_qty", "udate"])
 
+            layer_total_cogs = layer.cogs_amount * consume_qty
             cogs_detail = SalesOrderCogsDetail(
                 company_id=sales_order_item.sales_order.company.pk,
                 sales_order_item=sales_order_item,
                 product_cogs=layer,
                 quantity_consumed=consume_qty,
-                cogs_per_unit=round_money_to_int(layer.cogs_amount),
-                total_cogs=round_money_to_int(layer.cogs_amount * consume_qty),
+                cogs_per_unit=layer.cogs_amount,
+                total_cogs=layer_total_cogs,
             )
             details.append(cogs_detail)
-            total_cogs_value += round_money_to_int(layer.cogs_amount * consume_qty)
+            total_cogs_value += layer_total_cogs
             remaining_to_consume -= consume_qty
 
         SalesOrderCogsDetail.objects.bulk_create(details, batch_size=100)
 
         # Calculate weighted average cogs_per_unit
         if qty_needed > 0:
-            sales_order_item.actual_cogs_per_unit = total_cogs_value // qty_needed
+            sales_order_item.actual_cogs_per_unit = (total_cogs_value / qty_needed).quantize(
+                Decimal("0.01"), rounding=ROUND_FLOOR
+            )
         sales_order_item.actual_cogs_total = total_cogs_value
         sales_order_item.save(update_fields=["actual_cogs_per_unit", "actual_cogs_total", "udate"])
 
@@ -89,12 +93,12 @@ class CogsConsumptionService:
 
         SalesOrderCogsDetail.objects.filter(sales_order_item=sales_order_item).delete()
 
-        sales_order_item.actual_cogs_per_unit = 0
-        sales_order_item.actual_cogs_total = 0
+        sales_order_item.actual_cogs_per_unit = Decimal("0")
+        sales_order_item.actual_cogs_total = Decimal("0")
         sales_order_item.save(update_fields=["actual_cogs_per_unit", "actual_cogs_total", "udate"])
 
     @transaction.atomic
-    def partial_reverse_fifo(self, sales_order_item: SalesOrderItem, return_qty: int) -> int:
+    def partial_reverse_fifo(self, sales_order_item: SalesOrderItem, return_qty: int) -> Decimal:
         """
         Partially reverse COGS consumption for returns.
         Returns the total reversed COGS amount.
@@ -107,7 +111,7 @@ class CogsConsumptionService:
         )
 
         remaining_to_reverse = return_qty
-        total_reversed_cogs = 0
+        total_reversed_cogs = Decimal("0")
 
         for detail in cogs_details:
             if remaining_to_reverse <= 0:
@@ -132,10 +136,14 @@ class CogsConsumptionService:
 
         # Recalculate item COGS
         remaining_details = sales_order_item.cogs_details.all()
-        new_total_cogs = sum(d.total_cogs for d in remaining_details)
+        new_total_cogs = sum((d.total_cogs for d in remaining_details), Decimal("0"))
         new_qty = sales_order_item.quantity - return_qty
         sales_order_item.actual_cogs_total = new_total_cogs
-        sales_order_item.actual_cogs_per_unit = new_total_cogs // new_qty if new_qty > 0 else 0
+        sales_order_item.actual_cogs_per_unit = (
+            (new_total_cogs / new_qty).quantize(Decimal("0.01"), rounding=ROUND_FLOOR)
+            if new_qty > 0
+            else Decimal("0")
+        )
         sales_order_item.save(update_fields=["actual_cogs_per_unit", "actual_cogs_total", "udate"])
 
         return total_reversed_cogs

@@ -5,6 +5,7 @@ from django.db.models import QuerySet
 from apps.finance.models import AccountsPayable, AccountsReceivable, PaymentRecord
 from apps.purchasing.models import PurchaseOrder
 from apps.sales.models import SalesOrder
+from core.utils import round_money_to_int
 
 
 class AccountsPayableService:
@@ -74,7 +75,11 @@ class AccountsPayableService:
             sales_order=so,
             defaults={
                 "company": so.company,
-                "expected_amount": so.net_revenue,
+                # AccountsReceivable.expected_amount is still BigIntegerField (finance app,
+                # not yet converted to Decimal) — round_money_to_int is the sanctioned
+                # stopgap at this not-yet-converted boundary, same pattern MONEY-5 used
+                # for the inventory→sales boundary.
+                "expected_amount": round_money_to_int(so.net_revenue),
             },
         )
         return ar

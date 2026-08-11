@@ -50,14 +50,14 @@ class SalesOrder(DefaultModel):
     completed_date = models.DateTimeField(null=True, blank=True)
     courier_name = models.CharField(max_length=100, blank=True, default="")
     tracking_number = models.CharField(max_length=255, blank=True, default="")
-    shipping_fee = models.BigIntegerField(default=0)
-    shipping_fee_seller = models.BigIntegerField(default=0)
-    subtotal = models.BigIntegerField(default=0)
-    total_discount = models.BigIntegerField(default=0)
-    total_marketplace_fee = models.BigIntegerField(default=0)
-    total_cogs = models.BigIntegerField(default=0)
-    net_revenue = models.BigIntegerField(default=0)
-    gross_profit = models.BigIntegerField(default=0)
+    shipping_fee = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    shipping_fee_seller = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    subtotal = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    total_discount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    total_marketplace_fee = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    total_cogs = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    net_revenue = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    gross_profit = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     note = models.TextField(blank=True, default="")
 
     def __str__(self) -> str:
@@ -71,14 +71,14 @@ class SalesOrderItem(DefaultModel):
     sales_order = models.ForeignKey(SalesOrder, on_delete=models.CASCADE, related_name="items")
     product_variant = models.ForeignKey("catalog.ProductVariant", on_delete=models.PROTECT)
     quantity = models.IntegerField()
-    selling_price = models.BigIntegerField()
-    discount_amount = models.BigIntegerField(default=0)
-    commission_fee = models.BigIntegerField(default=0)
-    service_fee = models.BigIntegerField(default=0)
-    total_marketplace_fee = models.BigIntegerField(default=0)
-    actual_cogs_per_unit = models.BigIntegerField(default=0)
-    actual_cogs_total = models.BigIntegerField(default=0)
-    line_total = models.BigIntegerField(default=0)
+    selling_price = models.DecimalField(max_digits=18, decimal_places=2)
+    discount_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    commission_fee = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    service_fee = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    total_marketplace_fee = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    actual_cogs_per_unit = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    actual_cogs_total = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    line_total = models.DecimalField(max_digits=18, decimal_places=2, default=0)
 
     def __str__(self) -> str:
         return f"{self.sales_order.order_number} - {self.product_variant}"
@@ -98,8 +98,8 @@ class SalesOrderCogsDetail(DefaultModel):
     )
     product_cogs = models.ForeignKey("inventory.ProductCogs", on_delete=models.PROTECT)
     quantity_consumed = models.IntegerField()
-    cogs_per_unit = models.BigIntegerField()
-    total_cogs = models.BigIntegerField()
+    cogs_per_unit = models.DecimalField(max_digits=18, decimal_places=2)
+    total_cogs = models.DecimalField(max_digits=18, decimal_places=2)
 
     def __str__(self) -> str:
         return f"COGS Detail for {self.sales_order_item}"
@@ -122,7 +122,7 @@ class SalesReturn(DefaultModel):
     )
     reason = models.TextField(blank=True, default="")
     return_date = models.DateTimeField(null=True, blank=True)
-    refund_amount = models.BigIntegerField(default=0)
+    refund_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     note = models.TextField(blank=True, default="")
 
     def __str__(self) -> str:
@@ -137,7 +137,7 @@ class SalesReturnItem(DefaultModel):
     sales_order_item = models.ForeignKey(SalesOrderItem, on_delete=models.PROTECT)
     product_variant = models.ForeignKey("catalog.ProductVariant", on_delete=models.PROTECT)
     quantity = models.IntegerField()
-    reversed_cogs_total = models.BigIntegerField(default=0)
+    reversed_cogs_total = models.DecimalField(max_digits=18, decimal_places=2, default=0)
 
     def __str__(self) -> str:
         return f"Return Item for {self.sales_return.return_number}"
