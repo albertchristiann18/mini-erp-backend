@@ -73,7 +73,17 @@ class ProductCogs(DefaultModel):
     price_rmb = models.DecimalField(
         max_digits=15, decimal_places=4, help_text="Unit price in RMB (unit_price_foreign)"
     )
-    exchange_rate = models.BigIntegerField(help_text="Exchange rate from PO (rounded integer)")
+    # 3 decimal places here vs. 2 on cogs_amount/allocated_*_fee below is deliberate,
+    # not an oversight: this field is a multiplicand (it's multiplied into price_rmb to
+    # derive unit_price_idr), so truncating/rounding it too coarsely amplifies error
+    # across every unit it prices. The money fields below are payable IDR amounts —
+    # rupiah has no circulating subunit, so 2dp is already exact for them. Do not
+    # unify the two precisions.
+    exchange_rate = models.DecimalField(
+        max_digits=10,
+        decimal_places=3,
+        help_text="Exchange rate from PO at time of delivery (matches PurchaseOrder.exchange_rate precision)",
+    )
     cogs_amount = models.DecimalField(
         max_digits=18,
         decimal_places=2,

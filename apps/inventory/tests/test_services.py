@@ -504,6 +504,84 @@ class InventoryServiceCOGSUpdateTest(TestCase):
         self.assertEqual(cogs_record.original_qty, 100)
         self.assertEqual(cogs_record.remaining_qty, 100)
 
+    def test_update_cogs_on_po_fractional_exchange_rate_rounds_not_truncates(self):
+        """MONEY-8 regression: a fractional PO exchange rate must survive into the FIFO
+        layer rounded to 3dp, not truncated toward zero by int(). Before the fix,
+        2200.678 collapsed to 2200 and corrupted the derived unit cost."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.SHIPPED,
+            exchange_rate=Decimal("2200.678"),
+        )
+
+        data = [
+            {
+                "product_variant_id": str(self.product_variant.id),
+                "ordered_qty": 100,
+                "received_qty": 100,
+                "updated_qty": 0,
+                "unit_price_foreign": Decimal("10"),
+            }
+        ]
+
+        self.service.update_cogs_on_po(
+            po=po,
+            new_status=PurchaseOrder.POStatus.DELIVERED,
+            data=data,
+        )
+
+        cogs_record = ProductCogs.objects.filter(
+            product_variant=self.product_variant,
+            warehouse=self.warehouse,
+            reference_number=po.purchase_order_number,
+        ).first()
+
+        self.assertIsNotNone(cogs_record)
+        self.assertEqual(cogs_record.exchange_rate, Decimal("2200.678"))
+        # unit_price_idr = 10 * 2200.678 = 22006.78, floored to whole rupiah = 22006.
+        # Truncating the rate to 2200 first would have produced 22000 instead.
+        self.assertEqual(cogs_record.cogs_amount, 22006)
+
+    def test_update_cogs_on_po_item_level_exchange_rate_override_is_decimal_safe(self):
+        """An item-level exchange_rate override must be coerced decimal-safe and rounded
+        half-up to 3dp too — not assumed int, so the field-type fix doesn't just move
+        the truncation bug to a different input path."""
+        po = PurchaseOrderFactory(
+            warehouse=self.warehouse,
+            company=self.company,
+            status=PurchaseOrder.POStatus.SHIPPED,
+            exchange_rate=Decimal("2200.000"),
+        )
+
+        data = [
+            {
+                "product_variant_id": str(self.product_variant.id),
+                "ordered_qty": 100,
+                "received_qty": 100,
+                "updated_qty": 0,
+                "unit_price_foreign": Decimal("10"),
+                "exchange_rate": "2200.6789",
+            }
+        ]
+
+        self.service.update_cogs_on_po(
+            po=po,
+            new_status=PurchaseOrder.POStatus.DELIVERED,
+            data=data,
+        )
+
+        cogs_record = ProductCogs.objects.filter(
+            product_variant=self.product_variant,
+            warehouse=self.warehouse,
+            reference_number=po.purchase_order_number,
+        ).first()
+
+        self.assertIsNotNone(cogs_record)
+        # 2200.6789 rounds half-up to 3dp -> 2200.679, not truncated to 2200.
+        self.assertEqual(cogs_record.exchange_rate, Decimal("2200.679"))
+        self.assertEqual(cogs_record.cogs_amount, 22006)
+
     def test_update_cogs_on_po_with_discount(self):
         """Test COGS uses discounted_unit_price_foreign when provided."""
         po = PurchaseOrderFactory(
